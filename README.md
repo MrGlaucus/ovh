@@ -21,7 +21,7 @@ OVH 独立服务器 / VPS / Eco 系列**抢购 + 监控 + 管理**控制台。
 └── web/      # 前端 (Vite + TanStack, dev 默认 :19997)
 ```
 
-两端各自有详细 README：[server/README.md](server/README.md) · [web/CLAUDE.md](web/CLAUDE.md)
+后端详细文档见 [server/README.md](server/README.md)。
 
 ## 快速开始
 

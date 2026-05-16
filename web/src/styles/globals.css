@@ -1,0 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================================================
+ * 设计 token —— 全部走 CSS 变量，组件不要硬编码颜色
+ * 风格：极简黑白 + 黑色 primary，禁用阴影，全胶囊按钮
+ * ================================================================ */
+
+@layer base {
+  :root {
+    /* 基础面 */
+    --background: 0 0% 100%;            /* #ffffff */
+    --foreground: 0 0% 4%;              /* #0a0a0a 近黑 */
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 4%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 4%;
+
+    /* 品牌强调（小面积：链接、active、focus 环 base 色） */
+    --primary: 0 0% 9%;                 /* #171717 */
+    --primary-foreground: 0 0% 98%;
+
+    --accent: 0 0% 9%;
+    --accent-foreground: 0 0% 98%;
+
+    --secondary: 0 0% 96%;              /* #f5f5f5 */
+    --secondary-foreground: 0 0% 9%;
+
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 45%;       /* #737373 */
+
+    /* 边框与表单 */
+    --border: 0 0% 90%;                 /* #e5e5e5 */
+    --input: 0 0% 90%;
+    --ring: 0 0% 9%;
+
+    /* 状态色 */
+    --destructive: 0 84% 60%;           /* #ef4444 */
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 71% 45%;             /* #22c55e */
+    --warning: 38 92% 50%;              /* #f59e0b */
+    --info: 217 91% 60%;                /* #3b82f6 */
+
+    /* 主按钮独立 token（CTA 提交/确认/购买，与品牌色解耦） */
+    --button-primary: 0 0% 9%;
+    --button-primary-foreground: 0 0% 98%;
+    --button-primary-hover: 0 0% 14%;
+    --button-primary-active: 0 0% 4%;
+    --button-primary-disabled: 0 0% 90%;
+    --button-primary-disabled-foreground: 0 0% 55%;
+
+    --radius: 0.5rem;                   /* 8px 基准 */
+  }
+
+  .dark {
+    --background: 0 0% 6%;              /* #0f0f0f */
+    --foreground: 0 0% 96%;
+
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 96%;
+
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 96%;
+
+    --primary: 0 0% 96%;
+    --primary-foreground: 0 0% 9%;
+
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 9%;
+
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 96%;
+
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 60%;
+
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 0 0% 96%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 65% 50%;
+    --warning: 38 85% 55%;
+    --info: 217 85% 65%;
+
+    --button-primary: 0 0% 96%;
+    --button-primary-foreground: 0 0% 9%;
+    --button-primary-hover: 0 0% 88%;
+    --button-primary-active: 0 0% 80%;
+    --button-primary-disabled: 0 0% 22%;
+    --button-primary-disabled-foreground: 0 0% 50%;
+  }
+
+  /* 基础元素 */
+  * {
+    @apply border-border;
+    box-shadow: none !important;        /* 设计规范：禁用所有阴影 */
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    letter-spacing: -0.003em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 滚动条：Notion 风极细 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+}

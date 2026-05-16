@@ -1,0 +1,30 @@
+# build artifacts
+dist
+dist-ssr
+.next
+
+# deps
+node_modules
+
+# logs
+logs
+*.log
+npm-debug.log*
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# generated
+src/routeTree.gen.ts
+
+# env
+.env
+.env.local
