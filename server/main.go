@@ -144,6 +144,7 @@ func main() {
 		api.GET("/cache/info", handlers.CacheInfo(state))
 		api.POST("/cache/clear", handlers.ClearCache(state))
 		api.GET("/catalog", handlers.GetCatalog(state))
+		api.GET("/system/metrics", handlers.GetSystemMetrics(state))
 
 		// Config sniper
 		api.GET("/config-sniper/options/:planCode", handlers.GetConfigOptions(state))

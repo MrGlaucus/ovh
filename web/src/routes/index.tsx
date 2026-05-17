@@ -7,25 +7,14 @@ import {
   ChevronRight,
   Plus,
   Clock,
-  Activity,
   Link2,
   Bot,
   Bell,
   Info,
   CheckCheck,
+  Calendar,
   type LucideIcon,
 } from "lucide-react";
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  Line,
-  LineChart,
-} from "recharts";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,11 +22,12 @@ import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/common/Skeleton";
-import { useStats, usePerfTrend, type SparkPoint } from "@/hooks/use-stats";
+import { MetricRing } from "@/components/common/MetricRing";
+import { useStats } from "@/hooks/use-stats";
 import { useQueueList, type QueueItem } from "@/hooks/use-queue";
-import { useLogs, type LogEntry } from "@/hooks/use-logs";
+import { useSystemMetrics } from "@/hooks/use-system-metrics";
 
-/** 仪表盘：VPS 控制台总台。顶部 3 张 KPI + 中部活跃队列/系统状态 + 底部最近活动 */
+/** 仪表盘:3 KPI + 活跃队列 / 系统状态 + 系统监控(CPU / 内存 / 磁盘 / 网络) */
 export const Route = createFileRoute("/")({
   component: DashboardPage,
 });
@@ -45,18 +35,11 @@ export const Route = createFileRoute("/")({
 function DashboardPage() {
   const stats = useStats();
   const queue = useQueueList();
-  const logs = useLogs(true);
-  const perf = usePerfTrend();
+  const sys = useSystemMetrics();
 
   const activeQueue: QueueItem[] = (queue.data || [])
     .filter((i) => ["running", "pending", "paused"].includes(i.status))
     .slice(0, 4);
-
-  const recentLogs: LogEntry[] = (logs.data || [])
-    .slice()
-    .reverse()
-    .filter((l) => l.level === "INFO" || l.level === "WARNING")
-    .slice(0, 10);
 
   return (
     <div className="space-y-6">
@@ -198,147 +181,60 @@ function DashboardPage() {
         </Card>
       </div>
 
-      {/* 底部：最近活动 + 性能趋势 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* 系统监控:CPU / 内存 / 磁盘 三个圆环 */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-muted-foreground" />
-                <h2 className="text-[15px] font-semibold">最近活动</h2>
-              </div>
-              <Link
-                to="/logs"
-                className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-              >
-                查看全部
-                <ChevronRight className="w-3 h-3" />
-              </Link>
-            </div>
-            {logs.isPending ? (
-              <div className="space-y-3">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-12 rounded-xl" />
-                ))}
-              </div>
-            ) : recentLogs.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">暂无活动记录</p>
-            ) : (
-              <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
-                {recentLogs.map((log) => (
-                  <ActivityRow key={log.id} log={log} />
-                ))}
-              </div>
-            )}
+          <CardContent className="p-0">
+            <MetricRing
+              label="CPU"
+              subLabel={sys.data ? `${sys.data.cpu.cores} 核心` : "—"}
+              percent={sys.data?.cpu.percent ?? 0}
+            />
           </CardContent>
         </Card>
-
-        <Card className="lg:col-span-2">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4 text-muted-foreground" />
-                <h2 className="text-[15px] font-semibold">
-                  抢购趋势
-                </h2>
-              </div>
-              <Chip tone="default">近 24 小时</Chip>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-              <SparkKpi label="抢购次数" value={String(perf.kpi.total)} data={perf.sparkTotal} />
-              <SparkKpi label="成功" value={String(perf.kpi.success)} data={perf.sparkSuccess} />
-              <SparkKpi label="失败" value={String(perf.kpi.failed)} data={perf.sparkFailed} />
-              <SparkKpi
-                label="成功率"
-                value={perf.kpi.total > 0 ? `${perf.kpi.successRate.toFixed(1)}%` : "—"}
-                data={perf.sparkRate}
-              />
-            </div>
-
-            <div style={{ width: "100%", height: 200 }}>
-              <ResponsiveContainer>
-                <AreaChart data={perf.perfData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="perfGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(var(--foreground))" stopOpacity={0.18} />
-                      <stop offset="100%" stopColor="hsl(var(--foreground))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis
-                    dataKey="time"
-                    stroke="hsl(var(--muted-foreground))"
-                    tickLine={false}
-                    axisLine={false}
-                    style={{ fontSize: 10 }}
-                    interval={3}
-                  />
-                  <YAxis
-                    stroke="hsl(var(--muted-foreground))"
-                    tickLine={false}
-                    axisLine={false}
-                    style={{ fontSize: 10 }}
-                    allowDecimals={false}
-                  />
-                  <RechartsTooltip
-                    contentStyle={{
-                      backgroundColor: "hsl(var(--popover))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "8px",
-                      fontSize: 12,
-                      color: "hsl(var(--popover-foreground))",
-                    }}
-                    cursor={{ stroke: "hsl(var(--border))" }}
-                    formatter={(_v: any, _name: any, item: any) => {
-                      const p = item?.payload || {};
-                      return [`总 ${p.value} · 成 ${p.success} · 败 ${p.failed}`, "抢购数"];
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="value"
-                    name="抢购数"
-                    stroke="hsl(var(--foreground))"
-                    strokeWidth={2}
-                    fill="url(#perfGradient)"
-                    dot={false}
-                    activeDot={{ r: 4, fill: "hsl(var(--foreground))", stroke: "hsl(var(--background))", strokeWidth: 2 }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+        <Card>
+          <CardContent className="p-0">
+            <MetricRing
+              label="内存"
+              subLabel={
+                sys.data
+                  ? `${formatBytesShort(sys.data.memory.usedBytes)} / ${formatBytesShort(sys.data.memory.totalBytes)}`
+                  : "—"
+              }
+              percent={sys.data?.memory.percent ?? 0}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-0">
+            <MetricRing
+              label={sys.data?.disk.path || "磁盘"}
+              subLabel={
+                sys.data
+                  ? `${formatBytesShort(sys.data.disk.usedBytes)} / ${formatBytesShort(sys.data.disk.totalBytes)}`
+                  : "—"
+              }
+              percent={sys.data?.disk.percent ?? 0}
+            />
           </CardContent>
         </Card>
       </div>
+
     </div>
   );
 }
 
-/** 小型 KPI + 迷你折线，用于性能趋势卡的顶部四联指标 */
-function SparkKpi({ label, value, data }: { label: string; value: string; data: SparkPoint[] }) {
-  return (
-    <div className="rounded-xl border border-border bg-secondary/40 px-3 py-2.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-[11px] text-muted-foreground">{label}</span>
-        <span className="text-sm font-semibold tabular-nums">{value}</span>
-      </div>
-      <div className="mt-1 h-7">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 2, right: 0, left: 0, bottom: 0 }}>
-            <Line
-              type="monotone"
-              dataKey="v"
-              stroke="hsl(var(--foreground))"
-              strokeWidth={1.5}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
+/** 字节短格式:1.5 GB / 11.4 GB 这种 */
+function formatBytesShort(n: number): string {
+  if (!n || n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB", "PB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(1)} ${units[i]}`;
 }
 
 /* ---------- 小组件 ---------- */
@@ -441,29 +337,3 @@ function SystemRow({
   );
 }
 
-function ActivityRow({ log }: { log: LogEntry }) {
-  const tone = log.level === "ERROR" ? "danger" : log.level === "WARNING" ? "warning" : "success";
-  const Icon = log.level === "ERROR" ? Info : log.level === "WARNING" ? Bell : CheckCircle2;
-  return (
-    <div className="flex items-start gap-3">
-      <div className={`w-7 h-7 rounded-full bg-${tone === "danger" ? "destructive" : tone}/10 flex items-center justify-center flex-shrink-0`}>
-        <Icon className={`w-3.5 h-3.5 text-${tone === "danger" ? "destructive" : tone}`} />
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-[13px] font-medium truncate" title={log.message}>{log.message}</p>
-        <p className="text-[11px] text-muted-foreground truncate mt-0.5">[{log.source}] · {formatRelativeTime(log.timestamp)}</p>
-      </div>
-    </div>
-  );
-}
-
-import { Calendar } from "lucide-react";
-function formatRelativeTime(ts: string): string {
-  const diff = Date.now() - new Date(ts).getTime();
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return "刚刚";
-  if (min < 60) return `${min} 分钟前`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  return `${Math.floor(hr / 24)} 天前`;
-}
