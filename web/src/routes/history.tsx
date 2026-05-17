@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Chip } from "@/components/common/Chip";
+import { AccountChip } from "@/components/common/AccountChip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import {
@@ -174,7 +175,12 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
-      <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>{item.planCode}</td>
+      <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {item.planCode}
+          <AccountChip accountId={item.accountId} />
+        </div>
+      </td>
       <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
       <td className={`px-4 py-3 text-muted-foreground max-w-[200px] truncate ${isExpired ? "line-through" : ""}`}>
         {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}

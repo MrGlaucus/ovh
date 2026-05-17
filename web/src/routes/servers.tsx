@@ -17,6 +17,8 @@ import { useServers, useAddToMonitor, type ServerPlan, type ServerOption } from 
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
+import { useDefaultAccount } from "@/hooks/use-accounts";
+import { AccountSelect } from "@/components/common/AccountSelect";
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
@@ -411,8 +413,13 @@ function DetailContent({
 }) {
   const addMon = useAddToMonitor();
   const create = useCreateQueueItem();
+  const defaultAcc = useDefaultAccount();
 
-  // 抢购表单状态：DC 多选 + 数量 + 重试间隔
+  // 抢购表单状态：DC 多选 + 数量 + 重试间隔 + 账户
+  const [accountId, setAccountId] = useState("");
+  useEffect(() => {
+    if (!accountId && defaultAcc) setAccountId(defaultAcc.id);
+  }, [defaultAcc?.id, accountId]);
   const [selectedDCs, setSelectedDCs] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [retryInterval, setRetryInterval] = useState("60");
@@ -592,30 +599,36 @@ function DetailContent({
           </div>
         </div>
 
-        {/* 抢购参数：数量 / 重试间隔 */}
+        {/* 抢购参数：账户 / 数量 / 重试间隔 */}
         <div className="border-t border-border pt-4">
           <h3 className="text-[13px] font-semibold mb-2.5 flex items-center gap-1.5">
             <ShoppingCart className="w-3.5 h-3.5 text-muted-foreground" />
             抢购参数
           </h3>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-3">
             <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label>
-              <Input
-                type="number"
-                min={1}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
+              <label className="block text-[11px] text-muted-foreground mb-1">OVH 账户 *</label>
+              <AccountSelect value={accountId} onChange={setAccountId} />
             </div>
-            <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">重试间隔（秒）</label>
-              <Input
-                type="number"
-                min={10}
-                value={retryInterval}
-                onChange={(e) => setRetryInterval(e.target.value)}
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-muted-foreground mb-1">每个数据中心数量</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-muted-foreground mb-1">重试间隔（秒）</label>
+                <Input
+                  type="number"
+                  min={10}
+                  value={retryInterval}
+                  onChange={(e) => setRetryInterval(e.target.value)}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -651,7 +664,12 @@ function DetailContent({
               toast.error("请至少选择一个数据中心");
               return;
             }
+            if (!accountId) {
+              toast.error("请选择 OVH 账户");
+              return;
+            }
             const result = await create.mutateAsync({
+              account_id: accountId,
               planCode: server.planCode,
               datacenters: selectedDCs,
               quantity: qty,

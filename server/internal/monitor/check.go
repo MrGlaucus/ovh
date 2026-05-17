@@ -290,8 +290,14 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				orderTargets = append(orderTargets, n)
 			}
 		}
+		// 触发条件:订阅勾了 AutoOrder + 指定了某个账户。
+		// 没账户(AutoOrderAccountID="") → 只发可用通知,不下单(用户明确决定)。
 		if len(orderTargets) > 0 && sub.AutoOrder {
-			m.batchOrder(planCode, configInfo, orderTargets, sub.Quantity)
+			if sub.AutoOrderAccountID == "" {
+				m.state.Logger.Info(fmt.Sprintf("[monitor] %s 触发 auto_order 但未指定账户,只通知不下单", planCode), "monitor")
+			} else {
+				m.batchOrder(planCode, configInfo, orderTargets, sub.Quantity, sub.AutoOrderAccountID)
+			}
 		}
 
 		// 发送有货通知

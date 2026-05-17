@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 export interface PurchaseHistory {
   id: string;
+  accountId: string;
   /** 关联的抢购队列任务 ID（后端 PurchaseHistoryEntry.taskId） */
   taskId?: string;
   planCode: string;

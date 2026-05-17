@@ -14,6 +14,8 @@ export interface VPSSubscription {
   notifyUnavailable: boolean;
   autoOrder?: boolean;
   quantity?: number;
+  /** 触发 auto-order 时用哪个 OVH 账户下单(空 = 只通知) */
+  autoOrderAccountId?: string;
   lastStatus: Record<string, string>;
   createdAt: string;
 }

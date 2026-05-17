@@ -27,22 +27,27 @@ type PriceInfo struct {
 	Items       []map[string]interface{} `json:"items"`
 }
 
-// GetInternal 对应 Python: _get_server_price_internal
-func GetInternal(state *app.State, planCode, datacenter string, options []string) Result {
+// GetInternal 询价。accountID 决定用哪个账户调 OVH(空 = 默认账户),
+// 以及购物车走哪个 subsidiary(账户的 zone)。多账户必须区分。
+func GetInternal(state *app.State, accountID, planCode, datacenter string, options []string) Result {
 	if options == nil {
 		options = []string{}
 	}
 	apiDC := ovh.ConvertDisplayDCToAPIDC(datacenter)
 
-	client, err := state.OVH.Client()
+	client, err := state.OVH.ClientFor(accountID)
 	if err != nil {
-		return Result{Success: false, Error: "未配置OVH API密钥"}
+		return Result{Success: false, Error: "未配置OVH API密钥: " + err.Error()}
+	}
+	acc, _ := state.FindAccount(accountID)
+	subsidiary := acc.Zone
+	if subsidiary == "" {
+		subsidiary = "IE"
 	}
 
 	state.Logger.Info(fmt.Sprintf("查询 %s 的配置价格，数据中心: %s (原始: %s), 选项: %v",
 		planCode, apiDC, datacenter, options), "price")
 
-	cfg := state.Config.Get()
 	cartID := ""
 
 	cleanup := func() {
@@ -58,7 +63,7 @@ func GetInternal(state *app.State, planCode, datacenter string, options []string
 	// 1. 创建购物车
 	var cartResult map[string]interface{}
 	if err := client.Post("/order/cart", map[string]interface{}{
-		"ovhSubsidiary": cfg.Zone,
+		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
 		return Result{Success: false, Error: err.Error()}
 	}

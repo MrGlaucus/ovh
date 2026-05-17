@@ -6,8 +6,10 @@ import (
 )
 
 // AddSubscription 对应 Python: add_subscription
+// autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
-	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int) {
+	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
+	autoOrderAccountID string) {
 
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
@@ -31,6 +33,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 				s.Quantity = 0
 			}
 			s.ServerName = serverName
+			s.AutoOrderAccountID = autoOrderAccountID
 			if s.History == nil {
 				s.History = []HistoryEntry{}
 			}
@@ -48,13 +51,14 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 		history = []HistoryEntry{}
 	}
 	sub := &Subscription{
-		PlanCode:          planCode,
-		Datacenters:       datacenters,
-		NotifyAvailable:   notifyAvailable,
-		NotifyUnavailable: notifyUnavailable,
-		LastStatus:        lastStatus,
-		CreatedAt:         time.Now().Format(time.RFC3339Nano),
-		History:           history,
+		PlanCode:           planCode,
+		Datacenters:        datacenters,
+		NotifyAvailable:    notifyAvailable,
+		NotifyUnavailable:  notifyUnavailable,
+		LastStatus:         lastStatus,
+		CreatedAt:          time.Now().Format(time.RFC3339Nano),
+		History:            history,
+		AutoOrderAccountID: autoOrderAccountID,
 	}
 	if autoOrder {
 		if quantity < 1 {

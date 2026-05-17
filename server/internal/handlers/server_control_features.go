@@ -13,7 +13,7 @@ import (
 func GetBurst(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -37,7 +37,7 @@ func GetBurst(state *app.State) gin.HandlerFunc {
 func UpdateBurst(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -66,7 +66,7 @@ func UpdateBurst(state *app.State) gin.HandlerFunc {
 func GetFirewall(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -89,7 +89,7 @@ func GetFirewall(state *app.State) gin.HandlerFunc {
 func UpdateFirewall(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -122,7 +122,7 @@ func UpdateFirewall(state *app.State) gin.HandlerFunc {
 func GetBackupFTP(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -144,7 +144,7 @@ func GetBackupFTP(state *app.State) gin.HandlerFunc {
 func ActivateBackupFTP(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -173,7 +173,7 @@ func ActivateBackupFTP(state *app.State) gin.HandlerFunc {
 func DeleteBackupFTP(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -192,7 +192,7 @@ func DeleteBackupFTP(state *app.State) gin.HandlerFunc {
 func GetBackupFTPAccess(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -222,7 +222,7 @@ func GetBackupFTPAccess(state *app.State) gin.HandlerFunc {
 func AddBackupFTPAccess(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -262,7 +262,7 @@ func DeleteBackupFTPAccess(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		ipBlock := c.Param("ip_block")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -280,7 +280,7 @@ func DeleteBackupFTPAccess(state *app.State) gin.HandlerFunc {
 func ChangeBackupFTPPassword(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -299,7 +299,7 @@ func ChangeBackupFTPPassword(state *app.State) gin.HandlerFunc {
 func GetBackupFTPAuthorizableBlocks(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -317,7 +317,7 @@ func GetBackupFTPAuthorizableBlocks(state *app.State) gin.HandlerFunc {
 func GetBackupCloud(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -339,7 +339,7 @@ func GetBackupCloud(state *app.State) gin.HandlerFunc {
 func GetBackupCloudOfferDetails(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

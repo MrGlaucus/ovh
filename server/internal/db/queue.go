@@ -10,6 +10,7 @@ import (
 // queueRow 是表结构的一一对应（snake_case 列名 + JSON 列做 string）
 type queueRow struct {
 	ID                 string  `db:"id"`
+	AccountID          string  `db:"account_id"`
 	PlanCode           string  `db:"plan_code"`
 	Datacenter         string  `db:"datacenter"`
 	OptionsJSON        string  `db:"options"`
@@ -36,6 +37,7 @@ func rowToQueueItem(r queueRow) types.QueueItem {
 	}
 	return types.QueueItem{
 		ID:                 r.ID,
+		AccountID:          r.AccountID,
 		PlanCode:           r.PlanCode,
 		Datacenter:         r.Datacenter,
 		Options:            opts,
@@ -69,6 +71,7 @@ func queueItemToRow(q types.QueueItem) (queueRow, error) {
 	}
 	return queueRow{
 		ID:                 q.ID,
+		AccountID:          q.AccountID,
 		PlanCode:           q.PlanCode,
 		Datacenter:         q.Datacenter,
 		OptionsJSON:        string(optsJSON),
@@ -115,6 +118,7 @@ func (db *DB) UpsertQueueItem(q types.QueueItem) error {
 		 :retry_interval, :retry_count, :max_retries, :last_check_time,
 		 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
 		ON CONFLICT(id) DO UPDATE SET
+		  account_id            = excluded.account_id,
 		  plan_code             = excluded.plan_code,
 		  datacenter            = excluded.datacenter,
 		  options               = excluded.options,
@@ -153,11 +157,11 @@ func (db *DB) ReplaceQueue(items []types.QueueItem) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO queue
-			(id, plan_code, datacenter, options, status, created_at, updated_at,
+			(id, account_id, plan_code, datacenter, options, status, created_at, updated_at,
 			 retry_interval, retry_count, max_retries, last_check_time,
 			 quick_order, priority, from_telegram, config_sniper_task_id)
 			VALUES
-			(:id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
+			(:id, :account_id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
 			 :retry_interval, :retry_count, :max_retries, :last_check_time,
 			 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
 		`, r)

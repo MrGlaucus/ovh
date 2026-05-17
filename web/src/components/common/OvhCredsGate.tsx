@@ -6,14 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import { OVH_SUBSIDIARIES, defaultSubsidiaryForEndpoint } from "@/lib/ovh-subsidiaries";
+import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 
-const PREFETCH_STALE = 2 * 60 * 60_000; // 与 useServers / useOvhCatalog / useAvailability staleTime 一致
+const PREFETCH_STALE = 2 * 60 * 60_000;
 
-/** 凭据存好后立刻预热三件套：服务器目录 / catalog(价格) / 可用性。
- *  fire-and-forget，写到 React Query 缓存里，
- *  用户切到 servers 页时直接命中，不会再看到"加载中"。
- */
+/** 凭据存好后立刻预热三件套. 用户切到 servers 页时直接命中,不会再"加载中" */
 function prefetchAfterCredsSaved(qc: ReturnType<typeof useQueryClient>, zone: string) {
   void qc.prefetchQuery({
     queryKey: ["servers", "list", { showApiServers: true }] as const,
@@ -33,7 +30,6 @@ function prefetchAfterCredsSaved(qc: ReturnType<typeof useQueryClient>, zone: st
     },
     staleTime: PREFETCH_STALE,
   });
-  // 可用性走 OVH 公开接口，按 zone 选 base URL
   const meta = OVH_SUBSIDIARIES.find((s) => s.code === zone);
   const baseUrl =
     meta?.endpoint === "ovh-us"
@@ -53,60 +49,48 @@ function prefetchAfterCredsSaved(qc: ReturnType<typeof useQueryClient>, zone: st
   });
 }
 
-type GateState = "checking" | "needs-creds" | "ok";
+type GateState = "checking" | "needs-account" | "ok";
 
-interface CredsForm {
+interface AccountForm {
+  name: string;
   appKey: string;
   appSecret: string;
   consumerKey: string;
-  zone: string; // OVH 子公司，endpoint 由它自动派生
+  zone: string;
 }
 
-const DEFAULT_FORM: CredsForm = {
+const DEFAULT_FORM: AccountForm = {
+  name: "默认账户",
   appKey: "",
   appSecret: "",
   consumerKey: "",
   zone: "IE",
 };
 
-/** 根据 zone 推 endpoint；未匹配走 ovh-eu */
 function endpointForZone(zone: string): string {
   const hit = OVH_SUBSIDIARIES.find((s) => s.code === zone);
   return hit?.endpoint || "ovh-eu";
 }
 
 /**
- * OVH 凭据强制配置：
- * - 启动时拉 /api/settings；三个凭据字段任一为空 → 整屏拦截，必须填完才能进入应用。
- * - 提交时调 /api/verify-auth 真实验证 OVH 那边能不能用；失败留在表单。
- * - 嵌在 AuthGate 之后：先验证后端访问密码，再验证 OVH 凭据；都通过才放行。
+ * 多账户 gate:
+ * - 启动时拉 /api/accounts;一个账户都没有 → 整屏拦截,必须先添加一个账户
+ * - 已有任意账户 → 放行(进设置页可以加更多)
  */
 export function OvhCredsGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GateState>("checking");
-  const [form, setForm] = useState<CredsForm>(DEFAULT_FORM);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .get("/settings")
+      .get("/accounts")
       .then((res) => {
         if (cancelled) return;
-        const cfg = res.data || {};
-        const has = !!(cfg.appKey && cfg.appSecret && cfg.consumerKey);
-        if (has) {
-          setState("ok");
-        } else {
-          setForm({
-            appKey: cfg.appKey || "",
-            appSecret: cfg.appSecret || "",
-            consumerKey: cfg.consumerKey || "",
-            zone: cfg.zone || defaultSubsidiaryForEndpoint(cfg.endpoint),
-          });
-          setState("needs-creds");
-        }
+        const accs = res.data?.accounts || [];
+        setState(accs.length > 0 ? "ok" : "needs-account");
       })
       .catch(() => {
-        // 拿不到 settings：可能网络错或后端挂，先放行让单请求层报错。
+        // 后端挂了或还没启动,先放行让单请求层报错
         if (!cancelled) setState("ok");
       });
     return () => {
@@ -122,29 +106,24 @@ export function OvhCredsGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (state === "needs-creds") {
-    return <CredsOverlay initialForm={form} onSuccess={() => setState("ok")} />;
+  if (state === "needs-account") {
+    return <AccountOverlay onSuccess={() => setState("ok")} />;
   }
 
   return <>{children}</>;
 }
 
-function CredsOverlay({
-  initialForm,
-  onSuccess,
-}: {
-  initialForm: CredsForm;
-  onSuccess: () => void;
-}) {
+function AccountOverlay({ onSuccess }: { onSuccess: () => void }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState<CredsForm>(initialForm);
+  const [form, setForm] = useState<AccountForm>(DEFAULT_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>("");
 
-  const set = (k: keyof CredsForm, v: string) =>
+  const set = (k: keyof AccountForm, v: string) =>
     setForm((prev) => ({ ...prev, [k]: v }));
 
   const canSubmit =
+    form.name.trim() &&
     form.appKey.trim() &&
     form.appSecret.trim() &&
     form.consumerKey.trim() &&
@@ -156,24 +135,29 @@ function CredsOverlay({
     setError("");
     try {
       const zone = form.zone || "IE";
-      await api.post("/settings", {
+      const res = await api.post("/accounts", {
+        name: form.name.trim(),
         appKey: form.appKey.trim(),
         appSecret: form.appSecret.trim(),
         consumerKey: form.consumerKey.trim(),
         zone,
         endpoint: endpointForZone(zone),
+        setDefault: true, // 首次创建自动设默认
       });
-      const verify = await api.post("/verify-auth", {});
-      if (verify.data?.valid) {
-        // 首次保存凭据后立即预热三件套（servers / catalog / availability），
-        // 用户切到服务器列表页就能直接显示，不会再走"加载中"
+      qc.invalidateQueries({ queryKey: ["accounts", "list"] });
+      if (res.data?.valid === false) {
+        setError(
+          "账户已保存,但 OVH 验证失败。检查 APP KEY / APP SECRET / CONSUMER KEY 是否匹配所选子公司。可以先进入再到设置页修复。"
+        );
+        // 验证失败也放行,不强卡用户
         prefetchAfterCredsSaved(qc, zone);
         onSuccess();
-      } else {
-        setError("OVH 验证失败：检查 APP KEY / APP SECRET / CONSUMER KEY 是否匹配所选子公司");
+        return;
       }
+      prefetchAfterCredsSaved(qc, zone);
+      onSuccess();
     } catch (e: any) {
-      setError(e?.response?.data?.message || e?.message || "保存失败");
+      setError(e?.response?.data?.error || e?.message || "保存失败");
     } finally {
       setSubmitting(false);
     }
@@ -187,16 +171,24 @@ function CredsOverlay({
             <Globe className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold leading-tight">配置 OVH API 凭据</h2>
+            <h2 className="text-lg font-semibold leading-tight">添加第一个 OVH 账户</h2>
             <p className="text-[12px] text-muted-foreground mt-0.5">
-              首次使用需要填写 OVH 的三个密钥，否则无法访问任何功能
+              系统支持多账户,先添加一个用起来,后续可以在"设置 → 账户"加更多
             </p>
           </div>
         </div>
 
         <div className="space-y-3.5">
+          <Field label="账户名称 *" hint="用户起的别名,比如 主号 / 小号 A,只用于本地区分">
+            <Input
+              autoFocus
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              placeholder="主号"
+            />
+          </Field>
           <Field label="APP KEY *">
-            <PasswordInput value={form.appKey} onChange={(v) => set("appKey", v)} placeholder="xxxxxxxxxxxxxxxx" autoFocus />
+            <PasswordInput value={form.appKey} onChange={(v) => set("appKey", v)} placeholder="xxxxxxxxxxxxxxxx" />
           </Field>
           <Field label="APP SECRET *">
             <PasswordInput value={form.appSecret} onChange={(v) => set("appSecret", v)} placeholder="xxxxxxxxxxxxxxxx" />
@@ -232,18 +224,18 @@ function CredsOverlay({
           {submitting ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin mr-1.5" />
-              验证并保存…
+              验证并创建…
             </>
           ) : (
             <>
               <SettingsIcon className="w-4 h-4 mr-1.5" />
-              保存并进入
+              创建并进入
             </>
           )}
         </Button>
 
         <p className="text-[10px] text-muted-foreground leading-relaxed">
-          凭据保存到后端 SQLite。还没有？去
+          凭据保存到本地 SQLite,不会上传。还没有?去
           <a
             href="https://eu.api.ovh.com/createToken/"
             target="_blank"
@@ -259,11 +251,12 @@ function CredsOverlay({
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
       <label className="block text-[12px] font-medium mb-1.5">{label}</label>
       {children}
+      {hint && <p className="text-[11px] text-muted-foreground mt-1">{hint}</p>}
     </div>
   );
 }

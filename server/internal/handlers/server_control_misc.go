@@ -12,7 +12,7 @@ import (
 func GetSecondaryDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -41,7 +41,7 @@ func GetSecondaryDNS(state *app.State) gin.HandlerFunc {
 func AddSecondaryDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -67,7 +67,7 @@ func DeleteSecondaryDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		domain := c.Param("domain")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -85,7 +85,7 @@ func DeleteSecondaryDNS(state *app.State) gin.HandlerFunc {
 func GetVirtualMACList(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -114,7 +114,7 @@ func GetVirtualMACList(state *app.State) gin.HandlerFunc {
 func CreateVirtualMAC(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -147,7 +147,7 @@ func CreateVirtualMAC(state *app.State) gin.HandlerFunc {
 func GetVirtualNetworkInterfaces(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -177,7 +177,7 @@ func EnableVirtualNetworkInterface(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		id := c.Param("uuid")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -195,7 +195,7 @@ func DisableVirtualNetworkInterface(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		id := c.Param("uuid")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -213,7 +213,7 @@ func DisableVirtualNetworkInterface(state *app.State) gin.HandlerFunc {
 func GetVRackList(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -243,7 +243,7 @@ func RemoveFromVRack(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		vrack := c.Param("vrack")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -261,7 +261,7 @@ func RemoveFromVRack(state *app.State) gin.HandlerFunc {
 func GetOrderableBandwidth(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -278,7 +278,7 @@ func GetOrderableBandwidth(state *app.State) gin.HandlerFunc {
 func GetOrderableTraffic(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -295,7 +295,7 @@ func GetOrderableTraffic(state *app.State) gin.HandlerFunc {
 func GetOrderableIP(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -313,7 +313,7 @@ func GetOrderableIP(state *app.State) gin.HandlerFunc {
 func GetServerOptions(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -343,7 +343,7 @@ func GetServerOptions(state *app.State) gin.HandlerFunc {
 func GetIPSpecs(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -360,7 +360,7 @@ func GetIPSpecs(state *app.State) gin.HandlerFunc {
 func GetIPCanBeMovedTo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -377,7 +377,7 @@ func GetIPCanBeMovedTo(state *app.State) gin.HandlerFunc {
 func GetIPCountryAvailable(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -394,7 +394,7 @@ func GetIPCountryAvailable(state *app.State) gin.HandlerFunc {
 func MoveIP(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -425,7 +425,7 @@ func MoveIP(state *app.State) gin.HandlerFunc {
 func GetOngoingTasks(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -443,7 +443,7 @@ func GetOngoingTasks(state *app.State) gin.HandlerFunc {
 func GetCompliantWindowsVersions(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -460,7 +460,7 @@ func GetCompliantWindowsVersions(state *app.State) gin.HandlerFunc {
 func GetCompliantWindowsSqlVersions(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -478,7 +478,7 @@ func GetCompliantWindowsSqlVersions(state *app.State) gin.HandlerFunc {
 func TerminateService(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -496,7 +496,7 @@ func TerminateService(state *app.State) gin.HandlerFunc {
 func ConfirmTermination(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -525,7 +525,7 @@ func ConfirmTermination(state *app.State) gin.HandlerFunc {
 func GetSPLAList(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -555,7 +555,7 @@ func GetSPLAList(state *app.State) gin.HandlerFunc {
 func CreateSPLA(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -592,7 +592,7 @@ func CreateSPLA(state *app.State) gin.HandlerFunc {
 func GetBIOSSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -616,7 +616,7 @@ func GetBIOSSettings(state *app.State) gin.HandlerFunc {
 func GetBIOSSettingsSGX(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

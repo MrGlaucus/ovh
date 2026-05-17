@@ -177,11 +177,14 @@ func (m *Monitor) Stop() bool {
 	return true
 }
 
-// batchOrder 对应 Python: 监控->下单批量调用 quick-order
-// 注意：Python `range(quantity)` 在 quantity=0 时跳过，不下单；
-// quantity 没设置时由 `subscription.get("quantity", 1)` 默认为 1。
-// 这里如果上层传 0 表示订阅明确禁用下单，必须保留这个语义。
-func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{}, targets []notification, quantity int) {
+// batchOrder 对应 Python: 监控->下单批量调用 quick-order。
+// accountID:auto_order 账户;空时 batchOrder 不应该被调到(check.go 的 guard 已挡住),
+// 这里再做一次防御性检查。
+func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{}, targets []notification, quantity int, accountID string) {
+	if accountID == "" {
+		m.state.Logger.Warn("[monitor->order] 跳过自动下单: 订阅未指定 auto_order 账户", "monitor")
+		return
+	}
 	if quantity < 0 {
 		quantity = 0
 	}
@@ -209,15 +212,16 @@ func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{},
 	for _, n := range targets {
 		for i := 0; i < quantity; i++ {
 			payload := map[string]interface{}{
-				"planCode":            planCode,
-				"datacenter":          n.dc,
-				"options":             options,
-				"fromMonitor":         true,
-				"skipDuplicateCheck":  true,
+				"account_id":         accountID,
+				"planCode":           planCode,
+				"datacenter":         n.dc,
+				"options":            options,
+				"fromMonitor":        true,
+				"skipDuplicateCheck": true,
 			}
 			body, _ := json.Marshal(payload)
 			req, _ := http.NewRequest(http.MethodPost,
-				"http://127.0.0.1:"+m.state.Port+"/api/config-sniper/quick-order",
+				"http://127.0.0.1:"+m.state.Port+"/api/queue/quick-order",
 				bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-API-Key", m.state.APIKey)

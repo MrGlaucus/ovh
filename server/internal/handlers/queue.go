@@ -12,20 +12,31 @@ import (
 )
 
 // AddQueueItem POST /api/queue
+// 多账户:body 必须带 account_id,后端用它确定下单走哪个账户
 func AddQueueItem(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
+			AccountID     string   `json:"account_id"`
 			PlanCode      string   `json:"planCode"`
 			Datacenter    string   `json:"datacenter"`
 			Options       []string `json:"options"`
 			RetryInterval int      `json:"retryInterval"`
 		}
 		_ = c.ShouldBindJSON(&body)
+		if body.AccountID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "缺少 account_id"})
+			return
+		}
+		if _, ok := state.FindAccount(body.AccountID); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "account_id 不存在"})
+			return
+		}
 		if body.RetryInterval == 0 {
 			body.RetryInterval = 30
 		}
 		item := types.QueueItem{
 			ID:            uuid.NewString(),
+			AccountID:     body.AccountID,
 			PlanCode:      body.PlanCode,
 			Datacenter:    body.Datacenter,
 			Options:       body.Options,
@@ -40,7 +51,7 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 		state.Queue = append(state.Queue, item)
 		state.QueueMu.Unlock()
 		_ = state.SaveQueue()
-		state.Logger.Info("添加任务 "+item.ID+" ("+item.PlanCode+" 在 "+item.Datacenter+") 到队列并立即启动 (状态: running)", "")
+		state.Logger.Info("添加任务 "+item.ID+" ("+item.PlanCode+" 在 "+item.Datacenter+", 账户 "+body.AccountID+") 到队列并立即启动 (状态: running)", "")
 		c.JSON(http.StatusOK, gin.H{"status": "success", "id": item.ID})
 	}
 }

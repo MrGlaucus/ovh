@@ -36,7 +36,9 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sub := strings.ToUpper(strings.TrimSpace(c.Query("subsidiary")))
 		if sub == "" {
-			sub = state.Config.Get().Zone
+			// 多账户:落到默认账户的 zone,不读 state.Config
+			acc, _ := state.FindAccount("")
+			sub = strings.ToUpper(acc.Zone)
 			if sub == "" {
 				sub = "IE"
 			}

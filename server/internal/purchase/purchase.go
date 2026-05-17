@@ -15,10 +15,11 @@ import (
 )
 
 // PurchaseServer 对应 Python: purchase_server
-// 返回是否成功
+// 返回是否成功。多账户:用 item.AccountID 取对应 OVH client 和 subsidiary。
 func PurchaseServer(state *app.State, item *types.QueueItem) bool {
-	client, err := state.OVH.Client()
+	client, err := state.OVH.ClientFor(item.AccountID)
 	if err != nil {
+		state.Logger.Error("PurchaseServer: 取 OVH client 失败 ("+item.AccountID+"): "+err.Error(), "purchase")
 		return false
 	}
 
@@ -85,13 +86,18 @@ func PurchaseServer(state *app.State, item *types.QueueItem) bool {
 		}
 	}
 
-	cfg := state.Config.Get()
+	// 多账户:购物车 subsidiary 跟着账户走,不再读全局 cfg
+	acc, _ := state.FindAccount(item.AccountID)
+	subsidiary := acc.Zone
+	if subsidiary == "" {
+		subsidiary = "IE"
+	}
 
 	// 创建购物车
-	state.Logger.Info(fmt.Sprintf("为区域 %s 创建购物车", cfg.Zone), "purchase")
+	state.Logger.Info(fmt.Sprintf("为区域 %s 创建购物车 (账户 %s)", subsidiary, acc.Name), "purchase")
 	var cartResult map[string]interface{}
 	if err := client.Post("/order/cart", map[string]interface{}{
-		"ovhSubsidiary": cfg.Zone,
+		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 		recordFailure(state, item, err.Error())
@@ -360,8 +366,9 @@ func PurchaseServer(state *app.State, item *types.QueueItem) bool {
 	state.Logger.Info(fmt.Sprintf("成功购买 %s 在 %s (订单ID: %s, URL: %s)",
 		item.PlanCode, item.Datacenter, orderID, orderURL), "purchase")
 
-	// 发送 Telegram 成功通知
-	if cfg.TgToken != "" && cfg.TgChatID != "" {
+	// 发送 Telegram 成功通知。TG token / chat id 仍然走全局 state.Config(Telegram 是平台级配置,跨账户共享)
+	tgCfg := state.Config.Get()
+	if tgCfg.TgToken != "" && tgCfg.TgChatID != "" {
 		msg := fmt.Sprintf("🎉 OVH 服务器抢购成功！🎉\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n",
 			item.PlanCode, item.Datacenter, orderID, orderURL)
 		if len(item.Options) > 0 {

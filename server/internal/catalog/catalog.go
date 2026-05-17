@@ -26,7 +26,7 @@ type ConfigAvailability struct {
 }
 
 func CheckServerAvailabilityWithConfigs(state *app.State, planCode string) map[string]*ConfigAvailability {
-	client, err := state.OVH.Client()
+	client, err := state.OVH.ClientFor("")
 	if err != nil {
 		return map[string]*ConfigAvailability{}
 	}
@@ -48,10 +48,14 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string) map[s
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
 
-	// 取一次目录用于匹配 API2 选项
-	cfg := state.Config.Get()
+	// 取一次目录用于匹配 API2 选项;多账户:zone 跟默认账户走
+	acc, _ := state.FindAccount("")
+	subsidiary := acc.Zone
+	if subsidiary == "" {
+		subsidiary = "IE"
+	}
 	var catalogResp map[string]interface{}
-	_ = client.Get("/order/catalog/public/eco?ovhSubsidiary="+cfg.Zone, &catalogResp)
+	_ = client.Get("/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &catalogResp)
 
 	result := map[string]*ConfigAvailability{}
 	for _, item := range availabilities {
@@ -174,7 +178,7 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string) map[s
 
 // CheckServerAvailability 对应 Python: check_server_availability（带 options 精确匹配）
 func CheckServerAvailability(state *app.State, planCode string, options []string) (map[string]string, error) {
-	client, err := state.OVH.Client()
+	client, err := state.OVH.ClientFor("")
 	if err != nil {
 		return nil, err
 	}
@@ -345,17 +349,22 @@ var dcNameMap = map[string][2]string{
 	"eri": {"厄斯沃尔", "英国"},
 }
 
-// LoadServerList 对应 Python: load_server_list
+// LoadServerList 对应 Python: load_server_list。
+// 多账户:用默认账户的 zone 作 ovhSubsidiary,不读全局 state.Config(新建账户不会写 kv['config'])
 func LoadServerList(state *app.State) []types.ServerPlan {
-	client, err := state.OVH.Client()
+	client, err := state.OVH.ClientFor("")
 	if err != nil {
 		state.Logger.Error("Failed to load server list: "+err.Error(), "")
 		return nil
 	}
-	cfg := state.Config.Get()
+	acc, _ := state.FindAccount("")
+	subsidiary := acc.Zone
+	if subsidiary == "" {
+		subsidiary = "IE"
+	}
 
 	var catalogResp map[string]interface{}
-	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+cfg.Zone, &catalogResp); err != nil {
+	if err := client.Get("/order/catalog/public/eco?ovhSubsidiary="+subsidiary, &catalogResp); err != nil {
 		state.Logger.Error("Failed to load server list: "+err.Error(), "")
 		return nil
 	}

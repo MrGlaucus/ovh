@@ -6,8 +6,38 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/gin-gonic/gin"
 	ovhsdk "github.com/ovh/go-ovh/ovh"
+
+	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
 )
+
+// ovhClientFor 从请求 ?account=xxx 取账户 ID 拿对应 OVH client;
+// 空时(没传 ?account)走默认账户;凭据缺失返回 error,调用方按原 Client() 错误流程处理。
+// 大部分 handler 都是 `state.OVH.Client()` 模式,这个 helper 是 1:1 替换,
+// 把单账户改成多账户路由,语义最小化变化。
+func ovhClientFor(state *app.State, c *gin.Context) (*ovhsdk.Client, error) {
+	return state.OVH.ClientFor(c.Query("account"))
+}
+
+// ovhAccountFor 从请求 ?account=xxx 取账户实体(给需要原始凭据/endpoint 的 raw HTTP 调用用)。
+// 空 → 默认账户;不存在 → ok=false。
+func ovhAccountFor(state *app.State, c *gin.Context) (types.OVHAccount, bool) {
+	return state.FindAccount(c.Query("account"))
+}
+
+// ovhAPIBaseURL 把 endpoint(ovh-eu / ovh-us / ovh-ca)映射成 OVH REST API base URL
+func ovhAPIBaseURL(endpoint string) string {
+	switch endpoint {
+	case "ovh-us":
+		return "https://api.us.ovhcloud.com"
+	case "ovh-ca":
+		return "https://ca.api.ovh.com"
+	default:
+		return "https://eu.api.ovh.com"
+	}
+}
 
 // parallelGetDetails 通用并发 GET helper。对 keys[i] 用 pathFn(keys[i]) 拼出路径，
 // 并发拉到 detail。最多 concurrency 个并发。结果按索引对齐，失败位 nil。

@@ -18,7 +18,7 @@ func noOVHRespAccount(c *gin.Context) {
 // GetAccountInfo GET /api/ovh/account/info
 func GetAccountInfo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -37,7 +37,7 @@ func GetAccountInfo(state *app.State) gin.HandlerFunc {
 // GetAccountRefunds GET /api/ovh/account/refunds
 func GetAccountRefunds(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -70,7 +70,7 @@ func GetAccountRefunds(state *app.State) gin.HandlerFunc {
 // GetCreditBalance GET /api/ovh/account/credit-balance
 func GetCreditBalance(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -99,7 +99,7 @@ func GetCreditBalance(state *app.State) gin.HandlerFunc {
 // GetEmailHistory GET /api/ovh/account/email-history
 func GetEmailHistory(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -136,7 +136,7 @@ func GetEmailHistory(state *app.State) gin.HandlerFunc {
 // GetContactChangeRequests GET /api/ovh/contact-change-requests
 func GetContactChangeRequests(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -172,7 +172,7 @@ func GetContactChangeRequestDetail(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		taskIDStr := c.Param("task_id")
 		taskID, _ := strconv.ParseInt(taskIDStr, 10, 64)
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -193,7 +193,7 @@ func AcceptContactChangeRequest(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		taskIDStr := c.Param("task_id")
 		taskID, _ := strconv.ParseInt(taskIDStr, 10, 64)
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -223,7 +223,7 @@ func RefuseContactChangeRequest(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		taskIDStr := c.Param("task_id")
 		taskID, _ := strconv.ParseInt(taskIDStr, 10, 64)
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -253,7 +253,7 @@ func ResendContactChangeEmail(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		taskIDStr := c.Param("task_id")
 		taskID, _ := strconv.ParseInt(taskIDStr, 10, 64)
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -271,7 +271,7 @@ func ResendContactChangeEmail(state *app.State) gin.HandlerFunc {
 // GetSubAccounts GET /api/ovh/account/sub-accounts
 func GetSubAccounts(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return
@@ -300,7 +300,7 @@ func GetSubAccounts(state *app.State) gin.HandlerFunc {
 // GetAccountBills GET /api/ovh/account/bills
 func GetAccountBills(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHRespAccount(c)
 			return

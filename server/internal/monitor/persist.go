@@ -34,16 +34,17 @@ func toDBSub(s *Subscription) types.Subscription {
 		last = map[string]string{}
 	}
 	return types.Subscription{
-		PlanCode:          s.PlanCode,
-		Datacenters:       dcs,
-		NotifyAvailable:   s.NotifyAvailable,
-		NotifyUnavailable: s.NotifyUnavailable,
-		LastStatus:        last,
-		CreatedAt:         s.CreatedAt,
-		History:           hist,
-		ServerName:        s.ServerName,
-		AutoOrder:         s.AutoOrder,
-		Quantity:          s.Quantity,
+		PlanCode:           s.PlanCode,
+		Datacenters:        dcs,
+		NotifyAvailable:    s.NotifyAvailable,
+		NotifyUnavailable:  s.NotifyUnavailable,
+		LastStatus:         last,
+		CreatedAt:          s.CreatedAt,
+		History:            hist,
+		ServerName:         s.ServerName,
+		AutoOrder:          s.AutoOrder,
+		Quantity:           s.Quantity,
+		AutoOrderAccountID: s.AutoOrderAccountID,
 	}
 }
 
@@ -68,16 +69,17 @@ func fromDBSub(s types.Subscription) *Subscription {
 		last = map[string]string{}
 	}
 	return &Subscription{
-		PlanCode:          s.PlanCode,
-		Datacenters:       dcs,
-		NotifyAvailable:   s.NotifyAvailable,
-		NotifyUnavailable: s.NotifyUnavailable,
-		LastStatus:        last,
-		CreatedAt:         s.CreatedAt,
-		History:           hist,
-		ServerName:        s.ServerName,
-		AutoOrder:         s.AutoOrder,
-		Quantity:          s.Quantity,
+		PlanCode:           s.PlanCode,
+		Datacenters:        dcs,
+		NotifyAvailable:    s.NotifyAvailable,
+		NotifyUnavailable:  s.NotifyUnavailable,
+		LastStatus:         last,
+		CreatedAt:          s.CreatedAt,
+		History:            hist,
+		ServerName:         s.ServerName,
+		AutoOrder:          s.AutoOrder,
+		Quantity:           s.Quantity,
+		AutoOrderAccountID: s.AutoOrderAccountID,
 	}
 }
 

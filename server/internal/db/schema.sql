@@ -15,6 +15,25 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 
 -- ===========================================
+-- ovh_accounts: OVH 多账户凭据
+-- 每条记录代表一个 OVH 账户;is_default=1 的那条用于未指定账户时 fallback
+-- queue / history / config_sniper_tasks 的 account_id 引用这里
+-- ===========================================
+CREATE TABLE IF NOT EXISTS ovh_accounts (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  endpoint     TEXT NOT NULL,
+  zone         TEXT NOT NULL,
+  app_key      TEXT NOT NULL,
+  app_secret   TEXT NOT NULL,
+  consumer_key TEXT NOT NULL,
+  iam          TEXT NOT NULL,
+  is_default   INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ovh_accounts_default ON ovh_accounts(is_default);
+
+-- ===========================================
 -- queue: 抢购队列任务
 -- ===========================================
 CREATE TABLE IF NOT EXISTS queue (
@@ -114,18 +133,5 @@ CREATE TABLE IF NOT EXISTS catalogs (
   updated_at INTEGER NOT NULL -- Unix epoch ms
 );
 
--- ===========================================
--- config_sniper_tasks: 配置绑定狙击任务
--- ===========================================
-CREATE TABLE IF NOT EXISTS config_sniper_tasks (
-  id                TEXT PRIMARY KEY,
-  api1_plan_code    TEXT NOT NULL,
-  bound_config      TEXT NOT NULL DEFAULT '{}',  -- JSON
-  match_status      TEXT NOT NULL,               -- matched / pending_match / completed
-  matched_api2      TEXT NOT NULL DEFAULT '[]',  -- JSON []string
-  known_plancodes   TEXT NOT NULL DEFAULT '[]',  -- JSON []string
-  enabled           INTEGER NOT NULL DEFAULT 1,
-  last_check        TEXT,                        -- nullable
-  created_at        TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sniper_match_status ON config_sniper_tasks(match_status);
+-- (旧:config_sniper_tasks 表已删除,功能下线。老数据库残留的该表 / config_sniper_task_id 列保留不动,
+--  无害,无人读写。)

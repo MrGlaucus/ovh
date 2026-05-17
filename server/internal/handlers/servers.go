@@ -29,7 +29,8 @@ func GetServers(state *app.State) gin.HandlerFunc {
 			cacheAgeMinutes = int(time.Since(*state.ServerCache.Timestamp).Minutes())
 		}
 
-		hasOVH := state.Config.HasCredentials()
+		// 多账户:凭据来源是 ovh_accounts 表,不再是旧的 state.Config
+		hasOVH := state.HasAnyAccount()
 		var serverPlans []types.ServerPlan
 
 		if valid && !forceRefresh {
@@ -202,6 +203,7 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 			return
 		}
 		var body struct {
+			AccountID  string   `json:"account_id"` // 哪个账户询价(空 = 默认)
 			PlanCode   string   `json:"plan_code"`
 			Datacenter string   `json:"datacenter"`
 			Options    []string `json:"options"`
@@ -214,7 +216,7 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 		if body.Datacenter == "" {
 			body.Datacenter = "gra"
 		}
-		result := price.GetInternal(state, body.PlanCode, body.Datacenter, body.Options)
+		result := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, body.Options)
 		c.JSON(http.StatusOK, result)
 	}
 }

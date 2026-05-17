@@ -44,18 +44,19 @@ type CachedMessage struct {
 	Timestamp  float64                `json:"timestamp"`
 }
 
-// Subscription 订阅条目
+// Subscription 订阅条目(monitor 包内部用,落 SQLite 时转 types.Subscription)
 type Subscription struct {
-	PlanCode          string                 `json:"planCode"`
-	Datacenters       []string               `json:"datacenters"`
-	NotifyAvailable   bool                   `json:"notifyAvailable"`
-	NotifyUnavailable bool                   `json:"notifyUnavailable"`
-	LastStatus        map[string]string      `json:"lastStatus"`
-	CreatedAt         string                 `json:"createdAt"`
-	History           []HistoryEntry         `json:"history"`
-	ServerName        string                 `json:"serverName,omitempty"`
-	AutoOrder         bool                   `json:"autoOrder,omitempty"`
-	Quantity          int                    `json:"quantity,omitempty"`
+	PlanCode           string                 `json:"planCode"`
+	Datacenters        []string               `json:"datacenters"`
+	NotifyAvailable    bool                   `json:"notifyAvailable"`
+	NotifyUnavailable  bool                   `json:"notifyUnavailable"`
+	LastStatus         map[string]string      `json:"lastStatus"`
+	CreatedAt          string                 `json:"createdAt"`
+	History            []HistoryEntry         `json:"history"`
+	ServerName         string                 `json:"serverName,omitempty"`
+	AutoOrder          bool                   `json:"autoOrder,omitempty"`
+	Quantity           int                    `json:"quantity,omitempty"`
+	AutoOrderAccountID string                 `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 }
 
 // HistoryEntry 历史记录条目

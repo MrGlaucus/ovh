@@ -8,17 +8,18 @@ import (
 )
 
 type vpsSubRow struct {
-	ID                string `db:"id"`
-	PlanCode          string `db:"plan_code"`
-	OvhSubsidiary     string `db:"ovh_subsidiary"`
-	DatacentersJSON   string `db:"datacenters"`
-	MonitorLinux      int    `db:"monitor_linux"`
-	MonitorWindows    int    `db:"monitor_windows"`
-	NotifyAvailable   int    `db:"notify_available"`
-	NotifyUnavailable int    `db:"notify_unavailable"`
-	LastStatusJSON    string `db:"last_status"`
-	HistoryJSON       string `db:"history"`
-	CreatedAt         string `db:"created_at"`
+	ID                 string `db:"id"`
+	PlanCode           string `db:"plan_code"`
+	OvhSubsidiary      string `db:"ovh_subsidiary"`
+	DatacentersJSON    string `db:"datacenters"`
+	MonitorLinux       int    `db:"monitor_linux"`
+	MonitorWindows     int    `db:"monitor_windows"`
+	NotifyAvailable    int    `db:"notify_available"`
+	NotifyUnavailable  int    `db:"notify_unavailable"`
+	LastStatusJSON     string `db:"last_status"`
+	HistoryJSON        string `db:"history"`
+	CreatedAt          string `db:"created_at"`
+	AutoOrderAccountID string `db:"auto_order_account_id"`
 }
 
 func rowToVPSSub(r vpsSubRow) types.VPSSubscription {
@@ -35,17 +36,18 @@ func rowToVPSSub(r vpsSubRow) types.VPSSubscription {
 		hist = []map[string]interface{}{}
 	}
 	return types.VPSSubscription{
-		ID:                r.ID,
-		PlanCode:          r.PlanCode,
-		OvhSubsidiary:     r.OvhSubsidiary,
-		Datacenters:       dcs,
-		MonitorLinux:      r.MonitorLinux == 1,
-		MonitorWindows:    r.MonitorWindows == 1,
-		NotifyAvailable:   r.NotifyAvailable == 1,
-		NotifyUnavailable: r.NotifyUnavailable == 1,
-		LastStatus:        last,
-		History:           hist,
-		CreatedAt:         r.CreatedAt,
+		ID:                 r.ID,
+		PlanCode:           r.PlanCode,
+		OvhSubsidiary:      r.OvhSubsidiary,
+		Datacenters:        dcs,
+		MonitorLinux:       r.MonitorLinux == 1,
+		MonitorWindows:     r.MonitorWindows == 1,
+		NotifyAvailable:    r.NotifyAvailable == 1,
+		NotifyUnavailable:  r.NotifyUnavailable == 1,
+		LastStatus:         last,
+		History:            hist,
+		CreatedAt:          r.CreatedAt,
+		AutoOrderAccountID: r.AutoOrderAccountID,
 	}
 }
 
@@ -69,17 +71,18 @@ func vpsSubToRow(s types.VPSSubscription) (vpsSubRow, error) {
 		return 0
 	}
 	return vpsSubRow{
-		ID:                s.ID,
-		PlanCode:          s.PlanCode,
-		OvhSubsidiary:     s.OvhSubsidiary,
-		DatacentersJSON:   string(dcsJSON),
-		MonitorLinux:      bi(s.MonitorLinux),
-		MonitorWindows:    bi(s.MonitorWindows),
-		NotifyAvailable:   bi(s.NotifyAvailable),
-		NotifyUnavailable: bi(s.NotifyUnavailable),
-		LastStatusJSON:    string(lastJSON),
-		HistoryJSON:       string(histJSON),
-		CreatedAt:         s.CreatedAt,
+		ID:                 s.ID,
+		PlanCode:           s.PlanCode,
+		OvhSubsidiary:      s.OvhSubsidiary,
+		DatacentersJSON:    string(dcsJSON),
+		MonitorLinux:       bi(s.MonitorLinux),
+		MonitorWindows:     bi(s.MonitorWindows),
+		NotifyAvailable:    bi(s.NotifyAvailable),
+		NotifyUnavailable:  bi(s.NotifyUnavailable),
+		LastStatusJSON:     string(lastJSON),
+		HistoryJSON:        string(histJSON),
+		CreatedAt:          s.CreatedAt,
+		AutoOrderAccountID: s.AutoOrderAccountID,
 	}, nil
 }
 
@@ -117,8 +120,9 @@ func (db *DB) UpsertVPSSubscription(s types.VPSSubscription) error {
 		  monitor_windows    = excluded.monitor_windows,
 		  notify_available   = excluded.notify_available,
 		  notify_unavailable = excluded.notify_unavailable,
-		  last_status        = excluded.last_status,
-		  history            = excluded.history
+		  last_status            = excluded.last_status,
+		  history                = excluded.history,
+		  auto_order_account_id  = excluded.auto_order_account_id
 	`, r)
 	if err != nil {
 		return fmt.Errorf("upsert vps sub %s: %w", s.ID, err)
@@ -144,10 +148,10 @@ func (db *DB) ReplaceVPSSubscriptions(subs []types.VPSSubscription) error {
 		_, err = tx.NamedExec(`
 			INSERT INTO vps_subscriptions
 			(id, plan_code, ovh_subsidiary, datacenters, monitor_linux, monitor_windows,
-			 notify_available, notify_unavailable, last_status, history, created_at)
+			 notify_available, notify_unavailable, last_status, history, created_at, auto_order_account_id)
 			VALUES
 			(:id, :plan_code, :ovh_subsidiary, :datacenters, :monitor_linux, :monitor_windows,
-			 :notify_available, :notify_unavailable, :last_status, :history, :created_at)
+			 :notify_available, :notify_unavailable, :last_status, :history, :created_at, :auto_order_account_id)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert vps sub %s: %w", s.ID, err)

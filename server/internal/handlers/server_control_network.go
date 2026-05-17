@@ -18,7 +18,7 @@ import (
 func GetNetworkInterfaces(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -69,7 +69,7 @@ func GetNetworkInterfaces(state *app.State) gin.HandlerFunc {
 func GetMRTGData(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -151,7 +151,7 @@ func GetMRTGData(state *app.State) gin.HandlerFunc {
 func ConfigureOLAAggregation(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -187,7 +187,7 @@ func ConfigureOLAAggregation(state *app.State) gin.HandlerFunc {
 func ResetOLAConfiguration(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -217,7 +217,7 @@ func ResetOLAConfiguration(state *app.State) gin.HandlerFunc {
 func OLAGroup(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -236,7 +236,7 @@ func OLAGroup(state *app.State) gin.HandlerFunc {
 func OLAUngroup(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -255,7 +255,7 @@ func OLAUngroup(state *app.State) gin.HandlerFunc {
 func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -348,7 +348,7 @@ func GetIPMIConsole(state *app.State) gin.HandlerFunc {
 func GetTrafficStatistics(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		_, err := state.OVH.Client()
+		_, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -356,13 +356,18 @@ func GetTrafficStatistics(state *app.State) gin.HandlerFunc {
 		state.Logger.Info("[Stats] 获取服务器 "+svc+" 流量统计", "server_control")
 		period := c.DefaultQuery("period", "lastday")
 		typeParam := c.DefaultQuery("type", "traffic:download")
-		baseURL := state.Config.APIBaseURL()
+		// 多账户:用请求里指定账户的 endpoint + 凭据
+		acc, ok := ovhAccountFor(state, c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "未配置 OVH 账户"})
+			return
+		}
+		baseURL := ovhAPIBaseURL(acc.Endpoint)
 		apiURL := baseURL + "/1.0/dedicated/server/" + svc + "/statistics?period=" + url.QueryEscape(period) + "&type=" + url.QueryEscape(typeParam)
 		state.Logger.Info("[Stats] 请求API: "+apiURL, "server_control")
-		cfg := state.Config.Get()
 		req, _ := http.NewRequest(http.MethodGet, apiURL, nil)
-		req.Header.Set("X-Ovh-Application", cfg.AppKey)
-		req.Header.Set("X-Ovh-Consumer", cfg.ConsumerKey)
+		req.Header.Set("X-Ovh-Application", acc.AppKey)
+		req.Header.Set("X-Ovh-Consumer", acc.ConsumerKey)
 		httpClient := &http.Client{Timeout: 10 * time.Second}
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -400,7 +405,7 @@ func GetTrafficStatistics(state *app.State) gin.HandlerFunc {
 func GetNetworkInterfaceStats(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

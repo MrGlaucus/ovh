@@ -42,18 +42,25 @@ func GetVPSSubscriptions(state *app.State) gin.HandlerFunc {
 func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
-			PlanCode          string   `json:"planCode"`
-			OvhSubsidiary     string   `json:"ovhSubsidiary"`
-			Datacenters       []string `json:"datacenters"`
-			MonitorLinux      *bool    `json:"monitorLinux"`
-			MonitorWindows    *bool    `json:"monitorWindows"`
-			NotifyAvailable   *bool    `json:"notifyAvailable"`
-			NotifyUnavailable *bool    `json:"notifyUnavailable"`
+			PlanCode           string   `json:"planCode"`
+			OvhSubsidiary      string   `json:"ovhSubsidiary"`
+			Datacenters        []string `json:"datacenters"`
+			MonitorLinux       *bool    `json:"monitorLinux"`
+			MonitorWindows     *bool    `json:"monitorWindows"`
+			NotifyAvailable    *bool    `json:"notifyAvailable"`
+			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
+			AutoOrderAccountID string   `json:"autoOrderAccountId"` // 空 = 触发时只通知不下单
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少planCode参数"})
 			return
+		}
+		if body.AutoOrderAccountID != "" {
+			if _, ok := state.FindAccount(body.AutoOrderAccountID); !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "autoOrderAccountId 不存在"})
+				return
+			}
 		}
 		if body.OvhSubsidiary == "" {
 			body.OvhSubsidiary = "IE"
@@ -84,17 +91,18 @@ func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 			}
 		}
 		sub := types.VPSSubscription{
-			ID:                uuid.NewString(),
-			PlanCode:          body.PlanCode,
-			OvhSubsidiary:     body.OvhSubsidiary,
-			Datacenters:       body.Datacenters,
-			MonitorLinux:      monitorLinux,
-			MonitorWindows:    monitorWindows,
-			NotifyAvailable:   notifyAvailable,
-			NotifyUnavailable: notifyUnavailable,
-			LastStatus:        map[string]string{},
-			History:           []map[string]interface{}{},
-			CreatedAt:         types.NowISO(),
+			ID:                 uuid.NewString(),
+			PlanCode:           body.PlanCode,
+			OvhSubsidiary:      body.OvhSubsidiary,
+			Datacenters:        body.Datacenters,
+			MonitorLinux:       monitorLinux,
+			MonitorWindows:     monitorWindows,
+			NotifyAvailable:    notifyAvailable,
+			NotifyUnavailable:  notifyUnavailable,
+			LastStatus:         map[string]string{},
+			History:            []map[string]interface{}{},
+			CreatedAt:          types.NowISO(),
+			AutoOrderAccountID: body.AutoOrderAccountID,
 		}
 		state.VPSSubscriptions = append(state.VPSSubscriptions, sub)
 		state.VPSSubsMu.Unlock()

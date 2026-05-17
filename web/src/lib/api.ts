@@ -9,11 +9,27 @@ import { toast } from "sonner";
  */
 
 const API_KEY_STORAGE = "ovh_sniper_api_key";
+const SERVER_CONTROL_ACCOUNT_KEY = "ovh_active_server_control_account_id";
 
 /** 读取 API 密钥；当前后端走 header 鉴权，未来若改 Cookie 这里换成空实现即可 */
 export function getApiSecretKey(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(API_KEY_STORAGE);
+}
+
+/** 服务器控制 tab 的"活跃账户"。所有 /server-control/* 请求会自动带上 ?account=xxx */
+export function getActiveServerControlAccount(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(SERVER_CONTROL_ACCOUNT_KEY) || "";
+}
+export function setActiveServerControlAccount(id: string): void {
+  if (id) {
+    window.localStorage.setItem(SERVER_CONTROL_ACCOUNT_KEY, id);
+  } else {
+    window.localStorage.removeItem(SERVER_CONTROL_ACCOUNT_KEY);
+  }
+  // 通知组件:广播一个自定义 event,让 useActiveServerControlAccount 重新读
+  window.dispatchEvent(new Event("ovh-active-account-changed"));
 }
 
 /** 写入 API 密钥 */
@@ -33,11 +49,22 @@ function createApiClient(): AxiosInstance {
     timeout: 60000,
   });
 
-  // 请求拦截：自动注入 API 密钥
+  // 请求拦截：自动注入 API 密钥;以及给 /server-control/* / /ovh/account/* 请求自动带上活跃账户
   client.interceptors.request.use((config) => {
     const key = getApiSecretKey();
     if (key) {
       config.headers.set("X-API-Key", key);
+    }
+    // 自动注入活跃账户(仅服务器控制 + OVH 账户元信息接口)
+    const url = config.url || "";
+    if (
+      (url.startsWith("/server-control") || url.startsWith("/ovh/")) &&
+      !(config.params && (config.params as Record<string, unknown>).account)
+    ) {
+      const acc = getActiveServerControlAccount();
+      if (acc) {
+        config.params = { ...(config.params || {}), account: acc };
+      }
     }
     return config;
   });

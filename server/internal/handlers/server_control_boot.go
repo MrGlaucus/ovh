@@ -16,7 +16,7 @@ import (
 func GetBootConfig(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -79,7 +79,7 @@ func SetBootConfig(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "boot_id 必须是整数"})
 			return
 		}
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -100,7 +100,7 @@ func SetBootConfig(state *app.State) gin.HandlerFunc {
 func GetMonitoringStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -123,7 +123,7 @@ func GetMonitoringStatus(state *app.State) gin.HandlerFunc {
 func SetMonitoringStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -151,7 +151,7 @@ func SetMonitoringStatus(state *app.State) gin.HandlerFunc {
 func GetBootModes(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -211,7 +211,7 @@ func GetBootModes(state *app.State) gin.HandlerFunc {
 func ChangeBootMode(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

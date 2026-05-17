@@ -74,7 +74,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 // VerifyAuth POST /api/verify-auth
 func VerifyAuth(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{"valid": false})
 			return

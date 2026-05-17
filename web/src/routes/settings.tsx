@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { Chip } from "@/components/common/Chip";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import {
   useSettings,
   useSaveSettings,
@@ -20,6 +21,16 @@ import {
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
+import {
+  useAccounts,
+  useCreateAccount,
+  useUpdateAccount,
+  useDeleteAccount,
+  useSetDefaultAccount,
+  useVerifyAccount,
+  accountChipColor,
+  type OVHAccount,
+} from "@/hooks/use-accounts";
 
 /** 根据 zone 推 endpoint */
 function endpointForZone(zone: string): string {
@@ -33,7 +44,7 @@ export const Route = createFileRoute("/settings")({
 
 const SECTIONS = [
   { id: "password", icon: KeyRound, label: "访问密码" },
-  { id: "ovh", icon: Globe, label: "OVH API" },
+  { id: "accounts", icon: Globe, label: "OVH 账户" },
   { id: "telegram", icon: Send, label: "Telegram" },
   { id: "cache", icon: Database, label: "缓存管理" },
 ] as const;
@@ -115,33 +126,8 @@ function SettingsPage() {
                   />
                 </Field>
               </Section>
-            ) : active === "ovh" ? (
-              <Section title="OVH API 凭据">
-                <Field label="APP KEY">
-                  <Input type="password" value={form.appKey || ""} onChange={(e) => set("appKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
-                </Field>
-                <Field label="APP SECRET">
-                  <Input type="password" value={form.appSecret || ""} onChange={(e) => set("appSecret", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
-                </Field>
-                <Field label="CONSUMER KEY">
-                  <Input type="password" value={form.consumerKey || ""} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
-                </Field>
-                <Field
-                  label="OVH 子公司 (Zone)"
-                  hint={`Endpoint ${endpointForZone(form.zone || "IE")} · IAM go-ovh-${(form.zone || "IE").toLowerCase()} 由子公司自动派生`}
-                >
-                  <Select value={form.zone || "IE"} onValueChange={(v) => set("zone", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {OVH_SUBSIDIARIES.map((s) => (
-                        <SelectItem key={s.code} value={s.code}>
-                          {s.code} · {s.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </Section>
+            ) : active === "accounts" ? (
+              <AccountsSection />
             ) : active === "telegram" ? (
               <TelegramSection form={form} set={set} />
             ) : (
@@ -366,5 +352,204 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium text-right">{value}</span>
     </div>
+  );
+}
+
+// ─── 账户管理 ───────────────────────────────────────────────────────────────
+
+function AccountsSection() {
+  const accounts = useAccounts();
+  const [showAdd, setShowAdd] = useState(false);
+  const [editAcc, setEditAcc] = useState<OVHAccount | null>(null);
+  const list = accounts.data || [];
+
+  return (
+    <Section title="OVH 账户管理">
+      <div className="flex items-center justify-between">
+        <p className="text-[12px] text-muted-foreground">
+          每个 OVH 账户(凭据)单独保存,抢购队列 / 狙击 / 订阅创建时各自指定账户。删账户会一并清除关联的 queue / history / sniper tasks。
+        </p>
+        <Button onClick={() => setShowAdd(true)} size="sm">
+          <Plus className="w-4 h-4" />
+          添加账户
+        </Button>
+      </div>
+
+      {accounts.isPending ? (
+        <div className="space-y-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <Skeleton key={i} className="h-24 rounded-2xl" />
+          ))}
+        </div>
+      ) : list.length === 0 ? (
+        <Card>
+          <CardContent className="p-8 text-center text-sm text-muted-foreground">
+            还没有账户,点右上角"添加账户"创建一个
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {list.map((a) => (
+            <AccountCard key={a.id} acc={a} onEdit={() => setEditAcc(a)} />
+          ))}
+        </div>
+      )}
+
+      {showAdd && <AccountDialog onClose={() => setShowAdd(false)} />}
+      {editAcc && <AccountDialog acc={editAcc} onClose={() => setEditAcc(null)} />}
+    </Section>
+  );
+}
+
+function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
+  const setDefault = useSetDefaultAccount();
+  const del = useDeleteAccount();
+  const verify = useVerifyAccount();
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="border border-border rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <span className="font-semibold text-sm">{acc.name}</span>
+          <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium", accountChipColor(acc.zone))}>
+            {acc.zone}
+          </span>
+          {acc.isDefault && (
+            <Chip tone="success">
+              <Star className="w-3 h-3" />
+              默认
+            </Chip>
+          )}
+        </div>
+        <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap font-mono">
+          <span>{acc.endpoint}</span>
+          <span>·</span>
+          <span>{acc.iam}</span>
+          <span>·</span>
+          <span>建于 {new Date(acc.createdAt).toLocaleDateString("zh-CN")}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <Button variant="ghost" size="icon" onClick={() => verify.mutate(acc.id)} disabled={verify.isPending} title="重新验证凭据">
+          <RotateCw className={cn("w-4 h-4", verify.isPending && "animate-spin")} />
+        </Button>
+        {!acc.isDefault && (
+          <Button variant="ghost" size="icon" onClick={() => setDefault.mutate(acc.id)} disabled={setDefault.isPending} title="设为默认">
+            <Star className="w-4 h-4" />
+          </Button>
+        )}
+        <Button variant="ghost" size="icon" onClick={onEdit} title="编辑">
+          <Pencil className="w-4 h-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => setConfirming(true)} title="删除" className="text-destructive hover:text-destructive">
+          <Trash2 className="w-4 h-4" />
+        </Button>
+      </div>
+
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认删除账户 {acc.name}?</DialogTitle>
+            <DialogDescription className="text-destructive">
+              将级联删除该账户的所有 queue 任务、history 历史、config_sniper 任务。
+              监控订阅的 auto_order 引用此账户的会清空。该操作不可逆。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirming(false)}>取消</Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                await del.mutateAsync(acc.id);
+                setConfirming(false);
+              }}
+              disabled={del.isPending}
+            >
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void }) {
+  const create = useCreateAccount();
+  const update = useUpdateAccount();
+  const isEdit = !!acc;
+  const [form, setForm] = useState({
+    name: acc?.name || "",
+    appKey: acc?.appKey || "",
+    appSecret: acc?.appSecret || "",
+    consumerKey: acc?.consumerKey || "",
+    zone: acc?.zone || "IE",
+  });
+  const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
+  const canSubmit = form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    const payload = {
+      name: form.name.trim(),
+      appKey: form.appKey.trim(),
+      appSecret: form.appSecret.trim(),
+      consumerKey: form.consumerKey.trim(),
+      zone: form.zone,
+      endpoint: endpointForZone(form.zone),
+    };
+    if (isEdit) {
+      await update.mutateAsync({ id: acc!.id, input: payload });
+    } else {
+      await create.mutateAsync(payload);
+    }
+    onClose();
+  };
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? `编辑账户 ${acc!.name}` : "添加 OVH 账户"}</DialogTitle>
+          <DialogDescription>填三个 OVH 密钥 + 选子公司,保存时会自动调 /me 验证凭据。</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <Field label="账户名称 *">
+            <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="主号 / 小号 A" autoFocus />
+          </Field>
+          <Field label="APP KEY *">
+            <Input type="password" value={form.appKey} onChange={(e) => set("appKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+          </Field>
+          <Field label="APP SECRET *">
+            <Input type="password" value={form.appSecret} onChange={(e) => set("appSecret", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+          </Field>
+          <Field label="CONSUMER KEY *">
+            <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+          </Field>
+          <Field
+            label="OVH 子公司 (Zone)"
+            hint={`Endpoint ${endpointForZone(form.zone)} · IAM go-ovh-${form.zone.toLowerCase()} 由子公司自动派生`}
+          >
+            <Select value={form.zone} onValueChange={(v) => set("zone", v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {OVH_SUBSIDIARIES.map((s) => (
+                  <SelectItem key={s.code} value={s.code}>
+                    {s.code} · {s.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={submit} disabled={!canSubmit || create.isPending || update.isPending}>
+            {(create.isPending || update.isPending) ? "保存中…" : "保存并验证"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

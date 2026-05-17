@@ -28,7 +28,7 @@ func noOVHResp(c *gin.Context) {
 // ListMyServers GET /api/server-control/list
 func ListMyServers(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -126,7 +126,7 @@ func valueOr(m map[string]interface{}, key, fallback string) interface{} {
 func Reboot(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -150,7 +150,7 @@ func Reboot(state *app.State) gin.HandlerFunc {
 func GetOSTemplates(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -261,7 +261,7 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 		}
 		defer mu.Unlock()
 
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -384,19 +384,23 @@ func InstallOS(state *app.State) gin.HandlerFunc {
 		state.Logger.Info("  - 服务器: "+svc, "server_control")
 		state.Logger.Info("  - 模板: "+templateName, "server_control")
 
-		// 用 requests 直接调用（与 Python 一致）
-		baseURL := state.Config.APIBaseURL()
+		// 用 requests 直接调用（与 Python 一致）;多账户:用请求里指定账户的凭据 + endpoint
+		acc, ok := ovhAccountFor(state, c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "error": "未配置 OVH 账户"})
+			return
+		}
+		baseURL := ovhAPIBaseURL(acc.Endpoint)
 		apiURL := baseURL + "/1.0/dedicated/server/" + svc + "/reinstall"
-		cfg := state.Config.Get()
 		bodyBytes, _ := json.Marshal(installParams)
 		ts := strconv.FormatInt(time.Now().Unix(), 10)
-		preHash := cfg.AppSecret + "+" + cfg.ConsumerKey + "+POST+" + apiURL + "+" + string(bodyBytes) + "+" + ts
+		preHash := acc.AppSecret + "+" + acc.ConsumerKey + "+POST+" + apiURL + "+" + string(bodyBytes) + "+" + ts
 		hash := sha1.Sum([]byte(preHash))
 		signature := "$1$" + hex.EncodeToString(hash[:])
 
 		req, _ := http.NewRequest(http.MethodPost, apiURL, bytes.NewReader(bodyBytes))
-		req.Header.Set("X-Ovh-Application", cfg.AppKey)
-		req.Header.Set("X-Ovh-Consumer", cfg.ConsumerKey)
+		req.Header.Set("X-Ovh-Application", acc.AppKey)
+		req.Header.Set("X-Ovh-Consumer", acc.ConsumerKey)
 		req.Header.Set("X-Ovh-Timestamp", ts)
 		req.Header.Set("X-Ovh-Signature", signature)
 		req.Header.Set("Content-Type", "application/json")
@@ -528,7 +532,7 @@ func translateInstallStep(comment string) string {
 func GetInstallStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -606,7 +610,7 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 func GetServerTasks(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -650,7 +654,7 @@ func GetTaskAvailableTimeslots(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		taskID := c.Param("task_id")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -700,7 +704,7 @@ func ScheduleTaskTimeslot(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		taskID := c.Param("task_id")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

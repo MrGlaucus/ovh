@@ -7,6 +7,7 @@ export type QueueStatus = "pending" | "running" | "paused" | "completed" | "fail
 
 export interface QueueItem {
   id: string;
+  accountId: string;
   planCode: string;
   datacenter: string;
   options: string[];
@@ -33,35 +34,17 @@ export function useQueueList() {
   });
 }
 
-/** 添加一个抢购任务（单个 DC，单个任务） */
-export function useAddQueueItem() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (payload: {
-      planCode: string;
-      datacenter: string;
-      options?: string[];
-      retryInterval?: number;
-    }) => (await api.post("/queue", payload)).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.queue.list() });
-      qc.invalidateQueries({ queryKey: qk.stats() });
-    },
-    onError: (e: any) => toast.error(e.response?.data?.error || "添加任务失败"),
-  });
-}
-
 /**
  * 批量创建抢购任务：对每个 datacenter × quantity 调用 POST /queue。
- * 返回成功 / 失败计数，调用方根据需要弹 toast。
+ * 返回成功 / 失败计数。
  *
- * 说明：实际下单的 ovhSubsidiary 由后端全局配置 cfg.Zone 决定（GET/POST /settings 里的 zone 字段），
- * **不读队列任务里的字段**。要切换下单地区改 settings 的 zone。
+ * 多账户:account_id 必填,后端据此决定下单走哪个账户,以及购物车的 ovhSubsidiary。
  */
 export function useCreateQueueItem() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (payload: {
+      account_id: string;
       planCode: string;
       datacenters: string[];
       options?: string[];
@@ -76,6 +59,7 @@ export function useCreateQueueItem() {
         for (let i = 0; i < qty; i++) {
           try {
             await api.post("/queue", {
+              account_id: payload.account_id,
               planCode: payload.planCode,
               datacenter: dc,
               retryInterval: payload.retryInterval,

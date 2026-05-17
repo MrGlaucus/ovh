@@ -56,10 +56,49 @@ func Open(dataDir string) (*DB, error) {
 	return db, nil
 }
 
-// migrate 跑 schema.sql 里所有 CREATE TABLE / INDEX（用 IF NOT EXISTS，重复跑安全）
+// migrate 跑 schema.sql 里所有 CREATE TABLE / INDEX（用 IF NOT EXISTS，重复跑安全）+ 增量列迁移
 func (db *DB) migrate() error {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("exec schema: %w", err)
+	}
+	if err := db.addColumnIfMissing("queue", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("history", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// addColumnIfMissing SQLite ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS,
+// 这里查 PRAGMA table_info 自己判断列是否已存在,做幂等加列。
+func (db *DB) addColumnIfMissing(table, column, typeDecl string) error {
+	type colInfo struct {
+		CID     int     `db:"cid"`
+		Name    string  `db:"name"`
+		Type    string  `db:"type"`
+		NotNull int     `db:"notnull"`
+		Dflt    *string `db:"dflt_value"`
+		PK      int     `db:"pk"`
+	}
+	var cols []colInfo
+	if err := db.Select(&cols, fmt.Sprintf("PRAGMA table_info(%s)", table)); err != nil {
+		return fmt.Errorf("pragma %s: %w", table, err)
+	}
+	for _, c := range cols {
+		if c.Name == column {
+			return nil // 已有,跳过
+		}
+	}
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, typeDecl)
+	if _, err := db.Exec(stmt); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
 }

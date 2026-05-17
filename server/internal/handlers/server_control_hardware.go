@@ -18,7 +18,7 @@ import (
 func GetHardwareInfo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -58,7 +58,7 @@ func GetHardwareInfo(state *app.State) gin.HandlerFunc {
 func GetNetworkSpecs(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -88,7 +88,7 @@ func GetNetworkSpecs(state *app.State) gin.HandlerFunc {
 func GetServerIPs(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -130,7 +130,7 @@ func GetServerIPs(state *app.State) gin.HandlerFunc {
 func GetReverseDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -164,7 +164,7 @@ func GetReverseDNS(state *app.State) gin.HandlerFunc {
 func SetReverseDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -194,7 +194,7 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 func GetServiceInfo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -233,7 +233,7 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 func ChangeContact(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -274,7 +274,7 @@ func ChangeContact(state *app.State) gin.HandlerFunc {
 func GetInterventions(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -303,7 +303,7 @@ func GetInterventionDetail(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		id := c.Param("intervention_id")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -321,7 +321,7 @@ func GetInterventionDetail(state *app.State) gin.HandlerFunc {
 func GetPlannedInterventions(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -350,7 +350,7 @@ func GetPlannedInterventionDetail(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
 		id := c.Param("intervention_id")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -368,7 +368,7 @@ func GetPlannedInterventionDetail(state *app.State) gin.HandlerFunc {
 func HardwareReplace(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -450,7 +450,7 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 func GetHardwareRaidProfiles(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -478,7 +478,7 @@ func GetHardwareRaidProfiles(state *app.State) gin.HandlerFunc {
 func GetHardwareDiskInfo(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return
@@ -538,7 +538,7 @@ func GetHardwareDiskInfo(state *app.State) gin.HandlerFunc {
 // GetPartitionSchemes GET /api/server-control/:service_name/partition-schemes
 func GetPartitionSchemes(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		client, err := state.OVH.Client()
+		client, err := ovhClientFor(state, c)
 		if err != nil {
 			noOVHResp(c)
 			return

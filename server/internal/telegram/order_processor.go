@@ -25,8 +25,8 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 	if quantity < 1 {
 		quantity = 1
 	}
-	if !state.Config.HasCredentials() {
-		return OrderResult{Success: false, Message: "OVH API客户端未初始化"}
+	if !state.HasAnyAccount() {
+		return OrderResult{Success: false, Message: "未配置任何 OVH 账户"}
 	}
 	availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, planCode)
 	if len(availByConfig) == 0 {

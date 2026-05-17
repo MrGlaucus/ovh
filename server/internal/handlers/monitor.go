@@ -24,17 +24,25 @@ func GetSubscriptions(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var body struct {
-			PlanCode          string   `json:"planCode"`
-			Datacenters       []string `json:"datacenters"`
-			NotifyAvailable   *bool    `json:"notifyAvailable"`
-			NotifyUnavailable *bool    `json:"notifyUnavailable"`
-			AutoOrder         bool     `json:"autoOrder"`
-			Quantity          int      `json:"quantity"`
+			PlanCode           string   `json:"planCode"`
+			Datacenters        []string `json:"datacenters"`
+			NotifyAvailable    *bool    `json:"notifyAvailable"`
+			NotifyUnavailable  *bool    `json:"notifyUnavailable"`
+			AutoOrder          bool     `json:"autoOrder"`
+			Quantity           int      `json:"quantity"`
+			AutoOrderAccountID string   `json:"autoOrderAccountId"` // 空 = 触发时只通知不下单
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "缺少planCode参数"})
 			return
+		}
+		// 校验 auto_order_account_id 引用的账户真的存在
+		if body.AutoOrderAccountID != "" {
+			if _, ok := state.FindAccount(body.AutoOrderAccountID); !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "autoOrderAccountId 不存在"})
+				return
+			}
 		}
 		notifyAvailable := true
 		notifyUnavailable := false
@@ -63,7 +71,7 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 
 		mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
-			serverName, nil, nil, body.AutoOrder, body.Quantity)
+			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID)
 		mon.SaveToDB()
 
 		if !mon.Running() {
@@ -91,11 +99,18 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		}
 
 		var body struct {
-			NotifyAvailable   *bool `json:"notifyAvailable"`
-			NotifyUnavailable *bool `json:"notifyUnavailable"`
-			AutoOrder         bool  `json:"autoOrder"`
+			NotifyAvailable    *bool  `json:"notifyAvailable"`
+			NotifyUnavailable  *bool  `json:"notifyUnavailable"`
+			AutoOrder          bool   `json:"autoOrder"`
+			AutoOrderAccountID string `json:"autoOrderAccountId"`
 		}
 		_ = c.ShouldBindJSON(&body)
+		if body.AutoOrderAccountID != "" {
+			if _, ok := state.FindAccount(body.AutoOrderAccountID); !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "autoOrderAccountId 不存在"})
+				return
+			}
+		}
 		notifyAvailable := true
 		notifyUnavailable := false
 		if body.NotifyAvailable != nil {
@@ -128,7 +143,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				continue
 			}
 			mon.AddSubscription(pc, []string{}, notifyAvailable, notifyUnavailable,
-				server.Name, nil, nil, body.AutoOrder, 1)
+				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID)
 			added++
 			state.Logger.Debug("批量添加订阅: "+pc+" ("+server.Name+")", "monitor")
 		}

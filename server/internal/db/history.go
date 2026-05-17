@@ -10,6 +10,7 @@ import (
 
 type historyRow struct {
 	ID             string         `db:"id"`
+	AccountID      string         `db:"account_id"`
 	TaskID         string         `db:"task_id"`
 	PlanCode       string         `db:"plan_code"`
 	Datacenter     string         `db:"datacenter"`
@@ -46,6 +47,7 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 	}
 	return types.PurchaseHistoryEntry{
 		ID:             r.ID,
+		AccountID:      r.AccountID,
 		TaskID:         r.TaskID,
 		PlanCode:       r.PlanCode,
 		Datacenter:     r.Datacenter,
@@ -71,6 +73,7 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 	}
 	row := historyRow{
 		ID:             h.ID,
+		AccountID:      h.AccountID,
 		TaskID:         h.TaskID,
 		PlanCode:       h.PlanCode,
 		Datacenter:     h.Datacenter,
@@ -122,6 +125,7 @@ func (db *DB) UpsertHistory(h types.PurchaseHistoryEntry) error {
 		(:id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
 		ON CONFLICT(id) DO UPDATE SET
+		  account_id      = excluded.account_id,
 		  task_id         = excluded.task_id,
 		  plan_code       = excluded.plan_code,
 		  datacenter      = excluded.datacenter,
@@ -158,10 +162,10 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO history
-			(id, task_id, plan_code, datacenter, options, status, order_id, order_url,
+			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
 			 error_message, purchase_time, attempt_count, expiration_time, price)
 			VALUES
-			(:id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
+			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 			 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
 		`, r)
 		if err != nil {

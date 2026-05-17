@@ -19,7 +19,6 @@ import (
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
 	"github.com/ovh-buy/server/internal/purchase"
-	"github.com/ovh-buy/server/internal/sniper"
 	"github.com/ovh-buy/server/internal/storage"
 )
 
@@ -146,15 +145,19 @@ func main() {
 		api.GET("/catalog", handlers.GetCatalog(state))
 		api.GET("/system/metrics", handlers.GetSystemMetrics(state))
 		api.GET("/version", handlers.GetVersion(state))
+		api.GET("/version/check-update", handlers.CheckUpdate(state))
 
-		// Config sniper
-		api.GET("/config-sniper/options/:planCode", handlers.GetConfigOptions(state))
-		api.GET("/config-sniper/tasks", handlers.GetConfigSniperTasks(state))
-		api.POST("/config-sniper/tasks", handlers.CreateConfigSniperTask(state))
-		api.DELETE("/config-sniper/tasks/:task_id", handlers.DeleteConfigSniperTask(state))
-		api.PUT("/config-sniper/tasks/:task_id/toggle", handlers.ToggleConfigSniperTask(state))
-		api.POST("/config-sniper/tasks/:task_id/check", handlers.CheckConfigSniperTask(state))
-		api.POST("/config-sniper/quick-order", handlers.QuickOrder(state))
+		// Accounts (多账户管理)
+		api.GET("/accounts", handlers.ListAccounts(state))
+		api.GET("/accounts/:id", handlers.GetAccountByID(state))
+		api.POST("/accounts", handlers.CreateAccount(state))
+		api.PUT("/accounts/:id", handlers.UpdateAccount(state))
+		api.DELETE("/accounts/:id", handlers.DeleteAccountByID(state))
+		api.POST("/accounts/:id/set-default", handlers.SetDefaultAccountByID(state))
+		api.POST("/accounts/:id/verify", handlers.VerifyAccount(state))
+
+		// 快速下单端点 (监控的 auto-order 通过 HTTP 自调走它,前端也可直接调)
+		api.POST("/queue/quick-order", handlers.QuickOrder(state))
 
 		// Server control - basic
 		sc := api.Group("/server-control")
@@ -282,7 +285,6 @@ func main() {
 
 	// 后台线程
 	go purchase.ProcessQueueLoop(state)
-	go sniper.MonitorLoop(state)
 	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
 
 	// 自动启动监控（如果有订阅）

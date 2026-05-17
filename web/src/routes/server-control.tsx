@@ -19,6 +19,8 @@ import {
   type OwnedServer,
 } from "@/hooks/use-server-control";
 import { useHideIp, maskSensitive } from "@/hooks/use-hide-ip";
+import { useActiveServerControlAccount } from "@/hooks/use-active-account";
+import { useAccounts } from "@/hooks/use-accounts";
 import { OverviewTab } from "@/components/server-control/OverviewTab";
 import { PowerTab } from "@/components/server-control/PowerTab";
 import { MaintenanceTab } from "@/components/server-control/MaintenanceTab";
@@ -35,7 +37,24 @@ function ServerControlPage() {
   const q = useOwnedServers();
   const { hidden, toggle } = useHideIp();
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
+  const { data: accounts } = useAccounts();
   const servers = q.data || [];
+
+  // 首次没选过账户 → 自动选默认账户
+  useEffect(() => {
+    if (!activeAccount && accounts && accounts.length > 0) {
+      const def = accounts.find((a) => a.isDefault) || accounts[0];
+      setActiveAccount(def.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts]);
+
+  // 切换账户时,选中的 service 也清空(不同账户的服务器不一样)
+  useEffect(() => {
+    setSelectedName(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAccount]);
 
   // 自动选中第一台（首次加载或切换列表后）
   useEffect(() => {
@@ -49,15 +68,34 @@ function ServerControlPage() {
   }, [servers, selectedName]);
 
   const selected = servers.find((s) => s.serviceName === selectedName) || null;
+  const activeAcc = accounts?.find((a) => a.id === activeAccount);
 
   return (
     <div className="space-y-6">
       <PageHeader
         icon={Terminal}
         title="服务器控制"
-        description="管理您的 OVH 独立服务器"
+        description={
+          activeAcc
+            ? `管理 OVH 独立服务器 · 当前账户 ${activeAcc.name} (${activeAcc.zone})`
+            : "管理 OVH 独立服务器"
+        }
         action={
           <div className="flex items-center gap-2">
+            {/* 账户切换器:只影响当前 tab,持久化到 localStorage */}
+            <Select value={activeAccount} onValueChange={setActiveAccount}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="选账户" />
+              </SelectTrigger>
+              <SelectContent>
+                {(accounts || []).map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.name} · {a.zone}
+                    {a.isDefault && <span className="ml-2 text-[10px] text-muted-foreground">(默认)</span>}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="outline" size="icon" onClick={toggle} aria-label={hidden ? "显示 IP / MAC" : "隐藏 IP"}>

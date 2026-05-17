@@ -43,9 +43,24 @@ type Stats struct {
 	MonitorRunning        bool `json:"monitorRunning"`
 }
 
+// OVHAccount OVH 账户凭据。多账户场景下每条记录代表一个 OVH 账户。
+type OVHAccount struct {
+	ID          string `json:"id"`           // UUID
+	Name        string `json:"name"`         // 用户起的名字（"主号" / "小号 A"）
+	Endpoint    string `json:"endpoint"`     // ovh-eu / ovh-us / ovh-ca
+	Zone        string `json:"zone"`         // IE/FR/DE/US/CA/...
+	AppKey      string `json:"appKey"`
+	AppSecret   string `json:"appSecret"`
+	ConsumerKey string `json:"consumerKey"`
+	IAM         string `json:"iam"`           // go-ovh-<zone-lower>
+	IsDefault   bool   `json:"isDefault"`     // 默认账户（未指定时 fallback 用它）
+	CreatedAt   string `json:"createdAt"`
+}
+
 // QueueItem 抢购队列项
 type QueueItem struct {
 	ID                  string   `json:"id"`
+	AccountID           string   `json:"accountId"`    // 该任务下单时用的 OVH 账户
 	PlanCode            string   `json:"planCode"`
 	Datacenter          string   `json:"datacenter"`
 	Options             []string `json:"options"`
@@ -73,6 +88,7 @@ type PriceInfo struct {
 // PurchaseHistoryEntry 抢购历史
 type PurchaseHistoryEntry struct {
 	ID             string     `json:"id"`
+	AccountID      string     `json:"accountId"` // 哪个账户买的
 	TaskID         string     `json:"taskId"`
 	PlanCode       string     `json:"planCode"`
 	Datacenter     string     `json:"datacenter"`
@@ -128,46 +144,35 @@ type SubscriptionHistoryEntry struct {
 	Config      map[string]interface{} `json:"config,omitempty"`
 }
 
-// Subscription 监控订阅
+// Subscription 监控订阅（跨账户共享列表;auto-order 触发时按 AutoOrderAccountID 下单）
 type Subscription struct {
-	PlanCode          string                     `json:"planCode"`
-	Datacenters       []string                   `json:"datacenters"`
-	NotifyAvailable   bool                       `json:"notifyAvailable"`
-	NotifyUnavailable bool                       `json:"notifyUnavailable"`
-	LastStatus        map[string]string          `json:"lastStatus"`
-	CreatedAt         string                     `json:"createdAt"`
-	History           []SubscriptionHistoryEntry `json:"history"`
-	ServerName        string                     `json:"serverName,omitempty"`
-	AutoOrder         bool                       `json:"autoOrder,omitempty"`
-	Quantity          int                        `json:"quantity,omitempty"`
-}
-
-// ConfigSniperTask 配置绑定狙击任务
-type ConfigSniperTask struct {
-	ID              string                 `json:"id"`
-	API1PlanCode    string                 `json:"api1_planCode"`
-	BoundConfig     map[string]interface{} `json:"bound_config"`
-	MatchStatus     string                 `json:"match_status"` // matched / pending_match / completed
-	MatchedAPI2     []string               `json:"matched_api2"`
-	KnownPlanCodes  []string               `json:"known_plancodes"`
-	Enabled         bool                   `json:"enabled"`
-	LastCheck       *string                `json:"last_check"`
-	CreatedAt       string                 `json:"created_at"`
+	PlanCode            string                     `json:"planCode"`
+	Datacenters         []string                   `json:"datacenters"`
+	NotifyAvailable     bool                       `json:"notifyAvailable"`
+	NotifyUnavailable   bool                       `json:"notifyUnavailable"`
+	LastStatus          map[string]string          `json:"lastStatus"`
+	CreatedAt           string                     `json:"createdAt"`
+	History             []SubscriptionHistoryEntry `json:"history"`
+	ServerName          string                     `json:"serverName,omitempty"`
+	AutoOrder           bool                       `json:"autoOrder,omitempty"`
+	Quantity            int                        `json:"quantity,omitempty"`
+	AutoOrderAccountID  string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 }
 
 // VPSSubscription VPS 监控订阅
 type VPSSubscription struct {
-	ID                string                 `json:"id"`
-	PlanCode          string                 `json:"planCode"`
-	OvhSubsidiary     string                 `json:"ovhSubsidiary"`
-	Datacenters       []string               `json:"datacenters"`
-	MonitorLinux      bool                   `json:"monitorLinux"`
-	MonitorWindows    bool                   `json:"monitorWindows"`
-	NotifyAvailable   bool                   `json:"notifyAvailable"`
-	NotifyUnavailable bool                   `json:"notifyUnavailable"`
-	LastStatus        map[string]string      `json:"lastStatus"`
-	History           []map[string]interface{} `json:"history"`
-	CreatedAt         string                 `json:"createdAt"`
+	ID                  string                 `json:"id"`
+	PlanCode            string                 `json:"planCode"`
+	OvhSubsidiary       string                 `json:"ovhSubsidiary"`
+	Datacenters         []string               `json:"datacenters"`
+	MonitorLinux        bool                   `json:"monitorLinux"`
+	MonitorWindows      bool                   `json:"monitorWindows"`
+	NotifyAvailable     bool                   `json:"notifyAvailable"`
+	NotifyUnavailable   bool                   `json:"notifyUnavailable"`
+	LastStatus          map[string]string      `json:"lastStatus"`
+	History             []map[string]interface{} `json:"history"`
+	CreatedAt           string                 `json:"createdAt"`
+	AutoOrderAccountID  string                 `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 }
 
 // CacheInfo 服务器列表缓存信息

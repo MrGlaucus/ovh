@@ -39,6 +39,9 @@ import {
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
+import { AccountSelect } from "@/components/common/AccountSelect";
+import { AccountChip } from "@/components/common/AccountChip";
+import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 
 /** 抢购队列：列表 + 暂停/恢复/删除/清空 + 新建抢购任务 */
 export const Route = createFileRoute("/queue")({
@@ -194,6 +197,7 @@ function CreateQueueDialog({
 }) {
   const servers = useServers();
   const create = useCreateQueueItem();
+  const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState(initialPlanCode || "");
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
@@ -225,7 +229,7 @@ function CreateQueueDialog({
 
   const qty = Number(quantity) || 1;
   const totalTasks = datacenters.length * qty;
-  const canSubmit = planCode.trim().length > 0 && datacenters.length > 0 && qty > 0;
+  const canSubmit = !!accountId && planCode.trim().length > 0 && datacenters.length > 0 && qty > 0;
 
   const reset = () => {
     setPlanCode("");
@@ -255,6 +259,7 @@ function CreateQueueDialog({
       return;
     }
     const result = await create.mutateAsync({
+      account_id: accountId,
       planCode: planCode.trim(),
       datacenters,
       quantity: qty,
@@ -284,26 +289,25 @@ function CreateQueueDialog({
         </DialogHeader>
 
         <div className="space-y-5 py-2">
+          {/* OVH 账户 */}
+          <div>
+            <label className="block text-[13px] font-medium mb-1.5">OVH 账户 *</label>
+            <AccountSelect value={accountId} onChange={setAccountId} />
+            <p className="text-[11px] text-muted-foreground mt-1">下单时用该账户的凭据,购物车 subsidiary 跟随账户 zone</p>
+          </div>
+
           {/* 服务器计划代码 */}
           <div>
             <label className="block text-[13px] font-medium mb-1.5">服务器计划代码</label>
-            <Input
-              list="planCodeOptions"
-              placeholder="例如：24sk202"
+            <PlanCodeCombobox
               value={planCode}
-              onChange={(e) => setPlanCode(e.target.value)}
-              autoComplete="off"
+              onChange={setPlanCode}
+              servers={servers.data || []}
+              placeholder="选择或搜索服务器型号"
             />
-            <datalist id="planCodeOptions">
-              {(servers.data || []).map((s) => (
-                <option key={s.planCode} value={s.planCode}>
-                  {s.name}
-                </option>
-              ))}
-            </datalist>
             {matchedServer && (
               <p className="text-[11px] text-muted-foreground mt-1 truncate">
-                {matchedServer.name} · {matchedServer.cpu} · {matchedServer.memory}
+                {matchedServer.cpu} · {matchedServer.memory} · {matchedServer.storage}
               </p>
             )}
           </div>
@@ -504,6 +508,7 @@ function QueueRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="font-mono font-semibold text-sm">{item.planCode}</span>
+            <AccountChip accountId={item.accountId} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
             {item.options && item.options.length > 0 && (
               <Chip tone="default">含 {item.options.length} 个可选配置</Chip>
