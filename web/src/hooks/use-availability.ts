@@ -55,6 +55,106 @@ export function useAvailability() {
 }
 
 /**
+ * 按 planCode 索引,保留所有 FQN 变体(不合并)。
+ * 抢购对话框用它按用户当前选配实时算 DC 可用 + 给每个 option chip 上绿/红点。
+ */
+export function buildVariantIndex(
+  items: AvailabilityItem[] | undefined
+): Record<string, AvailabilityItem[]> {
+  const out: Record<string, AvailabilityItem[]> = {};
+  if (!items) return out;
+  for (const item of items) {
+    const pc = item.planCode;
+    if (!pc) continue;
+    (out[pc] ||= []).push(item);
+  }
+  return out;
+}
+
+/** FQN 第一段是 planCode,后面才是 addon 段 */
+function fqnAddonParts(fqn: string): string[] {
+  if (!fqn) return [];
+  return fqn.split(".").slice(1);
+}
+
+/**
+ * FQN 段 vs catalog option value 的匹配。
+ * OVH availability 接口的 FQN 段是"短前缀",比如 `ram-128g-noecc-2933` / `softraid-4x3840nvme-pcie-gen4`,
+ * 但 catalog 返回的 option.value 是带 plan 后缀的完整 planCode,比如 `ram-128g-noecc-2933-rise` /
+ * `softraid-4x3840nvme-pcie-gen4-24adv01-v2`。
+ * 直接相等匹配永远不命中 → 全红 bug。
+ * 这里用双向前缀:相等 / 任一为对方 "x-" 前缀 都算 match,加 "-" 防 `ram-1` 错配 `ram-128g`。
+ */
+function partMatchesValue(part: string, value: string): boolean {
+  if (!part || !value) return false;
+  if (part === value) return true;
+  if (value.startsWith(part + "-")) return true;
+  if (part.startsWith(value + "-")) return true;
+  return false;
+}
+
+/** variant 的 FQN 是否覆盖所有 required option value */
+export function variantCoversAll(v: AvailabilityItem, required: string[]): boolean {
+  if (required.length === 0) return true;
+  const parts = fqnAddonParts(v.fqn);
+  return required.every((val) => parts.some((p) => partMatchesValue(p, val)));
+}
+
+/** 找出 grouped options 里哪个 value 跟这个 FQN 段对得上(返回第一个,通常该组只有一个匹配) */
+export function fqnMatchesOption(fqn: string, optionValue: string): boolean {
+  const parts = fqnAddonParts(fqn);
+  return parts.some((p) => partMatchesValue(p, optionValue));
+}
+
+/**
+ * 这个 addon 是否出现在任何"有 DC 有货"的 FQN 里。
+ * 语义:不强求其它组的当前选配匹配,只判断"换成这个 addon 后,理论上能找到某种组合在某 DC 有货"。
+ * 用在 option chip 的绿/红点上,给用户"这个 addon 至少存在于某个有货组合中"的提示。
+ * (DC 红绿用的 variantDcStatus 仍按当前完整选配判定,免得用户点完进队列又被 OVH 拒。)
+ *
+ * 兼容 hasStockWithOption 的旧签名以减少调用方改动;currentPicks / swapGroup 现在不参与判定。
+ */
+export function hasStockWithOption(
+  variants: AvailabilityItem[] | undefined,
+  _currentPicks: Record<string, string>,
+  _swapGroup: string,
+  candidate: string
+): boolean {
+  if (!variants || variants.length === 0) return true;
+  for (const v of variants) {
+    if (!fqnMatchesOption(v.fqn, candidate)) continue;
+    for (const dc of v.datacenters || []) {
+      const s = dc.availability;
+      if (s && s !== "unavailable" && s !== "unknown") return true;
+    }
+  }
+  return false;
+}
+
+/** 用户当前选配组合下,每个 DC 的真实状态 */
+export function variantDcStatus(
+  variants: AvailabilityItem[] | undefined,
+  pickedAddons: string[]
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!variants) return out;
+  const req = pickedAddons.filter(Boolean);
+  for (const v of variants) {
+    if (!variantCoversAll(v, req)) continue;
+    for (const dc of v.datacenters || []) {
+      const code = dc.datacenter?.toLowerCase();
+      if (!code) continue;
+      const incoming = dc.availability;
+      const existing = out[code];
+      const isAvail = (s: string | undefined) => !!s && s !== "unavailable" && s !== "unknown";
+      if (isAvail(existing)) continue;
+      out[code] = incoming;
+    }
+  }
+  return out;
+}
+
+/**
  * 把 OVH availabilities 数组聚合成 `{ [planCode]: { [dcCode]: status } }` 的查表。
  * 同一 planCode 下可能有多个 FQN 变体（不同 memory / storage），同 DC 取"最好的"那个：
  * 任一变体可用 → 标可用；都不可用 → unavailable；都缺 → unknown。

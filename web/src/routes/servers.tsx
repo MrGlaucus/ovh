@@ -25,11 +25,14 @@ import { Loader2 } from "lucide-react";
 import {
   useAvailability,
   buildAvailabilityMap,
+  buildVariantIndex,
+  hasStockWithOption,
   useOvhCatalog,
   buildCatalogIndex,
   buildPriceMap,
   computePriceFromOptions,
   formatPrice,
+  type AvailabilityItem,
   type CatalogIndex,
   type PriceInfo,
 } from "@/hooks/use-availability";
@@ -54,6 +57,8 @@ function ServersPage() {
   // 单次拉取 OVH 公开可用性接口（一条请求拿到所有 planCode × 所有 DC 的状态）
   const availQ = useAvailability();
   const availMap = useMemo(() => buildAvailabilityMap(availQ.data), [availQ.data]);
+  // FQN 级索引,抢购对话框按当前选配实时算 DC 可用 + option 绿红点
+  const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
 
   // OVH 账户信息：拿 ovhSubsidiary 作为默认价格地区
   const account = useAccountInfo();
@@ -256,6 +261,7 @@ function ServersPage() {
             <DetailContent
               server={detailServer}
               realtimeDcMap={availMap[detailServer.planCode]}
+              variants={variantIndex[detailServer.planCode]}
               defaultPrice={priceMap[detailServer.planCode]}
               catalogIdx={catalogIdx}
               subsidiary={subsidiary}
@@ -396,6 +402,7 @@ function SpecRow({ icon, text }: { icon: React.ReactNode; text: string }) {
 function DetailContent({
   server,
   realtimeDcMap,
+  variants,
   defaultPrice,
   catalogIdx,
   subsidiary,
@@ -403,6 +410,8 @@ function DetailContent({
 }: {
   server: ServerPlan;
   realtimeDcMap?: Record<string, string>;
+  /** 此 planCode 在 OVH availability 接口里的所有 FQN 变体 */
+  variants?: AvailabilityItem[];
   /** 用默认配置算出的代表价，作为用户尚未变动时的兜底显示 */
   defaultPrice?: PriceInfo;
   /** 目录索引：用户切配置时实时算价用 */
@@ -433,15 +442,9 @@ function DetailContent({
     for (const d of server.datacenters || []) m[d.datacenter.toLowerCase()] = d.availability;
     return m;
   }, [server.datacenters]);
-  // 实时覆盖静态：页面级单次 OVH 接口拿到的状态优先生效
-  const dcMap = useMemo(() => ({ ...staticDcMap, ...(realtimeDcMap || {}) }), [staticDcMap, realtimeDcMap]);
-  // 标准 OVH 12 DC：避免后端 datacenters 数组的重复 / 原始 YNM 码
+  // 实时覆盖静态:plan 级聚合,无 variants 数据时兜底
+  const aggregateDcMap = useMemo(() => ({ ...staticDcMap, ...(realtimeDcMap || {}) }), [staticDcMap, realtimeDcMap]);
   const total = OVH_DATACENTERS.length;
-  const ok = OVH_DATACENTERS.filter((dc) => {
-    const status = lookupDcStatus(dcMap, dc);
-    return !!status && status !== "unavailable" && status !== "unknown";
-  }).length;
-  const ratio = total > 0 ? ok / total : 0;
 
   // 按组拆分可选配置 + 默认值集合
   const grouped = useMemo(() => groupOptions(server.availableOptions), [server.availableOptions]);
@@ -450,7 +453,9 @@ function DetailContent({
     [server.defaultOptions]
   );
 
-  // 各组的当前选中值（按 group key 索引）。默认从 defaultOptions 里取该组里命中的那个 value。
+  // 各组的当前选中值（按 group key 索引）。默认从 catalog 的 defaultOptions 里取该组里命中的那个 value。
+  // 用户切配置后,每个 option chip / 每个 DC 的红绿点会实时反映"这套组合是否有 DC 有货",
+  // 用户看到红就自己换 —— 不替用户自动改默认值。
   const initialPicked = useMemo(() => {
     const out: Partial<Record<OptionGroupKey, string>> = {};
     (Object.keys(grouped) as OptionGroupKey[]).forEach((g) => {
@@ -462,6 +467,28 @@ function DetailContent({
     return out;
   }, [grouped, defaultValueSet]);
   const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>(initialPicked);
+
+  // DC 红绿:看"该 DC 在任何 FQN 里有货否",跟卡片外面口径一致。
+  // 用户看 DC 红绿决定去哪个机房,看 option chip 红绿决定换什么配置。
+  // 当前完整选配 vs 实际可下单的精确校验放到提交按钮那一步处理(待加)。
+  const dcMap = aggregateDcMap;
+
+  const ok = OVH_DATACENTERS.filter((dc) => {
+    const status = lookupDcStatus(dcMap, dc);
+    return !!status && status !== "unavailable" && status !== "unknown";
+  }).length;
+  const ratio = total > 0 ? ok / total : 0;
+
+  // option chip 上的有货预判。
+  // OVH availability FQN 只包含 planCode.memory.storage[.systemStorage] 三段,
+  // 带宽 / vRack / CPU / other 这些 addon 不在 FQN 里 → 它们的库存跟主机解耦,
+  // 主机有货就总能加购,这些组固定绿,不参与 FQN 匹配。
+  const optionHasStock = (groupKey: OptionGroupKey, value: string): boolean => {
+    if (groupKey === "bandwidth" || groupKey === "vrack" || groupKey === "cpu" || groupKey === "other") {
+      return true;
+    }
+    return hasStockWithOption(variants, picked as Record<string, string>, groupKey, value);
+  };
 
   // 用户选中的所有 option value（非默认值才计入，让 Queue 表单只填差异化部分；
   // 但保险起见全量传过去，让后端忽略相同默认值即可）
@@ -534,6 +561,7 @@ function DetailContent({
               options={grouped[g]}
               picked={picked[g] || ""}
               defaultValueSet={defaultValueSet}
+              hasStock={variants && variants.length > 0 ? (value) => optionHasStock(g, value) : undefined}
               onPick={(value) => setPicked((p) => ({ ...p, [g]: value }))}
             />
           ))}
@@ -708,12 +736,16 @@ function OptionGroupSection({
   options,
   picked,
   defaultValueSet,
+  hasStock,
   onPick,
 }: {
   groupKey: OptionGroupKey;
   options: ServerOption[];
   picked: string;
   defaultValueSet: Set<string>;
+  /** 给定 option value,跟用户其它选配组合后能否凑出至少一个 DC 有货。
+   *  undefined 表示 OVH availability 数据没回,不渲染绿/红点。 */
+  hasStock?: (value: string) => boolean;
   onPick: (value: string) => void;
 }) {
   const Icon = ICON_MAP[groupKey];
@@ -727,6 +759,7 @@ function OptionGroupSection({
         {options.map((opt) => {
           const active = picked === opt.value;
           const isDefault = defaultValueSet.has(opt.value);
+          const inStock = hasStock ? hasStock(opt.value) : undefined;
           return (
             <button
               key={opt.value}
@@ -738,12 +771,18 @@ function OptionGroupSection({
                   ? "border-foreground bg-foreground text-background"
                   : "border-border bg-secondary/40 hover:bg-secondary text-foreground")
               }
-              title={opt.value}
+              title={inStock === false ? `${opt.value} (当前组合在所有 DC 缺货)` : opt.value}
             >
+              {inStock !== undefined && (
+                <span
+                  className={
+                    "inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 " +
+                    (inStock ? "bg-emerald-500" : "bg-red-500")
+                  }
+                  aria-label={inStock ? "有货" : "缺货"}
+                />
+              )}
               <span className="font-semibold">{formatOptionDisplay(opt, groupKey)}</span>
-              <code className={"font-mono text-[10px] " + (active ? "opacity-70" : "text-muted-foreground")}>
-                {opt.value}
-              </code>
               {isDefault && (
                 <span className={"text-[9px] px-1.5 py-0.5 rounded-full " + (active ? "bg-background/20" : "bg-foreground/10")}>
                   默认
