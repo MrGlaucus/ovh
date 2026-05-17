@@ -47,7 +47,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 		options := body.Options
 		if len(options) == 0 {
-			availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, body.PlanCode)
+			availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, body.PlanCode, body.AccountID)
 			for _, cfg := range availByConfig {
 				if dcStatus, ok := cfg.Datacenters[body.Datacenter]; ok &&
 					dcStatus != "unavailable" && dcStatus != "unknown" && len(cfg.Options) > 0 {

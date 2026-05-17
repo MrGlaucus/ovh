@@ -25,8 +25,14 @@ type ConfigAvailability struct {
 	Options     []string          `json:"options"`
 }
 
-func CheckServerAvailabilityWithConfigs(state *app.State, planCode string) map[string]*ConfigAvailability {
-	client, err := state.OVH.ClientFor("")
+// CheckServerAvailabilityWithConfigs 返回每个配置组合的可用性 + 匹配到的 API2 options。
+//   - accountID:决定用哪个账户的 OVH client 和 zone 拉 catalog。空 = 默认账户。
+//     `/dedicated/server/datacenter/availabilities` 是全局接口,client 走哪个账户无所谓;
+//     但 `/order/catalog/public/eco` 必须用对应 subsidiary 拉,否则跨子公司账户的 options 匹配会失败。
+//   - monitor 检查 loop 没有"当前账户"概念,直接传 "",意味着只能保证默认账户 + 同 subsidiary 账户准确;
+//     quick-order / Telegram 这种已知 account_id 的调用方应该传具体 ID。
+func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accountID string) map[string]*ConfigAvailability {
+	client, err := state.OVH.ClientFor(accountID)
 	if err != nil {
 		return map[string]*ConfigAvailability{}
 	}
@@ -48,8 +54,8 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string) map[s
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
 
-	// 取一次目录用于匹配 API2 选项;多账户:zone 跟默认账户走
-	acc, _ := state.FindAccount("")
+	// 取目录用于匹配 API2 选项:用指定账户的 subsidiary
+	acc, _ := state.FindAccount(accountID)
 	subsidiary := acc.Zone
 	if subsidiary == "" {
 		subsidiary = "IE"

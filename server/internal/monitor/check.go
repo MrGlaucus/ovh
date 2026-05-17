@@ -36,7 +36,9 @@ func (n notification) oldStatusJSON() interface{} {
 // CheckAvailabilityChange 对应 Python: check_availability_change
 func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	planCode := sub.PlanCode
-	currentAvailability := catalog.CheckServerAvailabilityWithConfigs(m.state, planCode)
+	// 监控用订阅 auto_order 账户的 subsidiary 拉 catalog,这样跨子公司 multi-account
+	// 触发 auto-order 时,options 匹配能命中目标账户独有的项。无 auto-order 账户时落默认账户。
+	currentAvailability := catalog.CheckServerAvailabilityWithConfigs(m.state, planCode, sub.AutoOrderAccountID)
 	if len(currentAvailability) == 0 {
 		m.state.Logger.Warn(fmt.Sprintf("无法获取 %s 的可用性信息", planCode), "monitor")
 		return

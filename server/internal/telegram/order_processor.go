@@ -28,7 +28,8 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 	if !state.HasAnyAccount() {
 		return OrderResult{Success: false, Message: "未配置任何 OVH 账户"}
 	}
-	availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, planCode)
+	// TG /buy 没有 account 概念,落默认账户的 subsidiary
+	availByConfig := catalog.CheckServerAvailabilityWithConfigs(state, planCode, "")
 	if len(availByConfig) == 0 {
 		return OrderResult{Success: false, Message: "无法获取 " + planCode + " 的可用性信息"}
 	}
