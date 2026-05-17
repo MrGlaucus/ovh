@@ -2,10 +2,10 @@
 
 OVH 独立服务器 / VPS / Eco 系列**抢购 + 监控 + 管理**控制台。
 
-实时检测 OVH 各数据中心库存,发现可购买的服务器时按用户配置(机房、内存、存储、带宽、vRack)自动下单。后台同时管理已购买服务器的全生命周期(重启 / 重装 / IPMI / BIOS / 启动模式 / 维护工单 / 联系人变更 / 带宽 / 防火墙 / FTP 备份 / vRack / Secondary DNS 等)。
+实时检测 OVH 各数据中心库存,发现可购买的服务器时按用户配置(机房、内存、存储、带宽、vRack)自动下单。后台同时管理已购买服务器的全生命周期(重启 / 重装 / IPMI / BIOS / 启动模式 / 维护工单 / 联系人变更 / 带宽 / 防火墙 / FTP 备份 / vRack / Secondary DNS 等)。支持**多 OVH 账户**同时管理,抢购 / 监控按账户隔离。
 
-> 本项目基于 [coolci/OVH-BUY](https://github.com/coolci/OVH-BUY) 二开。
-> 主要改造:Python Flask 后端 → Go (Gin) + SQLite;前端 Vue 重写为 Vite/React + TanStack + shadcn-ui;前后端 //go:embed 打包成**单二进制**(自带 SQLite, 跨平台无依赖);新增强制 OvhCredsGate / 配置绑定狙击 / 双 SQLite driver(modernc + mattn build tag 切换)等。
+> 本项目灵感来自 [coolci/OVH-BUY](https://github.com/coolci/OVH-BUY)。
+> 技术栈与架构全部重新设计:Go (Gin) + SQLite 后端、Vite/React + TanStack + shadcn-ui 前端、`//go:embed` 单二进制部署(自带 SQLite, 跨平台无依赖)、强制 OvhCredsGate、多账户支持、双 SQLite driver(`modernc.org/sqlite` 纯 Go / `mattn/go-sqlite3` cgo, build tag 自动选)、自动检测 GitHub Releases 更新等。
 
 ## 技术栈
 
@@ -31,9 +31,9 @@ OVH 独立服务器 / VPS / Eco 系列**抢购 + 监控 + 管理**控制台。
 │       ├── handlers/     # Gin handler
 │       ├── monitor/      # 服务器补货监控
 │       ├── vps/          # VPS 补货监控
-│       ├── sniper/       # 配置绑定狙击
 │       ├── purchase/     # 下单流程
 │       ├── price/        # OVH cart 询价
+│       ├── ovh/          # 按 account_id 路由的多账户 client 工厂
 │       └── ...
 └── web/      # 前端 (Vite + TanStack, dev 默认 :19997)
     └── src/
@@ -85,9 +85,11 @@ npm run dev             # 默认 :19997, /api/* 自动反代到 19998
 打开浏览器后会依次出现两层全屏遮罩,都过了才能进主界面:
 
 1. **AuthGate**:输入 `.env` 里设置的 `API_SECRET_KEY`(没设的话用默认值,见下)
-2. **OvhCredsGate**:填 OVH `APP KEY / APP SECRET / CONSUMER KEY`,选 OVH 子公司(Zone),`Endpoint` / `IAM` 自动派生。前端会调 `POST /api/verify-auth` 真去 OVH 验一次,通过才放行。
+2. **OvhCredsGate**:无任何 OVH 账户时强制弹出。填**账户名称** + OVH 子公司(Zone) + `APP KEY / APP SECRET / CONSUMER KEY`,`Endpoint` / `IAM` 自动派生。后端 `POST /api/accounts` 落 `ovh_accounts` 表并真去 OVH 验一次,通过才放行。
 
 凭据通过后,前端立刻在后台 prefetch 三件套(服务器目录 / catalog / 可用性),用户切到服务器列表页**直接出数据,不会再走"加载中"**。
+
+后续可在"设置 → OVH 账户"加更多账户。每个账户独立的 endpoint / 凭据 / Zone,**抢购队列、监控订阅、自动下单全部按账户隔离**。服务器控制 tab 顶部有账户切换器,可在已登录账户之间切换查看。
 
 ## 配置
 
@@ -102,24 +104,31 @@ GIN_MODE=release                 # debug | release
 DEBUG=false                      # true 时启用 debug 日志
 ```
 
-OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页录入,落 SQLite `kv` 表的 `config` key。`.gitignore` 默认拒绝所有 `.env` 入库。
+OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab 录入,落 SQLite `ovh_accounts` 表(每个账户一行,独立 endpoint / AppKey / Secret / ConsumerKey / Zone)。`.gitignore` 默认拒绝所有 `.env` 入库。
 
 ## 主要功能
+
+### 多账户
+- **账户管理**:设置页"OVH 账户" tab 增删改查,每条记录有独立**名称 + Zone + endpoint + AppKey/Secret/ConsumerKey**
+- **账户隔离**:抢购队列、抢购历史、监控订阅都标 `account_id`,后端 goroutine 按 account_id 取对应 OVH client 下单
+- **级联清理**:删账户时关联 history / queue 自动删除,监控订阅的"自动下单账户"字段清空(订阅本身保留,只通知不下单)
+- **默认账户**:其中一个标 `is_default`,新建对话框不选时自动用默认账户
+- **凭据校验**:新建 / 更新账户都会真去 OVH 调一次 `/me`,失败不入库
 
 ### 抢购
 - **服务器列表**:卡片网格 + 实时 DC 库存灯(绿可用 / 红缺货),点击直接选配置下单
 - **配置选择器**:按 OVH `addonFamilies`(CPU / 内存 / 系统盘 / 数据盘 / 带宽 / vRack)分组单选,默认值预选
-- **抢购队列**:每台服务器 × 每个 DC × 数量 独立任务,可暂停 / 恢复 / 删除,按 retry interval 轮询 OVH 库存
+- **抢购队列**:每台服务器 × 每个 DC × 数量 独立任务,**每个任务绑定到一个 OVH 账户**,可暂停 / 恢复 / 删除,按 retry interval 轮询 OVH 库存
 - **fail-fast**:用户选的配置匹配不上 OVH 当前可订购的 addon → 整单失败,绝不退化到默认 HDD
-- **配置绑定狙击**:把"已下架"的型号 + 配置绑定监听,OVH 重新上架立即抢
 - **价格预览**:18 个 OVH subsidiary 切换比价(EUR / USD / CAD / GBP / SGD / AUD / INR / PLN ...),前端用本地 catalog 算,不走 cart 流程
 
 ### 监控
-- **服务器补货**:订阅 planCode + DC 组合,状态变化推 Telegram,可选自动下单
+- **服务器补货**:订阅 planCode + DC 组合,状态变化推 Telegram。**自动下单可选指定账户**;不选只通知不下单
 - **VPS 补货**:同上,针对 OVH VPS 产品线(区分 Linux / Windows 镜像)
 - **历史时间线**:每个订阅完整变化记录
 
 ### 已购服务器管理
+- **顶部账户切换器**:服务器控制 tab 头单独有账户下拉,切换后所有 `/server-control/*` 请求由 axios 拦截器自动追加 `?account=<id>`,无需逐 hook 改造
 - **概览**:硬件信息 + 服务到期 + IP / 网卡 + MRTG 流量图
 - **电源 / 系统**:重启 / 重装(含 ZFS / 软 RAID / 自定义分区)/ IPMI 控制台 / 启动模式 / SPLA Windows 解锁 / 任务列表 / BIOS / 安装进度。重装接口加了 per-service `TryLock`,防双击重复提交
 - **维护**:维护记录 + 硬件更换工单(硬盘 / 内存 / 散热)+ 联系人变更(Token 邮件确认)
@@ -127,24 +136,25 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页录入,落 SQLite 
 - **隐私模式**:一键打码所有 IP / MAC / 反向 DNS 主机名
 
 ### 其它
-- **账户管理**:余额 / 退款记录 / 邮件历史
-- **抢购历史**:订单 + 价格 + 倒计时 + OVH 订单链接直跳
+- **账户管理**:余额 / 退款记录 / 邮件历史(按当前账户切换)
+- **抢购历史**:订单 + 价格 + 倒计时 + OVH 订单链接直跳,每行带账户标识 chip
 - **详细日志**:实时刷新,按级别 / 关键字筛选
+- **自动检测更新**:仪表盘 mount 时调一次 `GET /api/version/check-update` 拉 GitHub releases 比版本号,有新版在版本号旁显示 ✨ chip 跳 release 页;后端纯被动响应,无 goroutine / 无定时
 
 ## 持久化
 
-全部业务数据在 SQLite(`data/sniper.db`),7 张表:
+全部业务数据在 SQLite(`data/sniper.db`),8 张表:
 
 | 表 | 用途 |
 |---|---|
-| `kv` | 单例配置(OVH 凭据 / TG token / VPS 检查间隔等) |
-| `queue` | 抢购队列 |
-| `history` | 抢购历史 |
+| `kv` | 单例配置(TG token / VPS 检查间隔等非账户级配置) |
+| `ovh_accounts` | OVH 账户(独立 endpoint / AppKey / Secret / ConsumerKey / Zone / is_default) |
+| `queue` | 抢购队列(`account_id` 关联) |
+| `history` | 抢购历史(`account_id` 关联) |
 | `servers` | OVH 服务器目录缓存(刷新一次写一次,2h TTL) |
 | `catalogs` | OVH 公共 catalog 每个 subsidiary 一份(2h TTL),浏览页价格走它 |
-| `monitor_subscriptions` | 服务器补货订阅 |
-| `vps_subscriptions` | VPS 补货订阅 |
-| `config_sniper_tasks` | 配置绑定狙击任务 |
+| `monitor_subscriptions` | 服务器补货订阅(`auto_order_account_id` 关联) |
+| `vps_subscriptions` | VPS 补货订阅(同上) |
 
 日志仍走 JSON 文件(`data/logs/app.log.json`),不进 SQLite。
 
@@ -160,10 +170,10 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页录入,落 SQLite 
 
 ## 安全 / 鉴权
 
-- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook`)都要求 `X-API-Key` 请求头
-- 两层全屏 gate:AuthGate(API 密钥) + OvhCredsGate(OVH 凭据)
+- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update`)都要求 `X-API-Key` 请求头
+- 两层全屏 gate:AuthGate(API 密钥) + OvhCredsGate(至少一个 OVH 账户)
 - API Key 存浏览器 localStorage,失效自动清除并要求重新输入
-- OVH 凭据落 SQLite kv 表,前端通过 OvhCredsGate / 设置页录入
+- OVH 凭据落 SQLite `ovh_accounts` 表,前端通过 OvhCredsGate / 设置页"OVH 账户" tab 录入
 - `.gitignore` 默认拒绝所有 `.env` 文件入库(只允许 `*.env.example`)
 
 ## OVH API 对接
