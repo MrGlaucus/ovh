@@ -111,40 +111,6 @@ func (db *DB) ListHistory() ([]types.PurchaseHistoryEntry, error) {
 	return out, nil
 }
 
-// UpsertHistory 单条 upsert
-func (db *DB) UpsertHistory(h types.PurchaseHistoryEntry) error {
-	r, err := historyToRow(h)
-	if err != nil {
-		return err
-	}
-	_, err = db.NamedExec(`
-		INSERT INTO history
-		(id, task_id, plan_code, datacenter, options, status, order_id, order_url,
-		 error_message, purchase_time, attempt_count, expiration_time, price)
-		VALUES
-		(:id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
-		 :error_message, :purchase_time, :attempt_count, :expiration_time, :price)
-		ON CONFLICT(id) DO UPDATE SET
-		  account_id      = excluded.account_id,
-		  task_id         = excluded.task_id,
-		  plan_code       = excluded.plan_code,
-		  datacenter      = excluded.datacenter,
-		  options         = excluded.options,
-		  status          = excluded.status,
-		  order_id        = excluded.order_id,
-		  order_url       = excluded.order_url,
-		  error_message   = excluded.error_message,
-		  purchase_time   = excluded.purchase_time,
-		  attempt_count   = excluded.attempt_count,
-		  expiration_time = excluded.expiration_time,
-		  price           = excluded.price
-	`, r)
-	if err != nil {
-		return fmt.Errorf("upsert history %s: %w", h.ID, err)
-	}
-	return nil
-}
-
 // ReplaceHistory 全表覆盖（保留 ReplaceX API 一致）
 func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 	tx, err := db.Beginx()

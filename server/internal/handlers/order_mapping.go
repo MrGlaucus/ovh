@@ -48,16 +48,19 @@ func GetOrderMapping(state *app.State) gin.HandlerFunc {
 
 		state.Logger.Info("开始同步订单映射数据...", "server_control")
 
-		// 1. 获取所有服务器创建时间
+		// 1. 获取所有服务器创建时间(并发拉 serviceInfos)
 		creationDates := []string{}
 		var serverList []string
 		if err := client.Get("/dedicated/server", &serverList); err == nil {
-			for _, sn := range serverList {
-				var svcInfo map[string]interface{}
-				if err := client.Get("/dedicated/server/"+sn+"/serviceInfos", &svcInfo); err == nil {
-					if cd, ok := svcInfo["creation"].(string); ok && cd != "" {
-						creationDates = append(creationDates, cd)
-					}
+			details := parallelGetStringKeys(client, serverList, func(sn string) string {
+				return "/dedicated/server/" + sn + "/serviceInfos"
+			}, 10)
+			for _, svcInfo := range details {
+				if svcInfo == nil {
+					continue
+				}
+				if cd, ok := svcInfo["creation"].(string); ok && cd != "" {
+					creationDates = append(creationDates, cd)
 				}
 			}
 		} else {

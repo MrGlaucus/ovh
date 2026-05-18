@@ -102,43 +102,6 @@ func (db *DB) ListQueue() ([]types.QueueItem, error) {
 	return out, nil
 }
 
-// UpsertQueueItem 插入或更新（按 id 主键 upsert）
-func (db *DB) UpsertQueueItem(q types.QueueItem) error {
-	r, err := queueItemToRow(q)
-	if err != nil {
-		return err
-	}
-	_, err = db.NamedExec(`
-		INSERT INTO queue
-		(id, plan_code, datacenter, options, status, created_at, updated_at,
-		 retry_interval, retry_count, max_retries, last_check_time,
-		 quick_order, priority, from_telegram, config_sniper_task_id)
-		VALUES
-		(:id, :plan_code, :datacenter, :options, :status, :created_at, :updated_at,
-		 :retry_interval, :retry_count, :max_retries, :last_check_time,
-		 :quick_order, :priority, :from_telegram, :config_sniper_task_id)
-		ON CONFLICT(id) DO UPDATE SET
-		  account_id            = excluded.account_id,
-		  plan_code             = excluded.plan_code,
-		  datacenter            = excluded.datacenter,
-		  options               = excluded.options,
-		  status                = excluded.status,
-		  updated_at            = excluded.updated_at,
-		  retry_interval        = excluded.retry_interval,
-		  retry_count           = excluded.retry_count,
-		  max_retries           = excluded.max_retries,
-		  last_check_time       = excluded.last_check_time,
-		  quick_order           = excluded.quick_order,
-		  priority              = excluded.priority,
-		  from_telegram         = excluded.from_telegram,
-		  config_sniper_task_id = excluded.config_sniper_task_id
-	`, r)
-	if err != nil {
-		return fmt.Errorf("upsert queue %s: %w", q.ID, err)
-	}
-	return nil
-}
-
 // ReplaceQueue 用给定列表覆盖整张表（事务内 DELETE + 批量 INSERT）。
 // 与原 storage.WriteJSON 语义对齐。
 func (db *DB) ReplaceQueue(items []types.QueueItem) error {
