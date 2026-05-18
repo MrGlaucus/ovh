@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -242,63 +243,81 @@ func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{},
 		}
 	}
 
-	successCount := 0
-	failCount := 0
-
+	// 把 N 个 DC × M 个数量打成一个任务列表后并发发出去。
+	// 调用的是本地 /api/queue/quick-order(只是入队,不真去 OVH),所以并发完全安全;
+	// 也不会冲击 OVH —— 真的下单在 ProcessQueueLoop 里按 concurrentBatchSize=10 节流跑。
+	type orderTask struct {
+		dc  string
+		idx int // 当前 DC 下的第 idx+1 个,日志用
+	}
+	tasks := make([]orderTask, 0, len(targets)*quantity)
 	for _, n := range targets {
 		for i := 0; i < quantity; i++ {
-			payload := map[string]interface{}{
-				"account_id":         accountID,
-				"planCode":           planCode,
-				"datacenter":         n.dc,
-				"options":            options,
-				"fromMonitor":        true,
-				"skipDuplicateCheck": true,
-			}
-			body, _ := json.Marshal(payload)
-			req, _ := http.NewRequest(http.MethodPost,
-				"http://127.0.0.1:"+m.state.Port+"/api/queue/quick-order",
-				bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-API-Key", m.state.APIKey)
-
-			m.state.Logger.Info(fmt.Sprintf("[monitor->order] 尝试快速下单 (%d/%d): %s@%s, options=%v",
-				i+1, quantity, planCode, n.dc, options), "monitor")
-
-			client := &http.Client{Timeout: 30 * time.Second}
-			resp, err := client.Do(req)
-			if err != nil {
-				failCount++
-				m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 快速下单请求异常 (%d/%d): %s",
-					i+1, quantity, err.Error()), "monitor")
-				continue
-			}
-			respBody := make([]byte, 0, 1024)
-			buf := make([]byte, 1024)
-			for {
-				// 避免与外层 notification n 同名困扰阅读
-				nr, rerr := resp.Body.Read(buf)
-				if nr > 0 {
-					respBody = append(respBody, buf[:nr]...)
-				}
-				if rerr != nil {
-					break
-				}
-			}
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				successCount++
-				m.state.Logger.Info(fmt.Sprintf("[monitor->order] 快速下单成功 (%d/%d): %s@%s",
-					i+1, quantity, planCode, n.dc), "monitor")
-			} else {
-				failCount++
-				m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 快速下单失败 (%d/%d, %d): %s",
-					i+1, quantity, resp.StatusCode, string(respBody)), "monitor")
-			}
+			tasks = append(tasks, orderTask{dc: n.dc, idx: i})
 		}
 	}
-	m.state.Logger.Info(fmt.Sprintf("[monitor->order] 批量下单完成: 成功=%d, 失败=%d, 总计=%d",
-		successCount, failCount, totalOrders), "monitor")
 
-	_ = bytes.NewReader(nil) // 保持 import bytes 使用
+	var successCount, failCount int64
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	postOne := func(t orderTask) {
+		payload := map[string]interface{}{
+			"account_id":         accountID,
+			"planCode":           planCode,
+			"datacenter":         t.dc,
+			"options":            options,
+			"fromMonitor":        true,
+			"skipDuplicateCheck": true,
+		}
+		body, _ := json.Marshal(payload)
+		req, _ := http.NewRequest(http.MethodPost,
+			"http://127.0.0.1:"+m.state.Port+"/api/queue/quick-order",
+			bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", m.state.APIKey)
+
+		m.state.Logger.Info(fmt.Sprintf("[monitor->order] 尝试快速下单 (%d/%d): %s@%s, options=%v",
+			t.idx+1, quantity, planCode, t.dc, options), "monitor")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			atomic.AddInt64(&failCount, 1)
+			m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 快速下单请求异常 (%d/%d): %s",
+				t.idx+1, quantity, err.Error()), "monitor")
+			return
+		}
+		respBody := make([]byte, 0, 1024)
+		buf := make([]byte, 1024)
+		for {
+			nr, rerr := resp.Body.Read(buf)
+			if nr > 0 {
+				respBody = append(respBody, buf[:nr]...)
+			}
+			if rerr != nil {
+				break
+			}
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			atomic.AddInt64(&successCount, 1)
+			m.state.Logger.Info(fmt.Sprintf("[monitor->order] 快速下单成功 (%d/%d): %s@%s",
+				t.idx+1, quantity, planCode, t.dc), "monitor")
+		} else {
+			atomic.AddInt64(&failCount, 1)
+			m.state.Logger.Warn(fmt.Sprintf("[monitor->order] 快速下单失败 (%d/%d, %d): %s",
+				t.idx+1, quantity, resp.StatusCode, string(respBody)), "monitor")
+		}
+	}
+
+	var wg sync.WaitGroup
+	for _, t := range tasks {
+		wg.Add(1)
+		go func(t orderTask) {
+			defer wg.Done()
+			postOne(t)
+		}(t)
+	}
+	wg.Wait()
+
+	m.state.Logger.Info(fmt.Sprintf("[monitor->order] 批量下单完成: 成功=%d, 失败=%d, 总计=%d",
+		atomic.LoadInt64(&successCount), atomic.LoadInt64(&failCount), totalOrders), "monitor")
 }
