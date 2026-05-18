@@ -10,7 +10,7 @@ import {
   Plus,
   Loader2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,6 +42,13 @@ import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { AccountSelect } from "@/components/common/AccountSelect";
 import { AccountChip } from "@/components/common/AccountChip";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
+import { OptionGroupSection } from "@/components/common/OptionGroupSection";
+import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
+import {
+  useAvailability,
+  buildVariantIndex,
+  hasStockWithOption,
+} from "@/hooks/use-availability";
 
 /** 抢购队列：列表 + 暂停/恢复/删除/清空 + 新建抢购任务 */
 export const Route = createFileRoute("/queue")({
@@ -196,20 +203,24 @@ function CreateQueueDialog({
   initialOptions?: string;
 }) {
   const servers = useServers();
+  const availQ = useAvailability();
+  const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
   const create = useCreateQueueItem();
   const [accountId, setAccountId] = useState("");
   const [planCode, setPlanCode] = useState(initialPlanCode || "");
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
-  const [optionsInput, setOptionsInput] = useState(initialOptions || "");
+  // 用户选的 addon,按组索引。每次切 planCode 自动清空(让用户重新选)。
+  const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
+  // 手填的额外 addon planCode(catalog 里没分组覆盖到的、或用户想加的特殊 addon)
+  const [extraInput, setExtraInput] = useState("");
 
   useEffect(() => {
     if (open) {
       if (initialPlanCode) setPlanCode(initialPlanCode);
-      if (initialOptions) setOptionsInput(initialOptions);
     }
-  }, [initialPlanCode, initialOptions, open]);
+  }, [initialPlanCode, open]);
 
   /** planCode 匹配到的服务器（用于显示名称提示） */
   const matchedServer = useMemo(
@@ -217,15 +228,76 @@ function CreateQueueDialog({
     [servers.data, planCode]
   );
 
-  /** 解析逗号分隔的可选配置 */
-  const parsedOptions = useMemo(
-    () =>
-      optionsInput
-        .split(",")
-        .map((v) => v.trim())
-        .filter(Boolean),
-    [optionsInput]
+  // 切 planCode 清空 picked —— 之前选的 addon 对新机型多半不适用。
+  // initialOptions 由外部传入时(从其它入口"快速添加"过来),解析后塞进 picked 让用户能看到。
+  const prevPlanCodeRef = useRef("");
+  useEffect(() => {
+    const code = planCode.trim();
+    if (code === prevPlanCodeRef.current) return;
+    prevPlanCodeRef.current = code;
+    if (initialOptions && code === (initialPlanCode || "").trim()) {
+      // 走"外部带 initialOptions 进来"分支:
+      //   - 能映射到 chip 组的塞进 picked
+      //   - 剩下没匹配上的(chip 没覆盖到的 addon)塞进 extraInput
+      const wantedList = initialOptions.split(",").map((v) => v.trim()).filter(Boolean);
+      const consumed = new Set<string>();
+      const next: Partial<Record<OptionGroupKey, string>> = {};
+      const groupedMap = matchedServer ? groupOptions(matchedServer.availableOptions) : null;
+      if (groupedMap) {
+        for (const g of Object.keys(groupedMap) as OptionGroupKey[]) {
+          const hit = groupedMap[g].find((o) => wantedList.includes(o.value));
+          if (hit) {
+            next[g] = hit.value;
+            consumed.add(hit.value);
+          }
+        }
+      }
+      setPicked(next);
+      const leftover = wantedList.filter((v) => !consumed.has(v));
+      setExtraInput(leftover.join(", "));
+    } else {
+      setPicked({});
+      setExtraInput("");
+    }
+  }, [planCode, initialOptions, initialPlanCode, matchedServer]);
+
+  /** 按组拆分该机型的所有可选 addon */
+  const grouped = useMemo(
+    () => (matchedServer ? groupOptions(matchedServer.availableOptions) : null),
+    [matchedServer]
   );
+  const defaultValueSet = useMemo(
+    () => new Set((matchedServer?.defaultOptions || []).map((o) => o.value)),
+    [matchedServer]
+  );
+
+  /** 提交给后端的 addon planCode 列表。
+   *  matchedServer 在 → 走 chip 选择(picked);不在 → 走手填(extraInput)。
+   *  二选一,不混用。 */
+  const parsedOptions = useMemo(() => {
+    if (matchedServer) {
+      return Object.values(picked).filter(Boolean) as string[];
+    }
+    return extraInput
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }, [matchedServer, picked, extraInput]);
+
+  // option chip 的绿/红点:跟服务器列表对话框同一套逻辑
+  const variants = matchedServer ? variantIndex[matchedServer.planCode] : undefined;
+  const optionHasStock = (groupKey: OptionGroupKey, value: string): boolean => {
+    if (groupKey === "bandwidth" || groupKey === "vrack" || groupKey === "cpu" || groupKey === "other") {
+      return true;
+    }
+    return hasStockWithOption(
+      variants,
+      picked as Record<string, string>,
+      groupKey,
+      value,
+      datacenters.length > 0 ? datacenters : undefined
+    );
+  };
 
   const qty = Number(quantity) || 1;
   const totalTasks = datacenters.length * qty;
@@ -236,7 +308,9 @@ function CreateQueueDialog({
     setDatacenters([]);
     setQuantity("1");
     setRetryInterval(String(DEFAULT_RETRY_INTERVAL));
-    setOptionsInput("");
+    setPicked({});
+    setExtraInput("");
+    prevPlanCodeRef.current = "";
   };
 
   const handleClose = () => {
@@ -403,21 +477,50 @@ function CreateQueueDialog({
             </div>
           </div>
 
-          {/* 可选配置 */}
+          {/* 可选配置:planCode 在 catalog 里 → 走 chip 选择;
+                planCode 自定义不在 catalog → 走手填。两者互斥不同时存在。 */}
           <div>
             <label className="block text-[13px] font-medium mb-1.5">
               可选配置
               <span className="text-muted-foreground ml-2 font-normal">
-                （留空使用默认，逗号分隔多个）
+                {grouped
+                  ? "（点击 chip 选择,留空走 OVH 默认下单）"
+                  : "（catalog 里没找到这个型号,需要手填 addon planCode）"}
               </span>
             </label>
-            <Input
-              placeholder="例如：ram-64g-ecc-2400, softraid-2x450nvme-24sk50"
-              value={optionsInput}
-              onChange={(e) => setOptionsInput(e.target.value)}
-            />
+            {grouped ? (
+              <div className="space-y-4">
+                {(["cpu", "memory", "systemStorage", "storage", "bandwidth", "vrack", "other"] as OptionGroupKey[])
+                  .filter((g) => grouped[g].length > 0)
+                  .map((g) => (
+                    <OptionGroupSection
+                      key={g}
+                      groupKey={g}
+                      options={grouped[g]}
+                      picked={picked[g] || ""}
+                      defaultValueSet={defaultValueSet}
+                      hasStock={variants && variants.length > 0 ? (value) => optionHasStock(g, value) : undefined}
+                      onPick={(value) =>
+                        setPicked((p) => ({
+                          ...p,
+                          [g]: p[g] === value ? "" : value, // 再点一次取消选中
+                        }))
+                      }
+                    />
+                  ))}
+              </div>
+            ) : (
+              // planCode 不在 catalog 里(用户手填了自定义型号) → 走手动输入
+              <Input
+                placeholder="addon planCode,逗号分隔。例如:ram-64g-ecc-2400, softraid-2x450nvme-24sk50"
+                value={extraInput}
+                onChange={(e) => setExtraInput(e.target.value)}
+              />
+            )}
+
             {parsedOptions.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-2">
+              <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-border">
+                <span className="text-[11px] text-muted-foreground">已选:</span>
                 {parsedOptions.map((opt, i) => (
                   <Chip key={`${opt}-${i}`} tone="default" className="font-mono">
                     {opt}

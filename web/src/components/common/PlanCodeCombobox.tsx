@@ -86,6 +86,10 @@ export function PlanCodeCombobox({
       <PopoverContent
         className="w-[var(--radix-popover-trigger-width)] p-0"
         sideOffset={4}
+        // Combobox 嵌在 Radix Dialog 里时,Dialog 会拦 pointerdown / wheel 事件,
+        // 导致列表无法用鼠标滚轮 / 触摸板下滑。stopPropagation 让事件留在 Popover 里。
+        onWheel={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
       >
         <Command shouldFilter={false}>
           <div className="flex items-center border-b border-border px-3">
@@ -98,7 +102,11 @@ export function PlanCodeCombobox({
               autoFocus
             />
           </div>
-          <Command.List className="max-h-72 overflow-y-auto p-1">
+          <Command.List
+            className="max-h-80 overflow-y-auto overscroll-contain p-1"
+            // overscroll-contain 兜底:wheel 到达列表上下边界时不再冒泡到 Dialog
+            onWheel={(e) => e.stopPropagation()}
+          >
             <Command.Empty className="py-6 text-center text-[12px] text-muted-foreground">
               没有匹配的服务器
             </Command.Empty>

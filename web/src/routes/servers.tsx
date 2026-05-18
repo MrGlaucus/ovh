@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
   Server, RefreshCw, Search, Bell, ShoppingCart, Cpu, MemoryStick, HardDrive, Wifi,
-  Filter, MapPin, Network, HardDriveDownload,
+  Filter, MapPin,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -13,7 +13,7 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { useServers, useAddToMonitor, type ServerPlan, type ServerOption } from "@/hooks/use-servers";
+import { useServers, useAddToMonitor, type ServerPlan } from "@/hooks/use-servers";
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
@@ -29,17 +29,14 @@ import {
   hasStockWithOption,
   useOvhCatalog,
   buildCatalogIndex,
-  buildPriceMap,
   computePriceFromOptions,
   formatPrice,
   type AvailabilityItem,
   type CatalogIndex,
   type PriceInfo,
 } from "@/hooks/use-availability";
-import {
-  groupOptions, formatOptionDisplay, OPTION_GROUP_LABELS,
-  type OptionGroupKey,
-} from "@/lib/option-groups";
+import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
+import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { OVH_DATACENTERS, lookupDcStatus } from "@/lib/datacenters";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 
@@ -101,7 +98,17 @@ function ServersPage() {
   // 单次拉取所选 subsidiary 的目录算价格（base plan + addon family 月费累加）
   const catalogQ = useOvhCatalog(subsidiary);
   const catalogIdx = useMemo(() => buildCatalogIndex(catalogQ.data), [catalogQ.data]);
-  const priceMap = useMemo(() => buildPriceMap(availQ.data, catalogIdx), [availQ.data, catalogIdx]);
+  // 卡片显示价格用每台服务器的 catalog defaultOptions 算,跟详情对话框打开时的初始价格一致。
+  // 旧的 buildPriceMap 走 FQN 维度前缀匹配,跟 catalog 默认值可能挑到不同 addon → 卡片价跟弹窗价对不上。
+  const priceMap = useMemo(() => {
+    const out: Record<string, PriceInfo> = {};
+    for (const srv of q.data || []) {
+      const defaults = (srv.defaultOptions || []).map((o) => o.value).filter(Boolean);
+      const p = computePriceFromOptions(srv.planCode, defaults, catalogIdx);
+      if (p) out[srv.planCode] = p;
+    }
+    return out;
+  }, [q.data, catalogIdx]);
 
   const [search, setSearch] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
@@ -730,82 +737,6 @@ function DetailContent({
   );
 }
 
-/** 单组配置选择器：组内单选，已选项胶囊高亮，默认项右上角标签 */
-function OptionGroupSection({
-  groupKey,
-  options,
-  picked,
-  defaultValueSet,
-  hasStock,
-  onPick,
-}: {
-  groupKey: OptionGroupKey;
-  options: ServerOption[];
-  picked: string;
-  defaultValueSet: Set<string>;
-  /** 给定 option value,跟用户其它选配组合后能否凑出至少一个 DC 有货。
-   *  undefined 表示 OVH availability 数据没回,不渲染绿/红点。 */
-  hasStock?: (value: string) => boolean;
-  onPick: (value: string) => void;
-}) {
-  const Icon = ICON_MAP[groupKey];
-  return (
-    <div>
-      <h3 className="text-[13px] font-semibold mb-2.5 flex items-center gap-1.5">
-        <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-        {OPTION_GROUP_LABELS[groupKey]}
-      </h3>
-      <div className="flex flex-wrap gap-2">
-        {options.map((opt) => {
-          const active = picked === opt.value;
-          const isDefault = defaultValueSet.has(opt.value);
-          const inStock = hasStock ? hasStock(opt.value) : undefined;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => onPick(opt.value)}
-              className={
-                "group relative inline-flex items-center gap-2 px-3 h-9 rounded-full border text-[12px] transition-colors " +
-                (active
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border bg-secondary/40 hover:bg-secondary text-foreground")
-              }
-              title={inStock === false ? `${opt.value} (当前组合在所有 DC 缺货)` : opt.value}
-            >
-              {inStock !== undefined && (
-                <span
-                  className={
-                    "inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 " +
-                    (inStock ? "bg-emerald-500" : "bg-red-500")
-                  }
-                  aria-label={inStock ? "有货" : "缺货"}
-                />
-              )}
-              <span className="font-semibold">{formatOptionDisplay(opt, groupKey)}</span>
-              {isDefault && (
-                <span className={"text-[9px] px-1.5 py-0.5 rounded-full " + (active ? "bg-background/20" : "bg-foreground/10")}>
-                  默认
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/** option 组 → 图标映射 */
-const ICON_MAP: Record<OptionGroupKey, React.ComponentType<{ className?: string }>> = {
-  cpu: Cpu,
-  memory: MemoryStick,
-  systemStorage: HardDriveDownload,
-  storage: HardDrive,
-  bandwidth: Wifi,
-  vrack: Network,
-  other: Server,
-};
 
 /** 简单货币格式化（不需要全名时） */
 function fmtMoney(v: number, currency: string): string {

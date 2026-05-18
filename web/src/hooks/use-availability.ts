@@ -118,12 +118,17 @@ export function hasStockWithOption(
   variants: AvailabilityItem[] | undefined,
   _currentPicks: Record<string, string>,
   _swapGroup: string,
-  candidate: string
+  candidate: string,
+  dcCodes?: string[]
 ): boolean {
   if (!variants || variants.length === 0) return true;
+  const filter = dcCodes && dcCodes.length > 0 ? new Set(dcCodes.map((c) => c.toLowerCase())) : null;
   for (const v of variants) {
     if (!fqnMatchesOption(v.fqn, candidate)) continue;
     for (const dc of v.datacenters || []) {
+      const code = dc.datacenter?.toLowerCase();
+      if (!code) continue;
+      if (filter && !filter.has(code)) continue;
       const s = dc.availability;
       if (s && s !== "unavailable" && s !== "unknown") return true;
     }
@@ -269,10 +274,14 @@ export function buildCatalogIndex(catalog: CatalogData | undefined): CatalogInde
   return { planByCode, addonByCode, currency: catalog.locale?.currencyCode || "EUR" };
 }
 
-/** 月费：取 intervalUnit=month, interval=1, mode=default 的那条 */
+/** 月费:取 intervalUnit=month, interval=1, mode=default 且不是安装费的那条。
+ *  注意:OVH 同一个 plan 的 pricings 里,安装费跟月费两条都满足 interval=1+month+default,
+ *  只是 capacities 不一样(installation vs renew/[])。漏掉这个过滤会把安装费当月费,
+ *  服务器列表卡片显示的价格被错误叠加(=月费+安装费)。 */
 function monthlyPrice(pricings: CatalogPricing[] | undefined): { price: number; tax: number; ok: boolean } {
   if (!pricings) return { price: 0, tax: 0, ok: false };
   for (const pr of pricings) {
+    if ((pr.capacities || []).includes("installation")) continue;
     if (pr.intervalUnit === "month" && pr.interval === 1 && pr.mode === "default") {
       return { price: pr.price / 1e8, tax: pr.tax / 1e8, ok: true };
     }
