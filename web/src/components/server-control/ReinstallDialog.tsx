@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { HardDrive, Search, AlertTriangle, Database, Plus, X as XIcon, Cog, Zap, RefreshCw } from "lucide-react";
+import { HardDrive, Search, AlertTriangle, Database, Plus, X as XIcon, Cog, Zap, RefreshCw, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -264,7 +264,24 @@ export function ReinstallDialog({
             </p>
 
             {tpl.isPending ? (
-              <Skeleton className="h-48 rounded-2xl" />
+              // 跟正式列表同尺寸 + 同左右栏布局的骨架,中间转圈 + 文案,避免"白屏 5 秒不知道在干啥"
+              <div className="border border-border rounded-2xl overflow-hidden grid grid-cols-[140px_1fr] sm:grid-cols-[180px_1fr] lg:grid-cols-[200px_1fr] h-[360px]">
+                <div className="border-r border-border bg-muted/30 p-2 space-y-1.5">
+                  {[0, 1, 2, 3, 4, 5].map((i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                      <Skeleton className="w-5 h-5 rounded-md flex-shrink-0" />
+                      <Skeleton className="h-3 flex-1 rounded" />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-col items-center justify-center gap-3 text-muted-foreground px-4 text-center">
+                  <Loader2 className="w-7 h-7 animate-spin text-foreground/60" />
+                  <div className="space-y-1">
+                    <p className="text-[13px] font-medium text-foreground">正在加载操作系统模板…</p>
+                    <p className="text-[11px]">首次拉 OVH 需要 3-8 秒,之后会缓存</p>
+                  </div>
+                </div>
+              </div>
             ) : filtered.length === 0 ? (
               <EmptyState icon={HardDrive} title="未找到匹配模板" />
             ) : (
