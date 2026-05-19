@@ -60,7 +60,7 @@ export function ChangeContactDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogContent className="w-[95vw] sm:w-full sm:max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Mail className="w-5 h-5" />
@@ -77,11 +77,11 @@ export function ChangeContactDialog({
 
             <TabsContent value="submit" className="overflow-y-auto -mx-6 px-6">
               <div className="space-y-3 py-2">
-                <ContactField label="Admin 联系人 NIC" placeholder="例如 ab12345-ovh" value={admin} onChange={setAdmin} />
-                <ContactField label="Tech 联系人 NIC" placeholder="例如 ab12345-ovh" value={tech} onChange={setTech} />
-                <ContactField label="Billing 联系人 NIC" placeholder="例如 ab12345-ovh" value={billing} onChange={setBilling} />
+                <ContactField label="Admin 联系人" placeholder="ab12345-ovh 或 someone@example.com" value={admin} onChange={setAdmin} />
+                <ContactField label="Tech 联系人" placeholder="ab12345-ovh 或 someone@example.com" value={tech} onChange={setTech} />
+                <ContactField label="Billing 联系人" placeholder="ab12345-ovh 或 someone@example.com" value={billing} onChange={setBilling} />
                 <p className="text-[11px] text-muted-foreground">
-                  NIC handle 格式见 OVH 账户：通常是 2 字母 + 5 位数字 + `-ovh`。留空则保持原联系人。
+                  填 OVH NIC handle(如 ab12345-ovh)或目标 OVH 账户邮箱皆可。留空则保持原联系人。
                 </p>
                 <div className="pt-2">
                   <Button onClick={handleSubmit} disabled={submit.isPending}>

@@ -21,6 +21,11 @@ import {
 import { useHideIp, maskSensitive } from "@/hooks/use-hide-ip";
 import { useActiveServerControlAccount } from "@/hooks/use-active-account";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useServerAliases, useSetServerAlias, aliasOf } from "@/hooks/use-server-aliases";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { OverviewTab } from "@/components/server-control/OverviewTab";
 import { PowerTab } from "@/components/server-control/PowerTab";
 import { MaintenanceTab } from "@/components/server-control/MaintenanceTab";
@@ -81,10 +86,10 @@ function ServerControlPage() {
             : "管理 OVH 独立服务器"
         }
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* 账户切换器:只影响当前 tab,持久化到 localStorage */}
             <Select value={activeAccount} onValueChange={setActiveAccount}>
-              <SelectTrigger className="w-[180px]">
+              <SelectTrigger className="w-full sm:w-[180px]">
                 <SelectValue placeholder="选账户" />
               </SelectTrigger>
               <SelectContent>
@@ -124,10 +129,10 @@ function ServerControlPage() {
         </Card>
       ) : (
         <Card>
-          <CardContent className="p-6 space-y-5">
+          <CardContent className="p-4 sm:p-6 space-y-4 sm:space-y-5">
             {/* 服务器切换器 + 当前选中卡概览 */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-5 border-b border-border">
-              <div className="flex items-center gap-3 min-w-0">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-4 sm:pb-5 border-b border-border">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 min-w-0">
                 <ServerSelector
                   servers={servers}
                   selected={selected}
@@ -135,14 +140,14 @@ function ServerControlPage() {
                   hidden={hidden}
                 />
                 {selected && (
-                  <Chip tone={selected.state === "ok" ? "success" : "warning"}>
+                  <Chip tone={selected.state === "ok" ? "success" : "warning"} className="self-start sm:self-auto">
                     <StatusDot tone={selected.state === "ok" ? "success" : "warning"} pulse={selected.state === "ok"} size="xs" />
                     {selected.state}
                   </Chip>
                 )}
               </div>
               {selected && (
-                <div className="text-[12px] text-muted-foreground truncate font-mono">
+                <div className="text-[11px] sm:text-[12px] text-muted-foreground break-all sm:truncate font-mono">
                   {selected.commercialRange} · {selected.datacenter.toUpperCase()} · {maskSensitive(selected.ip, hidden)}
                 </div>
               )}
@@ -158,7 +163,9 @@ function ServerControlPage() {
 }
 
 /**
- * 顶部服务器选择器：胶囊样式 Select，选项显示 planCode + commercialRange · DC
+ * 顶部服务器选择器：胶囊样式 Select。
+ * - 显示用 alias(有则用之,否则用原 name / service_name)
+ * - 右键单击列表项弹"重命名"小菜单 → 进入 alias 编辑对话框
  */
 function ServerSelector({
   servers,
@@ -171,17 +178,76 @@ function ServerSelector({
   onChange: (serviceName: string) => void;
   hidden: boolean;
 }) {
+  const { data: aliases } = useServerAliases();
+  const [ctxMenu, setCtxMenu] = useState<null | { server: OwnedServer; x: number; y: number }>(null);
+  const [renaming, setRenaming] = useState<null | OwnedServer>(null);
+
+  // 全局点击 / Esc 关闭 context menu
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxMenu(null); };
+    window.addEventListener("click", handler);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", handler);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
+  const displayName = (s: OwnedServer) => aliasOf(aliases, s.serviceName, s.name);
+
   return (
+    <>
     <Select value={selected?.serviceName || ""} onValueChange={onChange}>
-      <SelectTrigger className="rounded-full min-w-[280px] sm:min-w-[340px] h-10 font-mono text-sm">
-        <SelectValue placeholder="选择服务器" />
+      <SelectTrigger
+        className="rounded-full w-full sm:min-w-[280px] sm:w-auto lg:min-w-[340px] h-10 font-mono text-sm"
+        // 拦截右键 pointerdown(button=2),不让 Radix Select 打开下拉
+        onPointerDown={(e) => {
+          if (e.button === 2) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        }}
+        // 右键当前选中那个胶囊 → 设别名(最直观)
+        onContextMenu={(e) => {
+          if (!selected) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setCtxMenu({ server: selected, x: e.clientX, y: e.clientY });
+        }}
+        title="左键打开列表;右键给当前服务器设别名"
+      >
+        <SelectValue placeholder="选择服务器">
+          {selected && (
+            <div className="flex items-center gap-2">
+              <StatusDot tone={selected.state === "ok" ? "success" : "warning"} size="xs" />
+              <span className="font-semibold">{maskSensitive(displayName(selected), hidden)}</span>
+              <span className="text-[11px] text-muted-foreground font-sans ml-1">
+                {selected.commercialRange} · {selected.datacenter.toUpperCase()}
+              </span>
+            </div>
+          )}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent className="max-h-[400px]">
         {servers.map((s) => (
-          <SelectItem key={s.serviceName} value={s.serviceName} className="font-mono">
-            <div className="flex items-center gap-2">
+          <SelectItem
+            key={s.serviceName}
+            value={s.serviceName}
+            className="font-mono"
+          >
+            {/* 内层 div 兜底右键 —— Radix SelectItem 自己的 onContextMenu 偶尔被吞 */}
+            <div
+              className="flex items-center gap-2"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setCtxMenu({ server: s, x: e.clientX, y: e.clientY });
+              }}
+            >
               <StatusDot tone={s.state === "ok" ? "success" : "warning"} size="xs" />
-              <span className="font-semibold">{maskSensitive(s.name, hidden)}</span>
+              <span className="font-semibold">{maskSensitive(displayName(s), hidden)}</span>
               <span className="text-[11px] text-muted-foreground font-sans ml-1">
                 {s.commercialRange} · {s.datacenter.toUpperCase()}
               </span>
@@ -190,6 +256,103 @@ function ServerSelector({
         ))}
       </SelectContent>
     </Select>
+
+    {/* 右键菜单:固定定位到鼠标位置,点空白 / Esc 关 */}
+    {ctxMenu && (
+      <div
+        className="fixed z-[200] min-w-[140px] rounded-lg border border-border bg-popover shadow-md py-1 text-sm"
+        style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <button
+          type="button"
+          className="w-full text-left px-3 py-1.5 hover:bg-muted text-foreground"
+          onClick={() => {
+            setRenaming(ctxMenu.server);
+            setCtxMenu(null);
+          }}
+        >
+          设置别名
+        </button>
+        {aliases?.[ctxMenu.server.serviceName] && (
+          <button
+            type="button"
+            className="w-full text-left px-3 py-1.5 hover:bg-muted text-destructive"
+            onClick={() => {
+              setRenaming(ctxMenu.server);
+              setCtxMenu(null);
+            }}
+          >
+            清除别名…
+          </button>
+        )}
+      </div>
+    )}
+
+    <RenameDialog
+      server={renaming}
+      currentAlias={renaming ? aliases?.[renaming.serviceName] || "" : ""}
+      onClose={() => setRenaming(null)}
+    />
+    </>
+  );
+}
+
+/** 服务器别名编辑对话框。alias 留空 + 保存 = 删除别名,恢复显示原 service_name。 */
+function RenameDialog({
+  server,
+  currentAlias,
+  onClose,
+}: {
+  server: OwnedServer | null;
+  currentAlias: string;
+  onClose: () => void;
+}) {
+  const set = useSetServerAlias();
+  const [value, setValue] = useState(currentAlias);
+  useEffect(() => {
+    setValue(currentAlias);
+  }, [currentAlias, server?.serviceName]);
+
+  if (!server) return null;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await set.mutateAsync({ serviceName: server.serviceName, alias: value });
+    onClose();
+  };
+
+  return (
+    <Dialog open={!!server} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>设置别名</DialogTitle>
+          <DialogDescription className="font-mono text-[11px]">
+            {server.serviceName}
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-3">
+          <Input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="例如:kele(留空清除别名)"
+            autoFocus
+            maxLength={64}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            别名仅在本程序里显示,不会下发到 OVH。
+          </p>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              取消
+            </Button>
+            <Button type="submit" disabled={set.isPending}>
+              {set.isPending ? "保存中…" : value.trim() === "" ? "清除并保存" : "保存"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -212,11 +375,11 @@ function ServerTabs({ server }: { server: OwnedServer }) {
     <>
       <Tabs defaultValue="overview">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <TabsList>
-            <TabsTrigger value="overview">概览</TabsTrigger>
-            <TabsTrigger value="power">电源与系统</TabsTrigger>
-            <TabsTrigger value="maintenance">维护</TabsTrigger>
-            <TabsTrigger value="advanced">高级</TabsTrigger>
+          <TabsList className="grid grid-cols-4 sm:flex h-auto gap-1 p-1">
+            <TabsTrigger value="overview" className="text-[12px] sm:text-sm px-2 sm:px-3">概览</TabsTrigger>
+            <TabsTrigger value="power" className="text-[12px] sm:text-sm px-2 sm:px-3">电源</TabsTrigger>
+            <TabsTrigger value="maintenance" className="text-[12px] sm:text-sm px-2 sm:px-3">维护</TabsTrigger>
+            <TabsTrigger value="advanced" className="text-[12px] sm:text-sm px-2 sm:px-3">高级</TabsTrigger>
           </TabsList>
 
           {/* 服务信息胶囊条 + 全局开关 */}
@@ -244,7 +407,7 @@ function ServerTabs({ server }: { server: OwnedServer }) {
                   <InfoPill
                     icon={<Repeat className="w-3.5 h-3.5" />}
                     label="续费"
-                    value={info.data.renewalType ? "自动" : "手动"}
+                    value={formatRenewal(info.data)}
                   />
                   <InfoPill icon={<Terminal className="w-3.5 h-3.5" />} label="OS" value={server.os || "—"} />
                 </>
@@ -313,4 +476,23 @@ function InfoPill({ icon, label, value }: { icon: React.ReactNode; label: string
       <span className="font-medium text-foreground">{value}</span>
     </div>
   );
+}
+
+/** 续费状态友好文案。OVH 在 manager 后台标的 "Cancellation scheduled"
+ *  其实就是 renew.deleteAtExpiration=true(到期不续 + 自动注销)。
+ *
+ *  - 到期注销         deleteAtExpiration=true (优先级最高,其它字段无意义)
+ *  - 强制自动续费     forced=true (OVH 套餐限制,用户改不了)
+ *  - 自动 / 手动      根据 automatic 显示,带 N 月周期
+ */
+function formatRenewal(info: {
+  renewalType: boolean;
+  renewalPeriod: number;
+  renewalDeleteAtExpiration: boolean;
+  renewalForced: boolean;
+}): string {
+  if (info.renewalDeleteAtExpiration) return "到期注销";
+  const period = info.renewalPeriod > 0 ? ` · ${info.renewalPeriod}月` : "";
+  if (info.renewalForced) return `强制自动${period}`;
+  return (info.renewalType ? "自动" : "手动") + period;
 }

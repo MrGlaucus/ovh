@@ -14,7 +14,26 @@ import {
   useServerPartitionSchemes,
   type CustomPartition,
 } from "@/hooks/use-server-control";
+import { OsIcon, detectOsKind, osBrandColor } from "@/components/server-control/OsIcon";
 import { toast } from "sonner";
+
+/** OS 分组的中文标签 + 显示顺序(按用户使用频率排) */
+const OS_GROUPS: { kind: ReturnType<typeof detectOsKind>; label: string }[] = [
+  { kind: "debian",   label: "Debian" },
+  { kind: "ubuntu",   label: "Ubuntu" },
+  { kind: "windows",  label: "Windows" },
+  { kind: "proxmox",  label: "Proxmox VE" },
+  { kind: "rocky",    label: "Rocky Linux" },
+  { kind: "alma",     label: "AlmaLinux" },
+  { kind: "fedora",   label: "Fedora" },
+  { kind: "esxi",     label: "VMware ESXi" },
+  { kind: "centos",   label: "CentOS" },
+  { kind: "opensuse", label: "openSUSE" },
+  { kind: "freebsd",  label: "FreeBSD" },
+  { kind: "byoi",     label: "BYOI(镜像导入)" },
+  { kind: "byolinux", label: "BYO Linux" },
+  { kind: "linux",    label: "其他 Linux" },
+];
 
 const HARDWARE_RAID_LEVELS = [
   { value: "", label: "默认（无 RAID）" },
@@ -61,6 +80,8 @@ export function ReinstallDialog({
   // 基本
   const [search, setSearch] = useState("");
   const [templateName, setTemplateName] = useState("");
+  /** 当前展开的 OS 分组(左栏选中)。null = 没选,搜索时强制 null 让右栏展示扁平结果。 */
+  const [activeGroup, setActiveGroup] = useState<ReturnType<typeof detectOsKind> | null>(null);
   const [hostname, setHostname] = useState("");
 
   // Proxmox + ZFS
@@ -87,6 +108,14 @@ export function ReinstallDialog({
     setPartitionSchemeName("");
   }, [templateName]);
 
+  // 已选模板对应的发行版自动展开到左栏(刷新 / 预设模板的场景)
+  useEffect(() => {
+    if (!templateName || activeGroup) return;
+    const t = (tpl.data || []).find((x) => x.templateName === templateName);
+    if (t) setActiveGroup(detectOsKind(t.templateName, t.distribution, t.family));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateName, tpl.data]);
+
   const filtered = useMemo(() => {
     const all = tpl.data || [];
     if (!search) return all;
@@ -95,6 +124,23 @@ export function ReinstallDialog({
       (t) => t.templateName.toLowerCase().includes(s) || t.distribution.toLowerCase().includes(s) || t.family.toLowerCase().includes(s)
     );
   }, [tpl.data, search]);
+
+  // 按 OS kind 分组,组内按 templateName 排序;空组不显示
+  const groupedTemplates = useMemo(() => {
+    const buckets = new Map<string, typeof filtered>();
+    for (const t of filtered) {
+      const k = detectOsKind(t.templateName, t.distribution, t.family);
+      const arr = buckets.get(k);
+      if (arr) arr.push(t);
+      else buckets.set(k, [t]);
+    }
+    for (const arr of buckets.values()) {
+      arr.sort((a, b) => a.templateName.localeCompare(b.templateName));
+    }
+    return OS_GROUPS
+      .filter((g) => buckets.has(g.kind))
+      .map((g) => ({ ...g, items: buckets.get(g.kind)! }));
+  }, [filtered]);
 
   const isProxmox9 = templateName === "proxmox9_64";
 
@@ -166,7 +212,7 @@ export function ReinstallDialog({
         if (!v) reset();
       }}
     >
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[95vw] sm:w-full sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <HardDrive className="w-5 h-5 text-destructive" />
@@ -201,7 +247,7 @@ export function ReinstallDialog({
                 刷新
               </Button>
             </div>
-            <div className="relative mb-2">
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 placeholder="搜索模板…如 ubuntu / debian / proxmox / windows"
@@ -209,45 +255,122 @@ export function ReinstallDialog({
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-9"
               />
-              <p className="text-[11px] text-muted-foreground mt-1">
-                {search ? `找到 ${filtered.length} 个匹配模板` : `共 ${(tpl.data || []).length} 个模板`}
-                {tpl.dataUpdatedAt > 0 && (
-                  <> · 缓存于 {new Date(tpl.dataUpdatedAt).toLocaleString("zh-CN")}</>
-                )}
-              </p>
             </div>
+            <p className="text-[11px] text-muted-foreground mt-1 mb-2">
+              {search ? `找到 ${filtered.length} 个匹配模板` : `共 ${(tpl.data || []).length} 个模板`}
+              {tpl.dataUpdatedAt > 0 && (
+                <> · 缓存于 {new Date(tpl.dataUpdatedAt).toLocaleString("zh-CN")}</>
+              )}
+            </p>
 
             {tpl.isPending ? (
               <Skeleton className="h-48 rounded-2xl" />
             ) : filtered.length === 0 ? (
               <EmptyState icon={HardDrive} title="未找到匹配模板" />
             ) : (
-              <div className="border border-border rounded-2xl max-h-[200px] overflow-y-auto divide-y divide-border">
-                {filtered.map((t) => {
-                  const selected = templateName === t.templateName;
-                  return (
-                    <button
-                      key={t.templateName}
-                      type="button"
-                      onClick={() => setTemplateName(t.templateName)}
-                      className={`w-full text-left px-4 py-2.5 hover:bg-secondary/60 transition-colors flex items-center justify-between gap-3 ${
-                        selected ? "bg-secondary" : ""
-                      }`}
-                    >
-                      <div className="min-w-0">
-                        <div className="text-[13px] font-mono font-semibold truncate">{t.templateName}</div>
-                        <div className="text-[11px] text-muted-foreground truncate">
-                          {t.distribution} · {t.family} · {t.bitFormat}-bit
+              // 左右两栏:左 OS 分组列表,右 当前分组的模板。搜索时右栏自动平铺所有命中。
+              <div className="border border-border rounded-2xl overflow-hidden grid grid-cols-[140px_1fr] sm:grid-cols-[180px_1fr] lg:grid-cols-[200px_1fr] h-[360px]">
+                {/* 左栏:OS 分组 */}
+                <div className="border-r border-border overflow-y-auto bg-muted/30">
+                  {groupedTemplates.map((group) => {
+                    const brandColor = osBrandColor(group.kind);
+                    const active = activeGroup === group.kind;
+                    return (
+                      <button
+                        key={group.kind}
+                        type="button"
+                        onClick={() => setActiveGroup(group.kind)}
+                        className={`w-full flex items-center justify-between gap-2 pl-3 pr-3 py-2 text-left transition-colors border-b border-border/60 last:border-b-0 ${
+                          active ? "bg-background" : "hover:bg-background/60"
+                        }`}
+                        style={active ? { boxShadow: `inset 3px 0 0 0 ${brandColor}` } : undefined}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <OsIcon
+                            templateName={group.items[0].templateName}
+                            distribution={group.items[0].distribution}
+                            family={group.items[0].family}
+                            size={20}
+                          />
+                          <span className={`text-[13px] truncate ${active ? "font-semibold text-foreground" : "text-foreground/80"}`}>
+                            {group.label}
+                          </span>
                         </div>
-                      </div>
-                      {selected && (
-                        <span className="text-[11px] px-2 py-0.5 rounded-full border border-foreground/30 bg-foreground/5 flex-shrink-0">
-                          已选
+                        <span
+                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: brandColor + "22", color: brandColor }}
+                        >
+                          {group.items.length}
                         </span>
-                      )}
-                    </button>
-                  );
-                })}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 右栏:当前分组的模板列表 */}
+                <div className="overflow-y-auto">
+                  {(() => {
+                    // 搜索时优先平铺命中结果;否则只显示选中分组的模板
+                    const showFlat = !!search;
+                    const items = showFlat
+                      ? filtered
+                      : (groupedTemplates.find((g) => g.kind === activeGroup)?.items || []);
+                    if (!showFlat && !activeGroup) {
+                      return (
+                        <div className="h-full flex items-center justify-center text-[12px] text-muted-foreground px-6 text-center">
+                          ← 左侧选择一个发行版
+                        </div>
+                      );
+                    }
+                    if (items.length === 0) {
+                      return (
+                        <div className="h-full flex items-center justify-center text-[12px] text-muted-foreground">
+                          该分组下没有模板
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="divide-y divide-border/60">
+                        {items.map((t) => {
+                          const selected = templateName === t.templateName;
+                          const kind = detectOsKind(t.templateName, t.distribution, t.family);
+                          const brandColor = osBrandColor(kind);
+                          return (
+                            <button
+                              key={t.templateName}
+                              type="button"
+                              onClick={() => setTemplateName(t.templateName)}
+                              className={`w-full text-left px-4 py-2.5 hover:bg-secondary/50 transition-colors flex items-center gap-3 ${
+                                selected ? "bg-secondary" : ""
+                              }`}
+                            >
+                              <OsIcon
+                                templateName={t.templateName}
+                                distribution={t.distribution}
+                                family={t.family}
+                                size={24}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-[13px] font-mono font-semibold truncate">{t.templateName}</div>
+                                <div className="text-[11px] text-muted-foreground truncate">
+                                  {t.distribution} · {t.family} · {t.bitFormat}-bit
+                                </div>
+                              </div>
+                              {selected && (
+                                <span
+                                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                  style={{ backgroundColor: brandColor, color: "#fff" }}
+                                >
+                                  已选
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
             )}
           </div>

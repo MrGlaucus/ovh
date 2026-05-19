@@ -31,7 +31,7 @@ export function NetworkSpecsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="w-[95vw] sm:w-full sm:max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Network className="w-5 h-5" />
@@ -149,8 +149,8 @@ export function NetworkSpecsDialog({
                 {data.traffic && (
                   <InfoBlock title="流量配额">
                     <div className="text-[13px] space-y-0.5">
-                      <Row label="入向配额" value={data.traffic.inputQuotaSize ? fmtBandwidth(data.traffic.inputQuotaSize) : "无限"} />
-                      <Row label="出向配额" value={data.traffic.outputQuotaSize ? fmtBandwidth(data.traffic.outputQuotaSize) : "无限"} />
+                      <Row label="入向配额" value={data.traffic.inputQuotaSize ? fmtBytes(data.traffic.inputQuotaSize) : "无限"} />
+                      <Row label="出向配额" value={data.traffic.outputQuotaSize ? fmtBytes(data.traffic.outputQuotaSize) : "无限"} />
                       <Row
                         label="限速状态"
                         value={
@@ -256,4 +256,39 @@ function fmtBandwidth(v: any): string {
     return `${v}`;
   }
   return String(v);
+}
+
+/** 字节数格式化:最小单位 GB,1024 二进制进位 (GB → TB → PB)。
+ *  接受裸数字 或 OVH 形式 { value, unit }(unit="B"/"KB"/"MB"/"GB"/"TB" 都先归一到字节再换算)。
+ *  流量配额这种用,不要用 fmtBandwidth(bps 进位 1000 + 最小 bps,数值大时含义不对)。 */
+function fmtBytes(v: any): string {
+  if (v == null) return "—";
+  let bytes: number;
+  if (typeof v === "object") {
+    if (v?.value == null) return "—";
+    // 先把 OVH 给的 { value, unit } 归一到字节
+    const n = Number(v.value);
+    if (!Number.isFinite(n)) return String(v.value);
+    const unit = String(v.unit || "B").toUpperCase();
+    const mult =
+      unit === "PB" ? 1024 ** 5 :
+      unit === "TB" ? 1024 ** 4 :
+      unit === "GB" ? 1024 ** 3 :
+      unit === "MB" ? 1024 ** 2 :
+      unit === "KB" ? 1024 :
+      1; // B 或未识别
+    bytes = n * mult;
+  } else if (typeof v === "number") {
+    bytes = v;
+  } else {
+    return String(v);
+  }
+  if (bytes === 0) return "0 GB";
+  const GB = 1024 ** 3;
+  const TB = 1024 ** 4;
+  const PB = 1024 ** 5;
+  const fmt = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(2));
+  if (bytes >= PB) return `${fmt(bytes / PB)} PB`;
+  if (bytes >= TB) return `${fmt(bytes / TB)} TB`;
+  return `${fmt(bytes / GB)} GB`;
 }

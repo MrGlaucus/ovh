@@ -28,7 +28,16 @@ export interface ServiceInfo {
   status: string;
   expiration: string;
   creation: string;
-  renewalType: string | null;
+  /** 是否启用自动续费(后端解析 OVH renew.automatic) */
+  renewalType: boolean;
+  /** 续费周期,单位月(1 / 3 / 6 / 12 等) */
+  renewalPeriod: number;
+  /** 到期是否自动删除服务 —— true 等于"到期断网回收" */
+  renewalDeleteAtExpiration: boolean;
+  /** OVH 是否强制自动续费(部分付费服务) */
+  renewalForced: boolean;
+  /** 是否要求手动支付(true 时余额扣款会跳过,需用户手动付) */
+  renewalManualPayment: boolean;
 }
 
 /**
@@ -678,14 +687,15 @@ export function useCreateIntervention() {
 
 // ───────────────────────────────── Contact change ─────────────────────────────────
 
-/** 提交变更联系人请求（旧前端 POST /change-contact） */
+/** 提交变更联系人请求(POST /change-contact)
+ *  字段名要跟 OVH API 一致: contactAdmin / contactTech / contactBilling */
 export function useChangeContact() {
   return useMutation({
     mutationFn: async (args: { serviceName: string; admin?: string; tech?: string; billing?: string }) => {
       const res = await api.post(`/server-control/${args.serviceName}/change-contact`, {
-        admin: args.admin || undefined,
-        tech: args.tech || undefined,
-        billing: args.billing || undefined,
+        contactAdmin: args.admin || undefined,
+        contactTech: args.tech || undefined,
+        contactBilling: args.billing || undefined,
       });
       return res.data;
     },
