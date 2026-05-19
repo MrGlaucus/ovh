@@ -193,6 +193,9 @@ func (db *DB) DeleteAccount(id string) error {
 	); err != nil {
 		return fmt.Errorf("clear vps auto_order_account_id: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM server_aliases WHERE account_id = ?`, id); err != nil {
+		return fmt.Errorf("cascade delete server_aliases: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM ovh_accounts WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}

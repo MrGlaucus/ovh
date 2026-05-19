@@ -164,6 +164,10 @@ func main() {
 		sc := api.Group("/server-control")
 		{
 			sc.GET("/list", handlers.ListMyServers(state))
+			// 服务器本地别名:纯本地显示用,不下发 OVH
+			sc.GET("/aliases", handlers.ListServerAliases(state))
+			sc.PUT("/:service_name/alias", handlers.SetServerAlias(state))
+			sc.DELETE("/:service_name/alias", handlers.DeleteServerAlias(state))
 			sc.GET("/order-mapping", handlers.GetOrderMapping(state))
 			sc.POST("/:service_name/reboot", handlers.Reboot(state))
 			sc.GET("/:service_name/templates", handlers.GetOSTemplates(state))

@@ -135,3 +135,17 @@ CREATE TABLE IF NOT EXISTS catalogs (
 
 -- (旧:config_sniper_tasks 表已删除,功能下线。老数据库残留的该表 / config_sniper_task_id 列保留不动,
 --  无害,无人读写。)
+
+-- ===========================================
+-- server_aliases: 服务器本地别名(纯本地,不下发 OVH)
+-- 用途:服务器控制 tab 选择器 / 详情页把技术 service_name 显示成用户取的友好名
+-- account_id + service_name 复合主键,避免不同账户同 service_name 互相串
+-- ===========================================
+CREATE TABLE IF NOT EXISTS server_aliases (
+  account_id   TEXT NOT NULL,
+  service_name TEXT NOT NULL,
+  alias        TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  PRIMARY KEY (account_id, service_name)
+);
+CREATE INDEX IF NOT EXISTS idx_server_aliases_account ON server_aliases(account_id);

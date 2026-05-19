@@ -208,6 +208,9 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 		renew, _ := info["renew"].(map[string]interface{})
 		automatic := false
 		period := 0
+		deleteAtExpiration := false
+		forced := false
+		manualPayment := false
 		if renew != nil {
 			if a, ok := renew["automatic"].(bool); ok {
 				automatic = a
@@ -215,15 +218,27 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 			if p, ok := numconv.ToInt64(renew["period"]); ok {
 				period = int(p)
 			}
+			if d, ok := renew["deleteAtExpiration"].(bool); ok {
+				deleteAtExpiration = d
+			}
+			if f, ok := renew["forced"].(bool); ok {
+				forced = f
+			}
+			if m, ok := renew["manualPayment"].(bool); ok {
+				manualPayment = m
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"serviceInfo": gin.H{
-				"status":         valueOr(info, "status", "unknown"),
-				"expiration":     valueOr(info, "expiration", ""),
-				"creation":       valueOr(info, "creation", ""),
-				"renewalType":    automatic,
-				"renewalPeriod":  period,
+				"status":                    valueOr(info, "status", "unknown"),
+				"expiration":                valueOr(info, "expiration", ""),
+				"creation":                  valueOr(info, "creation", ""),
+				"renewalType":               automatic, // 自动续费 yes/no
+				"renewalPeriod":             period,    // 续费周期(月)
+				"renewalDeleteAtExpiration": deleteAtExpiration,
+				"renewalForced":             forced,         // OVH 强制自动续费(不能改)
+				"renewalManualPayment":      manualPayment,
 			},
 		})
 	}
