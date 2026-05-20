@@ -241,13 +241,14 @@ func OLAUngroup(state *app.State) gin.HandlerFunc {
 			noOVHResp(c)
 			return
 		}
-		var result map[string]interface{}
-		if err := client.Post("/dedicated/server/"+svc+"/ola/ungroup", map[string]interface{}{}, &result); err != nil {
+		// OVH /ola/ungroup 返回 Task[](数组),不是单个 Task 对象 —— 跟 group / aggregation 不同!
+		var tasks []map[string]interface{}
+		if err := client.Post("/dedicated/server/"+svc+"/ola/ungroup", map[string]interface{}{}, &tasks); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-		state.Logger.Info("解散OLA组成功: "+svc, "server_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "OLA组已解散", "result": result})
+		state.Logger.Info(fmt.Sprintf("解散OLA组成功: %s, %d 个 task", svc, len(tasks)), "server_control")
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "OLA组已解散", "tasks": tasks})
 	}
 }
 

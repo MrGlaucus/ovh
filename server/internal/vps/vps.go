@@ -48,9 +48,25 @@ func checkTGOrStop(state *app.State) bool {
 	return true
 }
 
+// vpsAPIBaseURL 把 OVH subsidiary 映射到对应区域的 base URL。
+// VPS 可用性接口是 public 的,但必须连对 region 才能查到对应 subsidiary 的 VPS。
+// 默认走 EU(覆盖大部分情况);CA / ASIA / SG / IN / AU 走 CA;US 走 US 独立域名。
+func vpsAPIBaseURL(subsidiary string) string {
+	switch strings.ToUpper(subsidiary) {
+	case "US":
+		return "https://api.us.ovhcloud.com"
+	case "CA", "QC", "ASIA", "SG", "AU", "IN", "MA", "TN", "SN", "WS":
+		return "https://ca.api.ovh.com"
+	default:
+		return "https://eu.api.ovh.com"
+	}
+}
+
 // CheckVPSDCAvailability 对应 Python: check_vps_datacenter_availability
 func CheckVPSDCAvailability(state *app.State, planCode, ovhSubsidiary string) map[string]interface{} {
-	baseURL := state.Config.APIBaseURL()
+	// 多账户:base URL 跟着订阅的 ovhSubsidiary 走,
+	// 不再读旧的 state.Config(新建账户不写 kv['config'],它永远是空)
+	baseURL := vpsAPIBaseURL(ovhSubsidiary)
 	u := baseURL + "/v1/vps/order/rule/datacenter"
 	params := url.Values{}
 	params.Set("ovhSubsidiary", ovhSubsidiary)

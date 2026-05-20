@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -483,13 +484,14 @@ func TerminateService(state *app.State) gin.HandlerFunc {
 			noOVHResp(c)
 			return
 		}
-		var result map[string]interface{}
-		if err := client.Post("/dedicated/server/"+svc+"/terminate", map[string]interface{}{}, &result); err != nil {
+		// OVH /terminate 返回 string(确认 token)而不是对象
+		var token string
+		if err := client.Post("/dedicated/server/"+svc+"/terminate", map[string]interface{}{}, &token); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-		state.Logger.Warn("服务器 "+svc+" 终止请求已提交", "server_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交", "result": result})
+		state.Logger.Warn("服务器 "+svc+" 终止请求已提交, 邮件 token=...", "server_control")
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "终止请求已提交,请查邮件获取 token", "token": token})
 	}
 }
 
@@ -509,10 +511,11 @@ func ConfirmTermination(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少token参数"})
 			return
 		}
-		var result map[string]interface{}
+		// OVH /confirmTermination 返回 string(确认信息)
+		var resp string
 		if err := client.Post("/dedicated/server/"+svc+"/confirmTermination", map[string]interface{}{
 			"token": body.Token,
-		}, &result); err != nil {
+		}, &resp); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
@@ -577,14 +580,15 @@ func CreateSPLA(state *app.State) gin.HandlerFunc {
 		} else {
 			payload["serialNumber"] = nil
 		}
-		var result map[string]interface{}
-		if err := client.Post("/dedicated/server/"+svc+"/spla", payload, &result); err != nil {
+		// OVH /spla 返回 long(新建 SPLA 的 ID),不是对象
+		var newID int64
+		if err := client.Post("/dedicated/server/"+svc+"/spla", payload, &newID); err != nil {
 			state.Logger.Error("创建SPLA许可证失败: "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-		state.Logger.Info("创建SPLA许可证成功: "+body.Type, "server_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "SPLA许可证已创建", "result": result})
+		state.Logger.Info(fmt.Sprintf("创建SPLA许可证成功: %s, id=%d", body.Type, newID), "server_control")
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "SPLA许可证已创建", "id": newID})
 	}
 }
 

@@ -27,6 +27,7 @@ export function ChangeContactDialog({
   const [admin, setAdmin] = useState("");
   const [tech, setTech] = useState("");
   const [billing, setBilling] = useState("");
+  const [tab, setTab] = useState("submit");
   const [tokenTarget, setTokenTarget] = useState<{ id: number | string; mode: "accept" | "refuse" } | null>(null);
   const [token, setToken] = useState("");
 
@@ -41,8 +42,18 @@ export function ChangeContactDialog({
       setAdmin("");
       setTech("");
       setBilling("");
+      setTab("requests");
+      list.refetch();
     } catch (e: any) {
-      toast.error(e?.response?.data?.error || "提交失败");
+      const msg = String(e?.response?.data?.error || e?.message || "");
+      // OVH 业务约束:一个 service 同时只能有一个待审 contact change task
+      if (/contact change task is already running/i.test(msg)) {
+        toast.error("该服务器已有待审的变更请求,请先在「待审请求」处理后再提交新的", { duration: 5000 });
+        setTab("requests");
+        list.refetch();
+        return;
+      }
+      toast.error(msg || "提交失败");
     }
   };
 
@@ -53,7 +64,14 @@ export function ChangeContactDialog({
       setTokenTarget(null);
       setToken("");
     } catch (e: any) {
-      toast.error(e?.response?.data?.error || "操作失败");
+      // 后端有时用 message 字段(refuse/accept/resend),有时用 error(change-contact)。
+      // 都读一遍,优先 message(更具体),最后兜底 OVH 原始 err.message
+      const msg =
+        e?.response?.data?.message ||
+        e?.response?.data?.error ||
+        e?.message ||
+        "操作失败";
+      toast.error(msg, { duration: 6000 });
     }
   };
 
@@ -69,7 +87,7 @@ export function ChangeContactDialog({
             <DialogDescription>切换 admin / tech / billing 联系人。OVH 将向当前联系人邮箱发送确认链接。</DialogDescription>
           </DialogHeader>
 
-          <Tabs defaultValue="submit" className="flex-1 overflow-hidden flex flex-col">
+          <Tabs value={tab} onValueChange={setTab} className="flex-1 overflow-hidden flex flex-col">
             <TabsList>
               <TabsTrigger value="submit">提交变更</TabsTrigger>
               <TabsTrigger value="requests">待审请求</TabsTrigger>

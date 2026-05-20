@@ -269,18 +269,18 @@ func ChangeContact(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "至少需要指定一个联系人（管理员、技术或计费）"})
 			return
 		}
-		var result map[string]interface{}
-		if err := client.Post("/dedicated/server/"+svc+"/changeContact", params, &result); err != nil {
+		// OVH 这个接口返回 long[](任务 ID 数组),不是 map
+		var taskIDs []int64
+		if err := client.Post("/dedicated/server/"+svc+"/changeContact", params, &taskIDs); err != nil {
 			state.Logger.Error("变更服务器 "+svc+" 联系人失败: "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-		state.Logger.Info(fmt.Sprintf("服务器 %s 联系人变更请求已提交: %v", svc, params), "server_control")
+		state.Logger.Info(fmt.Sprintf("服务器 %s 联系人变更请求已提交: %v, tasks=%v", svc, params, taskIDs), "server_control")
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "联系人变更请求已提交",
-			"taskId":  result["id"],
-			"details": result,
+			"taskIds": taskIDs,
 		})
 	}
 }
