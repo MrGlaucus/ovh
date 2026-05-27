@@ -91,8 +91,34 @@ export const qk = {
     ipSpecs: (serviceName: string) => ["server-control", "ip-specs", serviceName] as const,
     networkSpecs: (serviceName: string) => ["server-control", "network-specs", serviceName] as const,
     contactRequests: () => ["server-control", "contact-requests"] as const,
+    engagement: (serviceName: string) => ["server-control", "engagement", serviceName] as const,
+    engagementAvailable: (serviceName: string) => ["server-control", "engagement-available", serviceName] as const,
+    engagementRequest: (serviceName: string) => ["server-control", "engagement-request", serviceName] as const,
+    mitigation: (serviceName: string) => ["server-control", "mitigation", serviceName] as const,
     taskTimeslots: (serviceName: string, taskId: number, periodStart: string, periodEnd: string) =>
       ["server-control", "task-timeslots", serviceName, taskId, periodStart, periodEnd] as const,
+  },
+
+  // VPS 控制(已购 VPS 管理,跟监控库存的 vpsMonitor 不同)
+  vpsControl: {
+    list: () => ["vps-control", "list"] as const,
+    info: (svc: string) => ["vps-control", "info", svc] as const,
+    status: (svc: string) => ["vps-control", "status", svc] as const,
+    serviceInfo: (svc: string) => ["vps-control", "service-info", svc] as const,
+    ips: (svc: string) => ["vps-control", "ips", svc] as const,
+    datacenter: (svc: string) => ["vps-control", "datacenter", svc] as const,
+    templates: (svc: string) => ["vps-control", "templates", svc] as const,
+    currentOS: (svc: string) => ["vps-control", "current-os", svc] as const,
+    tasks: (svc: string) => ["vps-control", "tasks", svc] as const,
+    task: (svc: string, id: number | string) => ["vps-control", "task", svc, id] as const,
+    snapshot: (svc: string) => ["vps-control", "snapshot", svc] as const,
+    secondaryDns: (svc: string) => ["vps-control", "secondary-dns", svc] as const,
+    options: (svc: string) => ["vps-control", "options", svc] as const,
+    automatedBackup: (svc: string) => ["vps-control", "automated-backup", svc] as const,
+    engagement: (svc: string) => ["vps-control", "engagement", svc] as const,
+    engagementAvailable: (svc: string) => ["vps-control", "engagement-available", svc] as const,
+    engagementRequest: (svc: string) => ["vps-control", "engagement-request", svc] as const,
+    mitigation: (svc: string) => ["vps-control", "mitigation", svc] as const,
   },
 
   // 账户

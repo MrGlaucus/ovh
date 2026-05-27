@@ -38,6 +38,8 @@ export interface ServiceInfo {
   renewalForced: boolean;
   /** 是否要求手动支付(true 时余额扣款会跳过,需用户手动付) */
   renewalManualPayment: boolean;
+  /** OVH 允许的续费周期列表(月数),前端 select 选项用 */
+  possibleRenewPeriod: number[];
 }
 
 /**
@@ -74,6 +76,7 @@ export function useServerHardware(serviceName: string | null) {
   });
 }
 
+
 /** 服务信息（后端返回 { success, serviceInfo: {...} }） */
 export function useServerServiceInfo(serviceName: string | null) {
   return useQuery({
@@ -83,6 +86,190 @@ export function useServerServiceInfo(serviceName: string | null) {
       return (res.data?.serviceInfo || null) as ServiceInfo | null;
     },
     enabled: !!serviceName,
+  });
+}
+
+/**
+ * 修改续费策略。OVH 这个 endpoint 需要 PUT 整个 service 对象,
+ * 后端代为 GET + merge + PUT,前端只传 mode + 可选 period。
+ */
+export function useUpdateRenewal(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { mode: "auto" | "manual" | "delete"; period?: number }) => {
+      const res = await api.put(`/server-control/${serviceName}/serviceinfo/renewal`, vars);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.serviceInfo(serviceName) });
+    },
+  });
+}
+
+/* ──────────── Engagement(合同期切换) ──────────── */
+
+export interface EngagementPricing {
+  pricingMode: string;
+  description: string;
+  duration: string;
+  interval: number;
+  price: { value: number; currencyCode?: string; text?: string };
+  priceInUcents?: number;
+  engagementConfiguration?: {
+    defaultEndAction: string;
+    duration: string;
+    type: string;
+  };
+}
+
+export interface EngagementInfo {
+  currentPeriod?: { startDate: string; endDate: string };
+  endRule?: { strategy: string; possibleStrategies: string[] };
+}
+
+export interface EngagementRequest {
+  pricing?: EngagementPricing;
+  requestDate?: string;
+  order?: { orderId?: number; url?: string };
+}
+
+/** 当前 engagement(无合同期返回 null) */
+export function useEngagement(serviceName: string | null) {
+  return useQuery({
+    queryKey: qk.serverControl.engagement(serviceName || ""),
+    queryFn: async () => {
+      const res = await api.get(`/server-control/${serviceName}/engagement`);
+      return (res.data?.engagement || null) as EngagementInfo | null;
+    },
+    enabled: !!serviceName,
+  });
+}
+
+/** 可订购的 engagement 选项列表 */
+export function useEngagementAvailable(serviceName: string | null, enabled = true) {
+  return useQuery({
+    queryKey: qk.serverControl.engagementAvailable(serviceName || ""),
+    queryFn: async () => {
+      const res = await api.get(`/server-control/${serviceName}/engagement/available`);
+      return (res.data?.pricings || []) as EngagementPricing[];
+    },
+    enabled: !!serviceName && enabled,
+  });
+}
+
+/** 进行中的 engagement 变更请求 */
+export function useEngagementRequest(serviceName: string | null) {
+  return useQuery({
+    queryKey: qk.serverControl.engagementRequest(serviceName || ""),
+    queryFn: async () => {
+      const res = await api.get(`/server-control/${serviceName}/engagement/request`);
+      return (res.data?.request || null) as EngagementRequest | null;
+    },
+    enabled: !!serviceName,
+  });
+}
+
+/** 提交新的 engagement 请求 */
+export function useCreateEngagementRequest(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { pricingMode: string }) => {
+      const res = await api.post(`/server-control/${serviceName}/engagement/request`, vars);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.engagement(serviceName) });
+      qc.invalidateQueries({ queryKey: qk.serverControl.engagementRequest(serviceName) });
+    },
+  });
+}
+
+/** 撤销进行中的 engagement 请求 */
+export function useDeleteEngagementRequest(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await api.delete(`/server-control/${serviceName}/engagement/request`);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.engagementRequest(serviceName) });
+    },
+  });
+}
+
+/** 改 engagement 到期策略 */
+export function useUpdateEngagementEndRule(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { strategy: string }) => {
+      const res = await api.put(`/server-control/${serviceName}/engagement/end-rule`, vars);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.engagement(serviceName) });
+    },
+  });
+}
+
+/* ──────────── DDoS Mitigation ──────────── */
+
+export interface MitigationIp {
+  ipOnMitigation: string;
+  state: string; // activated / pending / disabled / ...
+  auto: boolean;
+  permanent: boolean;
+}
+
+export interface MitigationBlock {
+  ipBlock: string;
+  mitigations: MitigationIp[];
+  error?: string;
+}
+
+export function useMitigation(serviceName: string | null) {
+  return useQuery({
+    queryKey: qk.serverControl.mitigation(serviceName || ""),
+    queryFn: async () => {
+      const res = await api.get(`/server-control/${serviceName}/mitigation`);
+      return (res.data?.ips || []) as MitigationBlock[];
+    },
+    enabled: !!serviceName,
+    // 过渡态自动轮询(creationPending/removalPending → ok 通常 30 秒-2 分钟)
+    refetchInterval: (q) => {
+      const data = q.state.data as MitigationBlock[] | undefined;
+      if (!data) return false;
+      const hasTransition = data.some((b) =>
+        b.mitigations.some((m: any) => m.state === "creationPending" || m.state === "removalPending"),
+      );
+      return hasTransition ? 5000 : false;
+    },
+  });
+}
+
+export function useEnableMitigation(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { ip: string; block: string }) => {
+      const res = await api.post(`/server-control/${serviceName}/mitigation/${vars.ip}?block=${encodeURIComponent(vars.block)}`);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.mitigation(serviceName) });
+    },
+  });
+}
+
+export function useDisableMitigation(serviceName: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { ip: string; block: string }) => {
+      const res = await api.delete(`/server-control/${serviceName}/mitigation/${vars.ip}?block=${encodeURIComponent(vars.block)}`);
+      return res.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.serverControl.mitigation(serviceName) });
+    },
   });
 }
 

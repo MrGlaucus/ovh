@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -127,6 +128,9 @@ func GetServerIPs(state *app.State) gin.HandlerFunc {
 }
 
 // GetReverseDNS GET /api/server-control/:service_name/reverse
+//
+// 反向 DNS 不在 /dedicated/server/ 域下,而在 /ip/{ipBlock}/reverse。
+// 流程:服务器 IP 块 → 每块查 reverse 列表 → 每个 IP 查 reverse 详情。
 func GetReverseDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
@@ -135,32 +139,80 @@ func GetReverseDNS(state *app.State) gin.HandlerFunc {
 			noOVHResp(c)
 			return
 		}
-		var info map[string]interface{}
-		if err := client.Get("/dedicated/server/"+svc, &info); err != nil {
+		var ipBlocks []string
+		if err := client.Get("/dedicated/server/"+svc+"/ips", &ipBlocks); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
 			return
 		}
-		reverseList := []gin.H{}
-		mainIP, _ := info["ip"].(string)
-		if mainIP != "" {
-			var ips []string
-			_ = client.Get("/dedicated/server/"+svc+"/reverse", &ips)
-			// 并发拉每个反向 DNS 详情
-			details := parallelGetStringKeys(client, ips, func(ip string) string {
-				return "/dedicated/server/" + svc + "/reverse/" + ip
-			}, 10)
-			for i, rip := range ips {
-				if details[i] == nil {
-					continue
-				}
-				reverseList = append(reverseList, gin.H{"ipReverse": rip, "reverse": details[i]["reverse"]})
+		// 1) 每个 IP 块并发拉 reverse 列表(块下哪些具体 IP 配了反向)
+		type blockResult struct {
+			block string
+			ips   []string
+		}
+		blockResults := make([]blockResult, len(ipBlocks))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 8)
+		for i, blk := range ipBlocks {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(idx int, block string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				encoded := strings.ReplaceAll(block, "/", "%2F")
+				var ips []string
+				_ = client.Get("/ip/"+encoded+"/reverse", &ips)
+				blockResults[idx] = blockResult{block: block, ips: ips}
+			}(i, blk)
+		}
+		wg.Wait()
+
+		// 2) 把 (block, ip) 配对展开,并发拉每条 reverse 详情
+		type entry struct {
+			block string
+			ip    string
+		}
+		entries := []entry{}
+		for _, r := range blockResults {
+			for _, ip := range r.ips {
+				entries = append(entries, entry{block: r.block, ip: ip})
 			}
+		}
+		details := make([]map[string]interface{}, len(entries))
+		var wg2 sync.WaitGroup
+		sem2 := make(chan struct{}, 10)
+		for i, e := range entries {
+			wg2.Add(1)
+			sem2 <- struct{}{}
+			go func(idx int, en entry) {
+				defer wg2.Done()
+				defer func() { <-sem2 }()
+				encoded := strings.ReplaceAll(en.block, "/", "%2F")
+				var d map[string]interface{}
+				if err := client.Get("/ip/"+encoded+"/reverse/"+en.ip, &d); err == nil {
+					details[idx] = d
+				}
+			}(i, e)
+		}
+		wg2.Wait()
+
+		reverseList := []gin.H{}
+		for i, e := range entries {
+			if details[i] == nil {
+				continue
+			}
+			reverseList = append(reverseList, gin.H{
+				"ipReverse": e.ip,
+				"reverse":   details[i]["reverse"],
+				"ipBlock":   e.block,
+			})
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "reverses": reverseList})
 	}
 }
 
 // SetReverseDNS POST /api/server-control/:service_name/reverse
+//
+// 设反向 DNS 也走 /ip/{ipBlock}/reverse。需要先找到 body.IP 所属的 IP 块。
 func SetReverseDNS(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		svc := c.Param("service_name")
@@ -178,7 +230,14 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "IP地址和反向DNS不能为空"})
 			return
 		}
-		if err := client.Post("/dedicated/server/"+svc+"/reverse", map[string]interface{}{
+		// 找该 IP 所在的服务器 IP 块
+		block, err := findIPBlockForServer(client, svc, body.IP)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		encoded := strings.ReplaceAll(block, "/", "%2F")
+		if err := client.Post("/ip/"+encoded+"/reverse", map[string]interface{}{
 			"ipReverse": body.IP,
 			"reverse":   body.Reverse,
 		}, nil); err != nil {
@@ -188,6 +247,66 @@ func SetReverseDNS(state *app.State) gin.HandlerFunc {
 		state.Logger.Info("服务器 "+svc+" IP "+body.IP+" 反向DNS已设置为 "+body.Reverse, "server_control")
 		c.JSON(http.StatusOK, gin.H{"success": true, "message": "反向DNS已设置"})
 	}
+}
+
+// DeleteReverseDNS DELETE /api/server-control/:service_name/reverse/:ip
+// OVH 的 DELETE /ip/{ipBlock}/reverse/{ipReverse} 删除单条反向记录。
+func DeleteReverseDNS(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		svc := c.Param("service_name")
+		ip := c.Param("ip")
+		client, err := ovhClientFor(state, c)
+		if err != nil {
+			noOVHResp(c)
+			return
+		}
+		block, err := findIPBlockForServer(client, svc, ip)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		encoded := strings.ReplaceAll(block, "/", "%2F")
+		if err := client.Delete("/ip/"+encoded+"/reverse/"+ip, nil); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		state.Logger.Info("服务器 "+svc+" IP "+ip+" 反向DNS已删除", "server_control")
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "反向DNS已删除"})
+	}
+}
+
+// findIPBlockForServer 在服务器的 IP 块列表里找出包含给定 IPv4 的那个块。
+// 用 net.ParseCIDR + Contains 判定;返回精确块字符串(如 "1.2.3.0/29")。
+func findIPBlockForServer(client interface {
+	Get(path string, result interface{}) error
+}, svc, ipStr string) (string, error) {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return "", fmt.Errorf("非法 IP: %s", ipStr)
+	}
+	var blocks []string
+	if err := client.Get("/dedicated/server/"+svc+"/ips", &blocks); err != nil {
+		return "", err
+	}
+	for _, blk := range blocks {
+		_, ipnet, err := net.ParseCIDR(blk)
+		if err != nil {
+			// 老格式可能没带 mask,补 /32 / /128 再 parse
+			if strings.Contains(blk, ":") {
+				blk = blk + "/128"
+			} else {
+				blk = blk + "/32"
+			}
+			_, ipnet, err = net.ParseCIDR(blk)
+			if err != nil {
+				continue
+			}
+		}
+		if ipnet.Contains(ip) {
+			return blk, nil
+		}
+	}
+	return "", fmt.Errorf("IP %s 不在服务器 %s 的任何 IP 块内", ipStr, svc)
 }
 
 // GetServiceInfo GET /api/server-control/:service_name/serviceinfo
@@ -228,6 +347,15 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 				manualPayment = m
 			}
 		}
+		// possibleRenewPeriod: OVH 给的合法续费周期(月数数组,前端 select 用)
+		possiblePeriods := []int{}
+		if arr, ok := info["possibleRenewPeriod"].([]interface{}); ok {
+			for _, v := range arr {
+				if p, ok := numconv.ToInt64(v); ok && p > 0 {
+					possiblePeriods = append(possiblePeriods, int(p))
+				}
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"serviceInfo": gin.H{
@@ -237,10 +365,80 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 				"renewalType":               automatic, // 自动续费 yes/no
 				"renewalPeriod":             period,    // 续费周期(月)
 				"renewalDeleteAtExpiration": deleteAtExpiration,
-				"renewalForced":             forced,         // OVH 强制自动续费(不能改)
+				"renewalForced":             forced, // OVH 强制自动续费(不能改)
 				"renewalManualPayment":      manualPayment,
+				"possibleRenewPeriod":       possiblePeriods,
 			},
 		})
+	}
+}
+
+// UpdateServiceRenewal PUT /api/server-control/:service_name/serviceinfo
+//
+// 修改服务的续费策略。前端传 mode (auto / manual / delete-at-expiration) + 可选 period,
+// 后端先 GET 当前 serviceInfos,合并 renew 字段,再 PUT 整体回去(OVH PUT 要求完整对象)。
+// forced=true (engaged 合同期) 时 OVH 会拒,我们这里直接返 400 提示用户。
+func UpdateServiceRenewal(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		svc := c.Param("service_name")
+		client, err := ovhClientFor(state, c)
+		if err != nil {
+			noOVHResp(c)
+			return
+		}
+		var body struct {
+			Mode   string `json:"mode"`   // "auto" / "manual" / "delete"
+			Period int    `json:"period"` // 月数,0 表示不改
+		}
+		_ = c.ShouldBindJSON(&body)
+
+		var info map[string]interface{}
+		if err := client.Get("/dedicated/server/"+svc+"/serviceInfos", &info); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		renew, _ := info["renew"].(map[string]interface{})
+		if renew == nil {
+			renew = map[string]interface{}{}
+		}
+		// forced 锁:OVH engaged 合同期内,renew 改不动 —— 提前拒绝,不让 PUT 浪费一次往返
+		if f, ok := renew["forced"].(bool); ok && f {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"error":   "该服务器处于 OVH 合同期(engaged),续费策略由 OVH 锁定,无法修改",
+			})
+			return
+		}
+		switch body.Mode {
+		case "auto":
+			renew["automatic"] = true
+			renew["deleteAtExpiration"] = false
+			renew["manualPayment"] = false
+		case "manual":
+			renew["automatic"] = false
+			renew["deleteAtExpiration"] = false
+			renew["manualPayment"] = true
+		case "delete":
+			renew["automatic"] = false
+			renew["deleteAtExpiration"] = true
+			renew["manualPayment"] = false
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "mode 必须是 auto / manual / delete 之一"})
+			return
+		}
+		if body.Period > 0 {
+			renew["period"] = body.Period
+		}
+		info["renew"] = renew
+
+		// PUT 整对象回去(OVH 这个端点要求完整 services.Service)
+		if err := client.Put("/dedicated/server/"+svc+"/serviceInfos", info, nil); err != nil {
+			state.Logger.Error("修改服务器 "+svc+" 续费策略失败: "+err.Error(), "server_control")
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+			return
+		}
+		state.Logger.Info("服务器 "+svc+" 续费策略已更新: mode="+body.Mode, "server_control")
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "续费策略已更新"})
 	}
 }
 

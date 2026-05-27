@@ -53,6 +53,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "实例",
     items: [
       { to: "/server-control", icon: Terminal, label: "服务器控制" },
+      { to: "/vps-control", icon: Cloud, label: "VPS 控制" },
       { to: "/account", icon: User, label: "账户管理" },
     ],
   },

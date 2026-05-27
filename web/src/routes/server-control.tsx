@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Terminal, Server, RefreshCw, Eye, EyeOff, CalendarClock, CalendarPlus, Repeat, Activity, Network } from "lucide-react";
+import { Terminal, Server, RefreshCw, Eye, EyeOff, CalendarClock, CalendarPlus, Repeat, Activity, Network, CalendarRange } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,6 +31,9 @@ import { PowerTab } from "@/components/server-control/PowerTab";
 import { MaintenanceTab } from "@/components/server-control/MaintenanceTab";
 import { AdvancedTab } from "@/components/server-control/AdvancedTab";
 import { NetworkSpecsDialog } from "@/components/server-control/NetworkSpecsDialog";
+import { RenewalDialog } from "@/components/server-control/RenewalDialog";
+import { ReinstallDialog } from "@/components/server-control/ReinstallDialog";
+import { EngagementDialog } from "@/components/server-control/EngagementDialog";
 import { toast } from "sonner";
 
 /** 服务器控制中心：顶部下拉切换服务器 + 4 tab 详情 */
@@ -361,6 +364,9 @@ function ServerTabs({ server }: { server: OwnedServer }) {
   const monitoring = useServerMonitoring(server.serviceName);
   const toggleMon = useToggleMonitoring();
   const [netSpecsOpen, setNetSpecsOpen] = useState(false);
+  const [renewalOpen, setRenewalOpen] = useState(false);
+  const [reinstallOpen, setReinstallOpen] = useState(false);
+  const [engagementOpen, setEngagementOpen] = useState(false);
 
   const handleToggleMonitoring = async () => {
     try {
@@ -408,8 +414,14 @@ function ServerTabs({ server }: { server: OwnedServer }) {
                     icon={<Repeat className="w-3.5 h-3.5" />}
                     label="续费"
                     value={formatRenewal(info.data)}
+                    onClick={() => setRenewalOpen(true)}
                   />
-                  <InfoPill icon={<Terminal className="w-3.5 h-3.5" />} label="OS" value={server.os || "—"} />
+                  <InfoPill
+                    icon={<Terminal className="w-3.5 h-3.5" />}
+                    label="OS"
+                    value={server.os || "—"}
+                    onClick={() => setReinstallOpen(true)}
+                  />
                 </>
               )}
 
@@ -438,6 +450,16 @@ function ServerTabs({ server }: { server: OwnedServer }) {
                 </TooltipTrigger>
                 <TooltipContent>带宽四档 + IPv4 / IPv6 路由</TooltipContent>
               </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-7 rounded-full" onClick={() => setEngagementOpen(true)}>
+                    <CalendarRange className="w-3.5 h-3.5 mr-1" />
+                    合同期
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>切换更长承诺期享受折扣 / 改到期策略</TooltipContent>
+              </Tooltip>
             </div>
           )}
         </div>
@@ -461,21 +483,70 @@ function ServerTabs({ server }: { server: OwnedServer }) {
         open={netSpecsOpen}
         onOpenChange={setNetSpecsOpen}
       />
+
+      {info.data && (
+        <RenewalDialog
+          serviceName={server.serviceName}
+          info={info.data}
+          open={renewalOpen}
+          onOpenChange={setRenewalOpen}
+        />
+      )}
+
+      <ReinstallDialog
+        serviceName={server.serviceName}
+        open={reinstallOpen}
+        onOpenChange={setReinstallOpen}
+      />
+
+      <EngagementDialog
+        serviceName={server.serviceName}
+        open={engagementOpen}
+        onOpenChange={setEngagementOpen}
+      />
     </>
   );
 }
 
-/** 紧凑胶囊：服务信息条的单元素 */
-function InfoPill({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full border border-border bg-secondary/50 text-[12px]">
+/** 紧凑胶囊:服务信息条的单元素。
+ *  传 onClick → 视觉与右侧 outline 按钮(监控/网络规格)对齐:bg-background + accent hover,
+ *  跟纯展示的胶囊(到期/开通/OS,bg-secondary/50)在外观上明确区分。 */
+function InfoPill({
+  icon,
+  label,
+  value,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  onClick?: () => void;
+}) {
+  // 注意:本项目 --accent 在亮色模式被定义为近黑色(用作强调对比),不能用作 hover bg。
+  // 跟旁边 Button outline 变体对齐(用 hover:bg-muted,见 button.tsx)。
+  const cls = [
+    "inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full border text-[12px]",
+    onClick
+      ? "border-border bg-background hover:bg-muted cursor-pointer transition-colors shadow-sm"
+      : "border-border bg-secondary/50",
+  ].join(" ");
+  const inner = (
+    <>
       <span className="flex items-center gap-1 text-muted-foreground">
         {icon}
         {label}
       </span>
       <span className="font-medium text-foreground">{value}</span>
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={cls}>
+        {inner}
+      </button>
+    );
+  }
+  return <div className={cls}>{inner}</div>;
 }
 
 /** 续费状态友好文案。OVH 在 manager 后台标的 "Cancellation scheduled"

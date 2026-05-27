@@ -14,6 +14,7 @@ const PAGE_META: Record<string, { group: string; label: string }> = {
   "/monitor": { group: "监控", label: "服务器监控" },
   "/vps-monitor": { group: "监控", label: "VPS 补货" },
   "/server-control": { group: "实例", label: "服务器控制" },
+  "/vps-control": { group: "实例", label: "VPS 控制" },
   "/account": { group: "实例", label: "账户管理" },
   "/history": { group: "系统", label: "抢购历史" },
   "/logs": { group: "系统", label: "详细日志" },

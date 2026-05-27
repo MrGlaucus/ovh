@@ -55,10 +55,11 @@ function createApiClient(): AxiosInstance {
     if (key) {
       config.headers.set("X-API-Key", key);
     }
-    // 自动注入活跃账户(仅服务器控制 + OVH 账户元信息接口)
+    // 自动注入活跃账户(/server-control / /vps-control / /ovh 元信息接口)
+    // VPS 控制跟服务器控制共用同一个「活跃账户」slot,UI 上是分开两个 page 但底层账户切换是统一的
     const url = config.url || "";
     if (
-      (url.startsWith("/server-control") || url.startsWith("/ovh/")) &&
+      (url.startsWith("/server-control") || url.startsWith("/vps-control") || url.startsWith("/ovh/")) &&
       !(config.params && (config.params as Record<string, unknown>).account)
     ) {
       const acc = getActiveServerControlAccount();
