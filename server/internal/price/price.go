@@ -393,7 +393,7 @@ func orderSubsidiary(state *app.State, acc types.OVHAccount) string {
 
 // regionAllowedValues / pickAllowedRegion 与 purchase.go 的同名函数保持同一份逻辑。
 //
-// schema 里 order.cart.ItemConfiguration 只声明 label/required/type,但三区实测
+// schema 里 order.cart.ConfigurationRequirements 只声明 label/required/type,但三区实测
 // GET /order/cart/{cartId}/item/{itemId}/requiredConfiguration 都会带 allowedValues,
 // 而且这份值是按"这辆车的子公司 + 这个 planCode"算出来的,天然是本区正确值:
 // US 车 → ["united_states"],EU/CA 车 → ["canada","europe"]。

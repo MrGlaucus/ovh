@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { isOrderable } from "@/lib/availability";
 import {
   Server, RefreshCw, Search, Bell, ShoppingCart, Cpu, MemoryStick, HardDrive, Wifi,
   Filter, MapPin, User, Globe } from "lucide-react";
@@ -129,10 +130,10 @@ function ServersPage() {
         const map = availMap[srv.planCode];
         if (map) {
           // 实时数据：任一 DC 可用即视为可用
-          return Object.values(map).some((v) => v && v !== "unavailable" && v !== "unknown");
+          return Object.values(map).some((v) => isOrderable(v));
         }
         // 实时还没到：用目录里的静态字段兜底
-        return srv.datacenters.some((dc) => dc.availability && dc.availability !== "unavailable" && dc.availability !== "unknown");
+        return srv.datacenters.some((dc) => isOrderable(dc.availability));
       });
     }
     return out;
@@ -318,7 +319,7 @@ function ServerCard({
   );
   const dcStatuses = planDCs.map((dc) => {
     const status = lookupDcStatus(dcMap, dc);
-    const isOk = !!status && status !== "unavailable" && status !== "unknown";
+    const isOk = isOrderable(status);
     return { dc, isOk };
   });
   const total = dcStatuses.length;
@@ -518,7 +519,7 @@ function DetailContent({
   const total = dialogDCs.length;
   const ok = dialogDCs.filter((dc) => {
     const status = lookupDcStatus(dcMap, dc);
-    return !!status && status !== "unavailable" && status !== "unknown";
+    return isOrderable(status);
   }).length;
   const ratio = total > 0 ? ok / total : 0;
 
@@ -645,7 +646,7 @@ function DetailContent({
                   const okCodes = dialogDCs
                     .filter((dc) => {
                       const s = lookupDcStatus(dcMap, dc);
-                      return !!s && s !== "unavailable" && s !== "unknown";
+                      return isOrderable(s);
                     })
                     .map((dc) => dc.code);
                   setSelectedDCs(selectedDCs.length === okCodes.length ? [] : okCodes);
@@ -659,7 +660,7 @@ function DetailContent({
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2">
             {dialogDCs.map((dc) => {
               const status = lookupDcStatus(dcMap, dc);
-              const isOk = !!status && status !== "unavailable" && status !== "unknown";
+              const isOk = isOrderable(status);
               const isSelected = selectedDCs.includes(dc.code);
               return (
                 <button

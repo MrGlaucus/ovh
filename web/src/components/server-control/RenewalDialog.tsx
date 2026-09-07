@@ -9,6 +9,7 @@ import {
   useUpdateRenewal,
   useUpdateTerminationPolicy,
   type ServiceInfo,
+  terminationLabel,
 } from "@/hooks/use-server-control";
 import { toast } from "sonner";
 
@@ -54,9 +55,10 @@ export function RenewalDialog({
   /** 可选:不传则用 dedicated 的终止端点。VPS 必须传自己的 */
   termination?: TerminationMutations;
 }) {
-  // 终止状态以 lifecycle.pendingActions(terminationScheduled)为准 —— 那是文档指定的
-  // 读回路径;旧的 renewalDeleteAtExpiration 只在后端读不到 lifecycle 时兜底
-  const terminationOn = info.terminationScheduled ?? info.renewalDeleteAtExpiration;
+  // 终止状态以 lifecycle.pendingActions 为准(文档指定的读回路径)。
+  // term 还带着"是哪一种终止" —— 立即终止不能显示成到期终止
+  const term = terminationLabel(info);
+  const terminationOn = !!term && !info.terminationStateUnknown;
   const currentMode: RenewMode = terminationOn
     ? "delete"
     : info.renewalType
@@ -129,6 +131,23 @@ export function RenewalDialog({
           </DialogTitle>
           <DialogDescription>{serviceName}</DialogDescription>
         </DialogHeader>
+
+        {term && (
+          <div
+            className={`rounded-xl p-3 flex gap-2.5 border ${
+              term.danger ? "border-destructive/40 bg-destructive/5" : "border-amber-500/40 bg-amber-500/10"
+            }`}
+            title={term.title}
+          >
+            <AlertCircle
+              className={`w-4 h-4 flex-shrink-0 mt-0.5 ${term.danger ? "text-destructive" : "text-amber-600"}`}
+            />
+            <div className="text-[12px]">
+              <p className="font-semibold mb-0.5">当前：{term.text}</p>
+              <p className="text-muted-foreground">{term.title}</p>
+            </div>
+          </div>
+        )}
 
         {info.renewalForced ? (
           <div className="border border-amber-500/40 bg-amber-500/10 rounded-xl p-3 flex gap-2.5">

@@ -985,17 +985,25 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 		totalSteps := len(progressArr)
 		completed := 0
 		hasError := false
+		stopping := false
 		formatted := []gin.H{}
 		for _, sRaw := range progressArr {
 			step, _ := sRaw.(map[string]interface{})
 			st, _ := step["status"].(string)
 			comment, _ := step["comment"].(string)
 			errMsg, _ := step["error"].(string)
+			// dedicated.server.InstallationProgressStatusEnum 三区一致:
+			// [doing, done, error, expired, idle, pending, stopping, todo]
+			// 以前只认 done/error —— expired(超时) 和 stopping(中止中) 会让进度条
+			// 永远停在中间不动,用户以为还在装,一直等下去。
 			if st == "done" {
 				completed++
 			}
-			if st == "error" {
+			if st == "error" || st == "expired" {
 				hasError = true
+			}
+			if st == "stopping" {
+				stopping = true
 			}
 			formatted = append(formatted, gin.H{
 				"comment":         translateInstallStep(comment),
@@ -1022,6 +1030,7 @@ func GetInstallStatus(state *app.State) gin.HandlerFunc {
 				"totalSteps":         totalSteps,
 				"completedSteps":     completed,
 				"hasError":           hasError,
+				"stopping":           stopping,
 				"allDone":            allDone,
 				"progressUnknown":    progressUnknown,
 				"steps":              formatted,

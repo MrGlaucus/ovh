@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { isOrderable } from "@/lib/availability";
 import axios from "axios";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
@@ -153,7 +154,7 @@ export function hasStockWithOption(
       if (!code) continue;
       if (filter && !filter.has(code)) continue;
       const s = dc.availability;
-      if (s && s !== "unavailable" && s !== "unknown") return true;
+      if (isOrderable(s)) return true;
     }
   }
   return false;
@@ -174,7 +175,7 @@ export function variantDcStatus(
       if (!code) continue;
       const incoming = dc.availability;
       const existing = out[code];
-      const isAvail = (s: string | undefined) => !!s && s !== "unavailable" && s !== "unknown";
+      const isAvail = (s: string | undefined) => isOrderable(s);
       if (isAvail(existing)) continue;
       out[code] = incoming;
     }
@@ -202,7 +203,7 @@ export function buildAvailabilityMap(
       const existing = out[pc][code];
       const incoming = dc.availability;
       // 已经标记为可用就不被后续覆盖；否则用最新值
-      const isAvail = (v: string | undefined) => !!v && v !== "unavailable" && v !== "unknown";
+      const isAvail = (v: string | undefined) => isOrderable(v);
       if (isAvail(existing)) continue;
       out[pc][code] = incoming;
     }

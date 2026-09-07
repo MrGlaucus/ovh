@@ -17,6 +17,7 @@ import {
   useServerMonitoring,
   useToggleMonitoring,
   type OwnedServer,
+  terminationLabel,
 } from "@/hooks/use-server-control";
 import { useHideIp, maskSensitive } from "@/hooks/use-hide-ip";
 import { useActiveServerControlAccount } from "@/hooks/use-active-account";
@@ -558,9 +559,13 @@ function formatRenewal(info: {
   renewalDeleteAtExpiration: boolean;
   renewalForced: boolean;
   terminationScheduled?: boolean;
+  terminationAction?: string;
+  terminationStateUnknown?: boolean;
 }): string {
-  // 终止状态以 lifecycle.pendingActions 为准(文档指定的读回路径),旧字段只兜底
-  if (info.terminationScheduled ?? info.renewalDeleteAtExpiration) return "到期终止";
+  // 终止状态以 lifecycle.pendingActions 为准,并且要区分是哪一种 ——
+  // 「立即终止」和「到期终止」后果天差地别
+  const term = terminationLabel(info);
+  if (term) return term.text;
   const period = info.renewalPeriod > 0 ? ` · ${info.renewalPeriod}月` : "";
   if (info.renewalForced) return `强制自动${period}`;
   return (info.renewalType ? "自动" : "手动") + period;

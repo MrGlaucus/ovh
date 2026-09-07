@@ -58,6 +58,13 @@ export interface ServiceInfo {
    *  旧字段 renewalDeleteAtExpiration 会不会随 terminationPolicy 同步,OVH 文档没说,
    *  显示"当前是不是到期终止"以这个为准。读不到时后端不下发,前端回退旧字段。 */
   terminationScheduled?: boolean;
+  /** 具体是哪种终止(services.expanded.Lifecycle.ActionEnum):
+   *  terminate=立即终止处理中 / terminateAtExpirationDate=到期终止 /
+   *  terminateAtEngagementDate=合同期结束终止 / deleteAtExpiration=到期注销。
+   *  「立即」和「到期」后果天差地别,不能都显示成"到期终止" */
+  terminationAction?: string;
+  /** 读 lifecycle 失败 —— 此时旧字段没有验证过,必须显示"状态未知"而不是假装知道 */
+  terminationStateUnknown?: boolean;
   terminationDate?: string;
   /** OVH 是否强制自动续费(部分付费服务) */
   renewalForced: boolean;
@@ -132,6 +139,41 @@ export function useUpdateRenewal(serviceName: string) {
 }
 
 /* ──────────── 到期终止策略 ──────────── */
+
+/** 终止状态的显示信息。四种 pendingAction 后果完全不同,必须分开说。 */
+export function terminationLabel(info: {
+  terminationScheduled?: boolean;
+  terminationAction?: string;
+  terminationStateUnknown?: boolean;
+  renewalDeleteAtExpiration?: boolean;
+}): { text: string; danger: boolean; title: string } | null {
+  // 读失败:不要用没验证过的旧字段冒充真相。销毁级状态宁可说"不知道"
+  if (info.terminationStateUnknown) {
+    return {
+      text: "终止状态未知",
+      danger: true,
+      title: "读取 OVH 服务生命周期失败,无法确认是否已安排终止。请刷新重试",
+    };
+  }
+  const on = info.terminationScheduled ?? info.renewalDeleteAtExpiration;
+  if (!on) return null;
+  switch (info.terminationAction) {
+    case "terminate":
+      return {
+        text: "终止处理中(立即)",
+        danger: true,
+        title: "这是【立即终止】,不是到期终止 —— OVH 会当场暂停服务器,并在数日内清除硬盘数据",
+      };
+    case "terminateAtEngagementDate":
+      return { text: "合同期结束终止", danger: false, title: "承诺期结束时终止服务" };
+    case "terminateAtExpirationDate":
+    case "deleteAtExpiration":
+      return { text: "到期终止", danger: false, title: "到期日之前照常使用,到期后销毁" };
+    default:
+      // scheduled=true 但拿不到具体 action(比如走了旧字段兜底)
+      return { text: "已安排终止", danger: false, title: "已安排终止,但未能读到具体类型" };
+  }
+}
 
 /**
  * 设置终止策略。
@@ -741,6 +783,10 @@ export interface InstallStatus {
   totalSteps: number;
   completedSteps: number;
   hasError: boolean;
+  /** 有步骤处于 stopping（安装正在中止）—— 既不是错误也不是正常进行中。
+   *  schema 的 InstallationProgressStatusEnum 有 8 个值，以前只认 done/error，
+   *  expired（超时，现已并入 hasError）和 stopping 会让进度条永远卡住不动。 */
+  stopping?: boolean;
   allDone: boolean;
   /**
    * true = OVH 这次没返回 progress（schema 里它可空）。

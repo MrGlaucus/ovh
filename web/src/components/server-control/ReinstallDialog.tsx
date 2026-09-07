@@ -44,15 +44,38 @@ const HARDWARE_RAID_LEVELS = [
   { value: "raid10", label: "RAID 10 · 镜像+条带（高性能+冗余）" },
 ];
 
+// schema: dedicated.server.reinstall.storage.partitioning.layout.RaidLevelEnum
+// = [0,1,5,6,7,10]，三区一致。以前少了 raid7（后端一直支持），用户在界面上够不到。
 const SOFTWARE_RAID_LEVELS = [
   { value: "raid0", label: "RAID 0 · 2+ 盘" },
   { value: "raid1", label: "RAID 1 · 2+ 盘（推荐）" },
   { value: "raid5", label: "RAID 5 · 3+ 盘" },
   { value: "raid6", label: "RAID 6 · 4+ 盘" },
+  { value: "raid7", label: "RAID 7 · 7+ 盘（仅 ZFS）" },
   { value: "raid10", label: "RAID 10 · 4+ 盘" },
 ];
 
-const FILESYSTEMS = ["ext4", "ext3", "xfs", "btrfs", "swap", "reiserfs"];
+// schema: dedicated.server.reinstall.storage.partitioning.layout.FileSystemEnum
+// 共 14 个值，三区一致，后端 reinstallFileSystems 全部支持。
+// 以前前端只列了 6 个，ZFS/NTFS/VMFS 等在自定义分区里完全选不到。
+// 注意文件系统和 RAID 级别有兼容矩阵（后端 checkFSRaidCompat 按官方分区文档校验），
+// 选了不兼容的组合会在提交时被挡下并说明原因。
+const FILESYSTEMS = [
+  "ext4",
+  "ext3",
+  "xfs",
+  "btrfs",
+  "zfs",
+  "swap",
+  "reiserfs",
+  "ntfs",
+  "fat16",
+  "ufs",
+  "vmfs5",
+  "vmfs6",
+  "vmfsl",
+  "none",
+];
 
 /**
  * 重装系统对话框（1:1 对齐旧前端）：

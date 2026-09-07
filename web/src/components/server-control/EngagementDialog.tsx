@@ -367,7 +367,16 @@ function PricingRow({
   const intervalMonths = parseDurationMonths(pricing.duration || "");
   const perMonth = intervalMonths > 0 ? priceValue / intervalMonths : 0;
 
-  const isUpfront = pricing.pricingMode.toLowerCase().includes("upfront");
+  // 用 schema 的权威字段,不靠 pricingMode 字符串猜。
+  // services.billing.engagement.TypeEnum = ['periodic','upfront'],描述原文:
+  // "either fully pre-paid (upfront) or periodically paid up to engagement duration (periodic)"。
+  // pricingMode 的描述只是 "Pricing model identifier" —— 自由字符串,没有枚举约束,
+  // 猜错会让「总价」槽位显示成每期价(12 个月 periodic 显示一个月的钱)。
+  // engagementConfiguration 缺失时才退回子串判断。
+  const engType = pricing.engagementConfiguration?.type;
+  const isUpfront =
+    engType === "upfront" ||
+    engType === "periodic" ? engType === "upfront" : pricing.pricingMode.toLowerCase().includes("upfront");
   // 总价只有区间=承诺期(upfront)时才等于 price;periodic 的 price 是每期价,
   // 总价 = 每期价 × 期数
   const totalValue =

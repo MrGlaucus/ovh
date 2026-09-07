@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { terminationLabel } from "@/hooks/use-server-control";
 import { useEffect, useState } from "react";
 import {
   Cloud, Power, PowerOff, RefreshCw, Monitor, KeyRound, HardDrive, Cpu, MemoryStick,
@@ -449,8 +450,8 @@ function VpsDetail({
                 <Repeat className="w-3.5 h-3.5 text-muted-foreground" />
                 <span className="text-muted-foreground">续费</span>
                 <span className="font-medium">
-                  {(info.data.terminationScheduled ?? info.data.renewalDeleteAtExpiration)
-                    ? "到期终止"
+                  {terminationLabel(info.data)
+                    ? terminationLabel(info.data)!.text
                     : info.data.renewalForced
                       ? "强制自动"
                       : info.data.renewalType

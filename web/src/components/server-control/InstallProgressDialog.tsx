@@ -69,7 +69,15 @@ export function InstallProgressDialog({
                       />
                     </div>
                     <div className="flex justify-between text-[11px] text-muted-foreground">
-                      <span>{status.allDone ? "已完成" : status.hasError ? "出错" : "进行中"}</span>
+                      <span>
+                        {status.allDone
+                          ? "已完成"
+                          : status.hasError
+                            ? "出错"
+                            : status.stopping
+                              ? "正在中止"
+                              : "进行中"}
+                      </span>
                       {status.elapsedTime ? <span>耗时 {Math.floor(status.elapsedTime)}s</span> : null}
                     </div>
                   </>

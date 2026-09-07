@@ -40,6 +40,10 @@ export interface VpsServiceInfo {
   possibleRenewPeriod: number[];
   /** 终止状态权威来源(lifecycle.pendingActions);读不到时后端不下发 */
   terminationScheduled?: boolean;
+  /** 哪种终止(立即 / 到期 / 合同期结束),见独服侧同名字段说明 */
+  terminationAction?: string;
+  /** 读 lifecycle 失败,状态未经验证 */
+  terminationStateUnknown?: boolean;
   terminationDate?: string;
 }
 
