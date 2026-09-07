@@ -128,6 +128,13 @@ type PurchaseHistoryEntry struct {
 	// 是 OVH 的库存接口慢、还是自己这台机器建购物车慢、还是最后 checkout 排队了。
 	Timing  []PhaseTiming `json:"timing,omitempty"`
 	TotalMs int64         `json:"totalMs,omitempty"`
+	// OrderStatus OVH 侧的订单状态(billing.order.OrderStatusEnum):
+	// notPaid / checking / delivering / delivered / cancelled / cancelling /
+	// documentsRequested / unknown。来自 GET /me/order/{orderId}/status,
+	// 三区都有。"下单成功"≠"已付款",没有它用户永远不知道订单到底付了没。
+	OrderStatus string `json:"orderStatus,omitempty"`
+	// OrderStatusAt 上次刷新状态的时间,给节流和"这是多久以前的状态"用
+	OrderStatusAt string `json:"orderStatusAt,omitempty"`
 }
 
 // PhaseTiming 抢购链路上一个阶段的墙钟耗时

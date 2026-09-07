@@ -20,7 +20,45 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useHistory, useClearHistory, type PurchaseHistory } from "@/hooks/use-history";
+import {
+  useHistory,
+  useClearHistory,
+  useRefreshOrderStatus,
+  type PurchaseHistory,
+} from "@/hooks/use-history";
+
+/**
+ * 订单支付状态 → 标签。取值是 OVH 的 billing.order.OrderStatusEnum,三区一致。
+ * 这才是用户真正关心的:「下单成功」只说明订单建了,付没付、过没过期,看这里。
+ */
+function orderStatusView(item: PurchaseHistory): {
+  label: string;
+  tone: "success" | "warning" | "danger" | "info" | "default";
+  paid: boolean;
+  closed: boolean;
+  title: string;
+} {
+  switch (item.orderStatus) {
+    case "notPaid":
+      return { label: "待付款", tone: "warning", paid: false, closed: false, title: "订单已创建,尚未付款;倒计时结束前未付款会作废" };
+    case "checking":
+      return { label: "付款核验中", tone: "info", paid: true, closed: false, title: "OVH 已收到付款,正在核验" };
+    case "delivering":
+      return { label: "已付款·交付中", tone: "success", paid: true, closed: false, title: "已付款,OVH 正在交付服务器" };
+    case "delivered":
+      return { label: "已付款·已交付", tone: "success", paid: true, closed: true, title: "已付款并交付" };
+    case "cancelling":
+      return { label: "取消中", tone: "danger", paid: false, closed: true, title: "订单正在取消" };
+    case "cancelled":
+      return { label: "已取消", tone: "danger", paid: false, closed: true, title: "订单已取消(过期未付款也会走到这里)" };
+    case "documentsRequested":
+      return { label: "需补材料", tone: "warning", paid: false, closed: false, title: "OVH 要求补充证件/材料后才处理" };
+    case "unknown":
+      return { label: "状态未知", tone: "default", paid: false, closed: false, title: "OVH 返回 unknown" };
+    default:
+      return { label: "状态未查到", tone: "default", paid: false, closed: false, title: "还没从 OVH 读到订单状态,点「刷新」再试" };
+  }
+}
 import { CURRENCY_UNKNOWN_HINT } from "@/lib/money";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
@@ -74,6 +112,7 @@ function getExpirationMs(item: PurchaseHistory): number {
 function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
+  const refreshStatus = useRefreshOrderStatus();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -103,9 +142,16 @@ function HistoryPage() {
         description="查看服务器购买历史记录"
         action={
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => list.refetch()} disabled={list.isFetching}>
-              <RefreshCw className={`w-4 h-4 ${list.isFetching ? "animate-spin" : ""}`} />
-              刷新
+            <Button
+              variant="outline"
+              onClick={() => refreshStatus.mutate()}
+              disabled={list.isFetching || refreshStatus.isPending}
+              title="向 OVH 查询未到终态订单的支付状态,然后重载列表"
+            >
+              <RefreshCw
+                className={`w-4 h-4 ${list.isFetching || refreshStatus.isPending ? "animate-spin" : ""}`}
+              />
+              刷新状态
             </Button>
             <Button variant="outline" onClick={() => setConfirmClear(true)} disabled={items.length === 0}>
               <Trash2 className="w-4 h-4" />
@@ -202,8 +248,9 @@ function HistoryPage() {
 }
 
 function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
-  // 只有成功且拿到 orderId 的行才显示倒计时
-  const showCountdown = item.status === "success" && !!item.orderId;
+  const st = orderStatusView(item);
+  // 倒计时是"付款窗口":付了、取消了、交付了都不再显示
+  const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   // 24 小时内进入告警色
@@ -226,8 +273,8 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
       </td>
       <td className="px-4 py-3">
         {item.status === "success" ? (
-          <Chip tone="success" title="订单已创建,尚未付款 —— 倒计时结束前完成付款,否则作废">
-            成功·待付款
+          <Chip tone={st.tone} title={st.title}>
+            {st.label}
           </Chip>
         ) : (
           <Chip tone="danger">失败</Chip>
@@ -282,7 +329,8 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
 
 /** 手机端的订单卡片渲染。跟 HistoryRow 字段一一对应,但堆叠成卡片。 */
 function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
-  const showCountdown = item.status === "success" && !!item.orderId;
+  const st = orderStatusView(item);
+  const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
@@ -297,8 +345,8 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
             <TimingChip totalMs={item.totalMs} phases={item.timing} />
           </div>
           {item.status === "success" ? (
-            <Chip tone="success" title="订单已创建,尚未付款 —— 倒计时结束前完成付款,否则作废">
-            成功·待付款
+            <Chip tone={st.tone} title={st.title}>
+            {st.label}
           </Chip>
           ) : (
             <Chip tone="danger">失败</Chip>

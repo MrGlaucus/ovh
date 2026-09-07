@@ -200,6 +200,8 @@ func main() {
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))
 		api.DELETE("/purchase-history", handlers.ClearPurchaseHistory(state))
+		// 订单支付状态:下单成功≠已付款,得去 OVH 问
+		api.POST("/purchase-history/refresh-status", handlers.RefreshOrderStatuses(state))
 
 		// Monitor
 		api.GET("/monitor/subscriptions", handlers.GetSubscriptions(state, mon))
@@ -477,6 +479,8 @@ func main() {
 
 	// 后台线程
 	go purchase.ProcessQueueLoop(state)
+	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
+	go purchase.OrderStatusLoop(state)
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,
 	// 首次解析放在抢购链路上会白白慢 2-7 秒
 	go catalog.WarmRegionCache(state)

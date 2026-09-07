@@ -936,7 +936,16 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 		}
 	}
 
-	if expirationTime == "" && priceInfo == nil {
+	// 支付状态也顺手读一次(之后由 OrderStatusLoop 定时刷)。
+	// 拿到的多半是 notPaid —— 但"明确的待付款"和"什么都不知道"对用户是两回事
+	orderStatus := ""
+	if st, err := FetchOrderStatus(client, orderID); err != nil {
+		state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", orderID, err.Error()), "purchase")
+	} else {
+		orderStatus = st
+	}
+
+	if expirationTime == "" && priceInfo == nil && orderStatus == "" {
 		return
 	}
 
@@ -947,6 +956,11 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 			continue
 		}
 		changed := false
+		if orderStatus != "" {
+			state.History[i].OrderStatus = orderStatus
+			state.History[i].OrderStatusAt = types.NowISO()
+			changed = true
+		}
 		if expirationTime != "" && state.History[i].ExpirationTime != expirationTime {
 			state.History[i].ExpirationTime = expirationTime
 			changed = true

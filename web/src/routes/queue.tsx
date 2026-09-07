@@ -226,6 +226,10 @@ function CreateQueueDialog({
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
   const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
+  // 默认不自动付款:自动扣钱必须显式打开。
+  // 这个对话框和服务器卡片弹的那个是两条建任务入口,开关两边都要有 ——
+  // 上一版只加了卡片那边,这边漏了
+  const [autoPay, setAutoPay] = useState(false);
   // 用户选的 addon,按组索引。每次切 planCode 自动清空(让用户重新选)。
   const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
   // 手填的额外 addon planCode(catalog 里没分组覆盖到的、或用户想加的特殊 addon)
@@ -354,6 +358,7 @@ function CreateQueueDialog({
       quantity: qty,
       retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
       options: parsedOptions,
+      autoPay,
     });
     if (result.success > 0) {
       toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
@@ -498,6 +503,16 @@ function CreateQueueDialog({
               </p>
             </div>
           </div>
+
+          <label className="flex items-center gap-2 cursor-pointer text-[13px]">
+            <Checkbox checked={autoPay} onCheckedChange={(v) => setAutoPay(!!v)} />
+            抢到后自动付款
+          </label>
+          <p className="text-[11px] text-muted-foreground -mt-2">
+            {autoPay
+              ? "下单成功后用 OVH 默认支付方式自动扣款（需先在 OVH 设置好）；下单即放弃 14 天撤销期"
+              : "不勾则只下单：需在订单过期前自己付款；下单即放弃 14 天撤销期"}
+          </p>
 
           {/* 可选配置:planCode 在 catalog 里 → 走 chip 选择;
                 planCode 自定义不在 catalog → 走手填。两者互斥不同时存在。 */}
