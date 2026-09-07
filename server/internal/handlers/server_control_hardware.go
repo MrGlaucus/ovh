@@ -843,9 +843,11 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 				return
 			}
 			if len(disks) == 0 {
+				// 两种模式都不能空列表:inverse=false 空 = 没告诉 OVH 换哪块;
+				// inverse=true 空 = "未列出的全换" = 整机所有盘。
 				c.JSON(http.StatusBadRequest, gin.H{
 					"success": false,
-					"error":   "请指定要更换的故障硬盘：disks 至少需要一项且包含 disk_serial（硬盘序列号）",
+					"error":   "disks 不能为空：正常模式填故障盘序列号；故障盘序列号读不出来时用 inverse=true 并填所有【健康盘】的序列号",
 				})
 				return
 			}
@@ -913,8 +915,26 @@ func HardwareReplace(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": errMsg})
 			return
 		}
-		state.Logger.Info("硬件更换请求已发送: "+svc+" - "+componentType, "server_control")
-		c.JSON(http.StatusOK, gin.H{"success": true, "message": "硬件更换请求已发送", "task": result})
+		// 响应是 support.NewMessageInfo:ticketId / ticketNumber / messageId / additionalNotice。
+		// 工单号必须回给用户 —— OVH 的整个更换流程是工单制的,拿不到号就没法去帮助中心跟进
+		ticketNumber := numconv.ToString(result["ticketNumber"])
+		ticketID := numconv.ToString(result["ticketId"])
+		notice, _ := result["additionalNotice"].(string)
+		msg := "硬件更换工单已提交"
+		if ticketNumber != "" && ticketNumber != "0" {
+			msg += "，工单号 #" + ticketNumber
+		} else if ticketID != "" && ticketID != "0" {
+			msg += "，工单 ID " + ticketID
+		}
+		state.Logger.Info("硬件更换请求已发送: "+svc+" - "+componentType+" - "+msg, "server_control")
+		c.JSON(http.StatusOK, gin.H{
+			"success":      true,
+			"message":      msg,
+			"ticketNumber": ticketNumber,
+			"ticketId":     ticketID,
+			"notice":       notice,
+			"task":         result,
+		})
 	}
 }
 

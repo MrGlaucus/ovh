@@ -1182,8 +1182,12 @@ export interface FaultyDisk {
  *  端点是 POST /server-control/:svc/hardware/replace —— 旧代码发的 POST /interventions
  *  后端从未注册（只有 GET），所以这个功能此前一直是 404。
  *
- *  硬盘必须给出故障盘序列号：OVH 的 inverse 语义是「更换所有未列出的盘」，
- *  空列表 + inverse=true 等于申请更换整机每一块硬盘，后端现在会直接拒绝。 */
+ *  硬盘两种模式(schema 的 inverse 语义,与 OVH 硬盘更换指南一致):
+ *  - inverse=false:disks 是【要换的】故障盘
+ *  - inverse=true :disks 是【不换的】健康盘 —— 故障盘已经坏到读不出序列号时用,
+ *    指南原话"list the serial numbers of the disks that don't need to be replaced"
+ *  两种模式都不能空列表:空 + inverse=true 等于申请更换整机每一块硬盘。
+ *  返回里带 OVH 的工单号(support.NewMessageInfo.ticketNumber),用户拿它去帮助中心跟进。 */
 export function useCreateIntervention() {
   const qc = useQueryClient();
   return useMutation({
@@ -1193,13 +1197,20 @@ export function useCreateIntervention() {
       details?: string;
       comment?: string;
       disks?: FaultyDisk[];
+      inverse?: boolean;
       slots?: string[];
     }) => {
-      const res = await api.post(`/server-control/${args.serviceName}/hardware/replace`, {
+      const res = await api.post<{
+        success: boolean;
+        message: string;
+        ticketNumber?: string;
+        ticketId?: string;
+        notice?: string;
+      }>(`/server-control/${args.serviceName}/hardware/replace`, {
         componentType: args.type,
         details: args.details,
         comment: args.comment,
-        ...(args.disks?.length ? { disks: args.disks } : {}),
+        ...(args.disks?.length ? { disks: args.disks, inverse: !!args.inverse } : {}),
         ...(args.slots?.length ? { slots: args.slots } : {}),
       });
       return res.data;

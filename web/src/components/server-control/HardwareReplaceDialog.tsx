@@ -25,6 +25,9 @@ export function HardwareReplaceDialog({
   // 故障盘序列号（每行一个，可写成 "序列号" 或 "序列号 槽位号"）。
   // OVH 按 disk_serial 定位要换的盘，拿不到就只能整机换盘，所以这里必填。
   const [diskInput, setDiskInput] = useState("");
+  // 故障盘坏到读不出序列号时,改列【健康盘】让 OVH 换其余的(接口的 inverse 语义,
+  // OVH 硬盘更换指南明确写了这条路)。默认关:正常模式列故障盘。
+  const [inverse, setInverse] = useState(false);
   // 故障内存槽位（可选，逗号或换行分隔，如 DIMM_A1）
   const [slotInput, setSlotInput] = useState("");
 
@@ -33,6 +36,7 @@ export function HardwareReplaceDialog({
     setDetails("");
     setComment("");
     setDiskInput("");
+    setInverse(false);
     setSlotInput("");
   };
 
@@ -67,19 +71,25 @@ export function HardwareReplaceDialog({
     }
     const disks = type === "hardDiskDrive" ? parseDisks(diskInput) : [];
     if (type === "hardDiskDrive" && disks.length === 0) {
-      toast.error("请填写至少一块故障盘的序列号");
+      toast.error(inverse ? "请填写所有健康盘的序列号（未列出的盘都会被更换）" : "请填写至少一块故障盘的序列号");
       return;
     }
     try {
-      await mut.mutateAsync({
+      const res = await mut.mutateAsync({
         serviceName,
         type,
         details: details || undefined,
         comment: comment || undefined,
         disks: disks.length ? disks : undefined,
+        inverse: type === "hardDiskDrive" ? inverse : undefined,
         slots: type === "memory" ? parseSlots(slotInput) : undefined,
       });
-      toast.success("硬件更换工单已提交");
+      // 工单号是后续跟进的唯一凭据,必须让用户看到并留得住(时长拉长)
+      const tn = res?.ticketNumber && res.ticketNumber !== "0" ? res.ticketNumber : "";
+      toast.success(tn ? `工单已提交，工单号 #${tn}（可在 OVH 帮助中心跟进）` : res?.message || "硬件更换工单已提交", {
+        duration: 12000,
+      });
+      if (res?.notice) toast.info(res.notice, { duration: 12000 });
       onOpenChange(false);
       reset();
     } catch (e: any) {
@@ -173,7 +183,7 @@ export function HardwareReplaceDialog({
             {type === "hardDiskDrive" && (
               <div className="space-y-2">
                 <label className="text-[12px] font-semibold block">
-                  故障盘序列号（必填，每行一块）
+                  {inverse ? "健康盘序列号（必填，每行一块；未列出的盘都会被更换）" : "故障盘序列号（必填，每行一块）"}
                 </label>
                 <textarea
                   rows={3}
@@ -182,10 +192,24 @@ export function HardwareReplaceDialog({
                   placeholder={"S3Z2NB0K123456\nS3Z2NB0K654321 2   ← 序列号后可跟槽位号"}
                   className="w-full px-3 py-2 border border-border rounded-md text-[13px] font-mono bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-none"
                 />
+                <label className="flex items-start gap-2 cursor-pointer text-[12px]">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={inverse}
+                    onChange={(e) => setInverse(e.target.checked)}
+                  />
+                  <span>
+                    故障盘已经读不出序列号 —— 改为列出<b>所有健康盘</b>，OVH 更换其余的盘
+                    <span className="block text-muted-foreground">
+                      （OVH 硬盘更换指南规定的做法；接口层是 inverse=true。列漏一块健康盘它也会被换掉，务必列全）
+                    </span>
+                  </span>
+                </label>
                 <div className="border border-info/40 bg-info/5 rounded-2xl p-3 text-[12px] leading-relaxed">
-                  OVH 按 <code className="font-mono">disk_serial</code> 定位要换的盘。留空会被判成「更换整机所有硬盘」，
-                  后端会直接拒绝。序列号可在系统里执行 <code className="font-mono">smartctl -i /dev/sdX</code> 查看，
-                  或在 OVH 控制台的硬件信息里找到。
+                  OVH 按 <code className="font-mono">disk_serial</code> 定位硬盘，列表不能为空（空等于申请更换整机所有硬盘，后端会拒绝）。
+                  序列号在系统里用 <code className="font-mono">smartctl -i /dev/sdX</code>（NVMe 用 <code className="font-mono">nvme list</code>）查看。
+                  官方指南建议把<b>故障盘和健康盘的序列号都写进备注</b>，避免机房技师换错盘；工单提交后可在 OVH 帮助中心按工单号跟进。
                 </div>
               </div>
             )}
