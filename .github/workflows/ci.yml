@@ -4,10 +4,11 @@ name: CI
 # 但在此之前它们从来不会自动跑 —— 全靠本地记得执行。
 # 而这个项目会真的花钱下单(addon 匹配错一档就是每月多付几十欧),
 # 也会自己替换自己的二进制,推个坏版本上去的代价不小。
+# 只手动触发。自动跑会在每次 push 时占用 Actions 额度,
+# 而发版一直是本地 build.sh + gh release 做的 —— 这个流水线只做检查,
+# 不构建产物、不上传、不碰 Release。
+# 想跑的时候去 GitHub 的 Actions 页点 "Run workflow"。
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 jobs:
