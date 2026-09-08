@@ -7,6 +7,7 @@ import (
 	"github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-buy/server/internal/config"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -64,6 +65,17 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	cli, err := ovh.NewClient(acc.Endpoint, acc.AppKey, acc.AppSecret, acc.ConsumerKey)
 	if err != nil {
 		return nil, err
+	}
+	// 账户专属 Transport，绝不使用公共 OUTBOUND_PROXY 或别的账户连接池。
+	// 配了代理就固定经该代理；不可达时请求报错，绝不回退直连。
+	if acc.ProxyURL != "" {
+		client, err := proxy.AccountHTTPClient(acc.ProxyURL, 0)
+		if err != nil {
+			return nil, err
+		}
+		cli.Client = client
+	} else {
+		cli.Client = proxy.DirectHTTPClient(0)
 	}
 	f.cache[acc.ID] = cli
 	return cli, nil

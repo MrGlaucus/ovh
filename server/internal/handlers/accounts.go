@@ -11,6 +11,7 @@ import (
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/monitor"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -25,6 +26,7 @@ type accountInput struct {
 	AppSecret   string `json:"appSecret"`
 	ConsumerKey string `json:"consumerKey"`
 	IAM         string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
+	ProxyURL    string `json:"proxyUrl"`
 	SetDefault  bool   `json:"setDefault"`
 }
 
@@ -46,6 +48,7 @@ func (in *accountInput) normalize() {
 	in.AppSecret = strings.TrimSpace(in.AppSecret)
 	in.ConsumerKey = strings.TrimSpace(in.ConsumerKey)
 	in.IAM = strings.TrimSpace(in.IAM)
+	in.ProxyURL = strings.TrimSpace(in.ProxyURL)
 	if in.Zone == "" {
 		// 没填 zone 时按 endpoint 推同大区的默认子公司,而不是一律回落 "IE"。
 		// 回落 IE 对「只填了 endpoint=ovh-us / ovh-ca」的请求是致命的:
@@ -93,7 +96,15 @@ func (in *accountInput) validate() string {
 	if in.AppKey == "" || in.AppSecret == "" || in.ConsumerKey == "" {
 		return "缺少 OVH 凭据 (appKey / appSecret / consumerKey)"
 	}
-	return validateZoneEndpoint(in.Zone, in.Endpoint)
+	if msg := validateZoneEndpoint(in.Zone, in.Endpoint); msg != "" {
+		return msg
+	}
+	if in.ProxyURL != "" {
+		if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
 }
 
 // ── handlers ───────────────────────────────────────────────────────────────
@@ -126,6 +137,7 @@ func sanitizeAccount(a types.OVHAccount) types.OVHAccount {
 	a.AppKey = maskCred(a.AppKey)
 	a.AppSecret = maskCred(a.AppSecret)
 	a.ConsumerKey = maskCred(a.ConsumerKey)
+	a.ProxyURL = proxy.Mask(a.ProxyURL)
 	return a
 }
 
@@ -200,6 +212,7 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 			AppSecret:   in.AppSecret,
 			ConsumerKey: in.ConsumerKey,
 			IAM:         in.IAM,
+			ProxyURL:    in.ProxyURL,
 			IsDefault:   isDefault,
 			CreatedAt:   types.NowISO(),
 		}
@@ -271,6 +284,14 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		}
 		if in.ConsumerKey != "" {
 			acc.ConsumerKey = in.ConsumerKey
+		}
+		// 前端编辑时回传掩码则保持原值；新地址必须在保存前校验，避免把坏代理写入账户。
+		if in.ProxyURL != "" && !strings.Contains(in.ProxyURL, "•••") && !strings.Contains(in.ProxyURL, "***") {
+			if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			acc.ProxyURL = in.ProxyURL
 		}
 
 		// 解不开的密文绝不能被空串覆盖回去。

@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS ovh_accounts (
   app_secret   TEXT NOT NULL,
   consumer_key TEXT NOT NULL,
   iam          TEXT NOT NULL,
+  proxy_url    TEXT NOT NULL DEFAULT '', -- 加密存储的账户级 OVH API 专用代理
   is_default   INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );

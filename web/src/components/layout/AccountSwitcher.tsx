@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, ChevronsUpDown, Plus, User } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -7,6 +8,7 @@ import { LoadFailed } from "@/components/common/LoadFailed";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 
 /**
  * 左侧菜单栏顶部的账户切换器 —— **全站唯一**的账户入口。
@@ -27,6 +29,12 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
 
   const list = accounts.data || [];
   const active = list.find((a) => a.id === activeId);
+  const proxyStatus = useQuery({
+    queryKey: ["account", active?.id, "proxy-status"],
+    queryFn: async () => (await api.get<{ configured: boolean; healthy: boolean; mode: string; proxy?: string; latencyMs?: number }>(`/accounts/${active!.id}/proxy-status`)).data,
+    enabled: !!active?.id,
+    refetchInterval: 60_000,
+  });
 
   // 没选过、或选中的账户被删了 → 落到默认账户（没有默认就取第一个）
   useEffect(() => {
@@ -137,6 +145,10 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         </PopoverContent>
       </Popover>
+      <div className={cn("mt-1.5 px-2 py-1 rounded-md text-[10px] flex items-center gap-1.5", !active?.proxyUrl ? "text-muted-foreground bg-muted/50" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "text-destructive bg-destructive/5" : "text-success bg-success/5")} title={proxyStatus.data?.proxy || undefined}>
+        <span className={cn("w-1.5 h-1.5 rounded-full", !active?.proxyUrl ? "bg-muted-foreground" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "bg-destructive" : "bg-success")} />
+        {!active?.proxyUrl ? "账号代理：直连" : proxyStatus.isPending ? "账号代理：检测中" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "账号代理：不可用（OVH 已阻断）" : `账号代理：已连接${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`}
+      </div>
       <p className="px-0.5 mt-1.5 text-[10px] text-muted-foreground leading-snug">
         机型、价格、库存、控制台都按这个账户所在站点显示
       </p>

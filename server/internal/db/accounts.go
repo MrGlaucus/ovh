@@ -17,6 +17,7 @@ type accountRow struct {
 	AppSecret   string `db:"app_secret"`
 	ConsumerKey string `db:"consumer_key"`
 	IAM         string `db:"iam"`
+	ProxyURL    string `db:"proxy_url"`
 	IsDefault   int    `db:"is_default"`
 	CreatedAt   string `db:"created_at"`
 }
@@ -43,6 +44,7 @@ func rowToAccount(r accountRow) types.OVHAccount {
 		AppSecret:   dec(r.AppSecret),
 		ConsumerKey: dec(r.ConsumerKey),
 		IAM:         r.IAM,
+		ProxyURL:    dec(r.ProxyURL),
 		IsDefault:   r.IsDefault == 1,
 		CreatedAt:   r.CreatedAt,
 	}
@@ -63,6 +65,7 @@ func accountToRow(a types.OVHAccount) accountRow {
 		AppSecret:   secret.Encrypt(a.AppSecret),
 		ConsumerKey: secret.Encrypt(a.ConsumerKey),
 		IAM:         a.IAM,
+		ProxyURL:    secret.Encrypt(a.ProxyURL),
 		IsDefault:   bi,
 		CreatedAt:   a.CreatedAt,
 	}
@@ -132,9 +135,9 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 	r := accountToRow(a)
 	_, err = tx.NamedExec(`
 		INSERT INTO ovh_accounts
-		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, is_default, created_at)
+		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, proxy_url, is_default, created_at)
 		VALUES
-		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :is_default, :created_at)
+		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :proxy_url, :is_default, :created_at)
 		ON CONFLICT(id) DO UPDATE SET
 		  name         = excluded.name,
 		  endpoint     = excluded.endpoint,
@@ -143,6 +146,7 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 		  app_secret   = excluded.app_secret,
 		  consumer_key = excluded.consumer_key,
 		  iam          = excluded.iam,
+		  proxy_url    = excluded.proxy_url,
 		  is_default   = excluded.is_default
 	`, r)
 	if err != nil {
