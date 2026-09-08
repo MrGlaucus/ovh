@@ -352,8 +352,16 @@ func autoOrderOnRestock(state *app.State, sub types.VPSSubscription, dcs []map[s
 				payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
 					"(下单时已按惯例放弃 14 天撤销期)"
 			}
+			// 同独服:通知里发需要登录的控制面板深链,不发 checkout 那个带凭证的 url。
+			// 带凭证那份存在本地历史里,界面上照样一键可付。
+			linkURL := out.OrderURL
+			if acc, ok := state.FindAccount(sub.AutoOrderAccountID); ok {
+				if u := ovh.ManagerOrderURL(acc.Endpoint, out.OrderID); u != "" {
+					linkURL = u
+				}
+			}
 			msg := fmt.Sprintf("🎉 VPS 下单成功\n\n型号: %s\n机房: %s\n订单: %s\n%s\n\n%s",
-				sub.PlanCode, code, out.OrderID, out.OrderURL, payNote)
+				sub.PlanCode, code, out.OrderID, linkURL, payNote)
 			notify.Broadcast(state, msg, nil)
 			// 抢到就停:订阅是"盯着补货",不是"把所有机房都买一遍"
 			return

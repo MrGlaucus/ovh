@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,26 +17,10 @@ import (
 	"github.com/ovh-buy/server/internal/ovh"
 )
 
-// managerOrderURL 订单在 OVH 控制面板里的深链。
-//
-// 三个大区各有各的控制面板,彼此不认对方的订单号(账户体系本来就独立):
-//
-//	EU → https://www.ovh.com/manager/      (301 → manager.eu.ovhcloud.com)
-//	CA → https://ca.ovh.com/manager/       (301 → manager.ca.ovhcloud.com)
-//	US → https://us.ovhcloud.com/manager/  (301 → manager.us.ovhcloud.com)
-//
-// 以前这里写死 www.ovh.com,US / CA 账户点开链接会落到欧洲面板,
-// 面板里根本没有这个订单号,只能看到一个"订单不存在"。
-// 直接用重定向后的 manager.*.ovhcloud.com,少一跳也少一次 www 侧的地区改写。
+// managerOrderURL 订单在 OVH 控制面板里的深链。实现已挪到 internal/ovh,
+// 通知侧也要用同一份(见 ovh.ManagerOrderURL 里关于凭证链接的说明)。
 func managerOrderURL(endpoint string, orderID int64) string {
-	host := "manager.eu.ovhcloud.com"
-	switch ovh.EndpointRegion(endpoint) {
-	case "US":
-		host = "manager.us.ovhcloud.com"
-	case "CA":
-		host = "manager.ca.ovhcloud.com"
-	}
-	return fmt.Sprintf("https://%s/dedicated/#/billing/order?orderId=%d", host, orderID)
+	return ovh.ManagerOrderURL(endpoint, strconv.FormatInt(orderID, 10))
 }
 
 // orderMappingEntry 一个账户的订单映射结果

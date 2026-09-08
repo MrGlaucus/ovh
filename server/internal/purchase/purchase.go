@@ -506,8 +506,16 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
 				"(下单时已按惯例放弃 14 天撤销期)\n"
 		}
+		// 通知里发控制面板深链,不发 checkout 返回的那个 url ——
+		// 后者是带凭证的下载链接(OVH 的 billing.Order 里 url 旁边就是 password),
+		// 而这条消息会进 Telegram 群和用户配的任意 webhook。
+		// 带凭证那份仍然存在本地历史里,界面上照样一键可付。
+		linkURL := ovh.ManagerOrderURL(acc.Endpoint, orderID)
+		if linkURL == "" {
+			linkURL = "请在 OVH 控制面板 → 账单 → 订单 中查看"
+		}
 		msg := fmt.Sprintf("🎉 OVH 服务器下单成功！\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n\n%s",
-			item.PlanCode, item.Datacenter, orderID, orderURL, payNote)
+			item.PlanCode, item.Datacenter, orderID, linkURL, payNote)
 		if len(item.Options) > 0 {
 			msg += "自定义配置: " + strings.Join(item.Options, ", ") + "\n"
 		}
