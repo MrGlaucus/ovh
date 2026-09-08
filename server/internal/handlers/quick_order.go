@@ -192,6 +192,12 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 
 		now := types.NowISO()
+		// 监控触发的下单才应用全局延迟(AUTO_ORDER_DELAY_SECONDS):
+		// 给用户留出"看到通知→进队列取消"的窗口。手动/外部调用立即执行。
+		delaySec := 0
+		if body.FromMonitor {
+			delaySec = state.AutoOrderDelaySeconds
+		}
 		item := types.QueueItem{
 			ID:         uuid.NewString(),
 			AccountID:  body.AccountID,
@@ -213,6 +219,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			LastCheckTime: 0,
 			QuickOrder:    true,
 			Priority:      100,
+			DelaySeconds:  delaySec,
 		}
 		state.QueueMu.Lock()
 		state.Queue = append([]types.QueueItem{item}, state.Queue...)

@@ -97,6 +97,10 @@ type QueueItem struct {
 	// 默认 false:自动扣钱必须是用户显式打开的开关,不能是隐含行为。
 	AutoPay            bool   `json:"autoPay,omitempty"`
 	ConfigSniperTaskID string `json:"configSniperTaskId,omitempty"`
+	// DelaySeconds 入队后延迟多少秒才开始第一次检查(自动触发的下单用)。
+	// 落库,重启后按 CreatedAt 续算剩余延迟,不会从头等。0 = 不延迟。
+	// 只作用于首次检查(LastCheckTime==0),之后按 RetryInterval 正常轮询。
+	DelaySeconds int `json:"delaySeconds,omitempty"`
 }
 
 // PriceInfo 价格信息

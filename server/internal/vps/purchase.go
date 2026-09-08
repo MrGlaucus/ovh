@@ -3,6 +3,8 @@ package vps
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
@@ -331,10 +333,43 @@ func recordVPSPurchase(state *app.State, sub types.VPSSubscription, dcCode strin
 // autoOrderOnRestock 补货时自动下单。
 // 只对"从无货变成有货"的机房下单 —— 首次检查发现的存量不算补货,
 // 那可能是一台挂了几个月的订阅刚启动,用户并没打算现在就买。
+//
+// 延迟下单(AUTO_ORDER_DELAY_SECONDS):VPS 自动下单不走队列,延迟用
+// AfterFunc 异步实现 —— timer 不占 goroutine、不阻塞监控循环,
+// 到期后在独立 goroutine 里执行,和同步路径是同一套下单逻辑。
 func autoOrderOnRestock(state *app.State, sub types.VPSSubscription, dcs []map[string]interface{}) {
 	if !sub.AutoOrder || strings.TrimSpace(sub.AutoOrderAccountID) == "" {
 		return
 	}
+	// 同一订阅同时只允许一波下单流程在飞(含延迟等待):一个订阅可能挂在
+	// 多个站点的账号下,同一波补货每个站点各触发一次。同步时代码天然串行,
+	// 改成延迟 timer 后两次会并发执行,可能一次买成两台。
+	flagAny, _ := autoOrderFlags.LoadOrStore(sub.ID, &atomic.Bool{})
+	flag := flagAny.(*atomic.Bool)
+	if flag.Swap(true) {
+		state.Logger.Info(fmt.Sprintf("[VPS下单] %s 已有下单流程在飞,忽略本次补货", sub.PlanCode), "vps_purchase")
+		return
+	}
+	run := func() {
+		defer flag.Store(false)
+		// 延迟窗口里用户可能取消订阅/关掉自动下单,执行前复核一次。
+		if !vpsAutoOrderStillWanted(state, sub.ID) {
+			state.Logger.Info(fmt.Sprintf("[VPS下单] %s 下单时订阅已关闭自动下单,跳过", sub.PlanCode), "vps_purchase")
+			return
+		}
+		autoOrderDcs(state, sub, dcs)
+	}
+	if state.AutoOrderDelaySeconds > 0 {
+		state.Logger.Info(fmt.Sprintf("[VPS下单] %s 已预约 %d 秒后自动下单(%d 个补货机房)",
+			sub.PlanCode, state.AutoOrderDelaySeconds, len(dcs)), "vps_purchase")
+		time.AfterFunc(time.Duration(state.AutoOrderDelaySeconds)*time.Second, run)
+		return
+	}
+	run()
+}
+
+// autoOrderDcs 对补货机房逐个下单,抢到即停。
+func autoOrderDcs(state *app.State, sub types.VPSSubscription, dcs []map[string]interface{}) {
 	for _, dc := range dcs {
 		code, _ := dc["code"].(string)
 		if code == "" {
@@ -376,3 +411,20 @@ func autoOrderOnRestock(state *app.State, sub types.VPSSubscription, dcs []map[s
 		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// vpsAutoOrderStillWanted 复核订阅是否仍开启自动下单。延迟窗口里用户
+// 可能取消订阅或关掉开关,执行前看一眼,避免"明明关了还下单"。
+func vpsAutoOrderStillWanted(state *app.State, subID string) bool {
+	state.VPSSubsMu.Lock()
+	defer state.VPSSubsMu.Unlock()
+	for _, s := range state.VPSSubscriptions {
+		if s.ID == subID {
+			return s.AutoOrder && strings.TrimSpace(s.AutoOrderAccountID) != ""
+		}
+	}
+	return false
+}
+
+// autoOrderFlags 每个订阅一个在飞标记,防延迟窗口内重复下单。
+// 条目数 = 历史上触发过自动下单的订阅数,量级极小,无需清理。
+var autoOrderFlags sync.Map // subID -> *atomic.Bool

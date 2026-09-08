@@ -95,6 +95,10 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// delay_seconds:自动触发下单的延迟窗口(入队后等 N 秒才首次检查)
+	if err := db.addColumnIfMissing("queue", "delay_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	// order_status / order_status_at:OVH 侧订单支付状态(GET /me/order/{id}/status)。
 	// timing / total_ms:抢购各阶段耗时,以前只在内存,重启即丢。
 	// ListHistory 是 SELECT * + sqlx 严格映射,结构体字段和列必须同一次上线。

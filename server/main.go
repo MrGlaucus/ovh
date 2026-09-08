@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/secret"
 	"github.com/ovh-buy/server/internal/storage"
@@ -42,6 +44,16 @@ func main() {
 		level = slog.LevelDebug
 	}
 	console := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+
+	// 出站代理:必须在任何出网请求发出之前初始化。配了 OUTBOUND_PROXY 就全站生效,
+	// 没配或解析失败按直连跑(解析失败要大声说,不能让用户以为代理已生效)。
+	if raw := os.Getenv(proxy.EnvVar); strings.TrimSpace(raw) != "" {
+		if err := proxy.Init(raw); err != nil {
+			console.Error("OUTBOUND_PROXY 解析失败,已按直连运行: " + err.Error())
+		} else {
+			console.Info("出站代理已启用: " + proxy.MaskedAddress())
+		}
+	}
 
 	paths := storage.DefaultPaths()
 	if err := paths.EnsureDirs(); err != nil {
@@ -103,6 +115,19 @@ func main() {
 	state.Port = os.Getenv("PORT")
 	if state.Port == "" {
 		state.Port = "19998"
+	}
+
+	// 自动下单延迟:监控跳变 / Telegram 触发的下单,入队后先等 N 秒才开始抢购。
+	// 解析失败或负数一律按 0(不延迟)并大声说 —— 延迟静默失效比不延迟更危险,
+	// 用户会以为"还有缓冲时间"其实单已经下了。
+	state.AutoOrderDelaySeconds = 0
+	if raw := strings.TrimSpace(os.Getenv("AUTO_ORDER_DELAY_SECONDS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err != nil || n < 0 {
+			console.Error("AUTO_ORDER_DELAY_SECONDS 解析失败,已按 0(不延迟)处理: " + raw)
+		} else {
+			state.AutoOrderDelaySeconds = n
+			console.Info(fmt.Sprintf("自动下单延迟已启用: %d 秒(仅监控跳变与 Telegram 触发,手动下单不受影响)", n))
+		}
 	}
 	state.LoadAll()
 
@@ -264,6 +289,11 @@ func main() {
 		api.POST("/cache/clear", handlers.ClearCache(state))
 		api.GET("/catalog", handlers.GetCatalog(state))
 		api.GET("/system/metrics", handlers.GetSystemMetrics(state))
+		// 出站代理配置与各 host 连通性(右上角指示器轮询 / 手动重检)
+		api.GET("/proxy/status", handlers.GetProxyStatus())
+		api.POST("/proxy/check", handlers.CheckProxy())
+		// 自动下单延迟(右上角指示器,只读,重启生效)
+		api.GET("/delay-config", handlers.GetDelayConfig(state))
 		api.GET("/version", handlers.GetVersion(state))
 		api.GET("/version/check-update", handlers.CheckUpdate(state))
 		// 在线更新:下载 → 校验 → 替换自己 → 自动重启。gracefulRestart 在下面赋值,

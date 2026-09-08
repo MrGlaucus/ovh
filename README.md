@@ -10,7 +10,7 @@ OVH 独立服务器 / VPS / Eco 系列**抢购 + 监控 + 管理**控制台。
 
 ## 下载
 
-去 [Releases](https://github.com/gokele/ovh/releases) 拿对应平台的二进制,解压即用,**不需要装 Go、Node 或 SQLite**:
+去 [Releases](https://github.com/MrGlaucus/ovh/releases) 拿对应平台的二进制,解压即用,**不需要装 Go、Node 或 SQLite**:
 
 | 平台 | 文件 |
 |---|---|
@@ -50,6 +50,7 @@ Linux 上记得 `chmod +x`。想自己编译见[部署方式](#部署方式)。
 │       ├── ovh/          # 按 account_id 路由的多账户 client 工厂
 │       ├── notify/       # 多通道通知(Telegram / 自定义 Webhook)
 │       ├── secret/       # 凭据落盘加密(AES-256-GCM)
+│       ├── proxy/        # 出站代理(OUTBOUND_PROXY)与各 host 连通性探测
 │       ├── updater/      # 在线更新:下载 / 校验 / 自替换 / 回滚
 │       └── ...
 └── web/      # 前端 (Vite + TanStack, dev 默认 :19997)
@@ -139,6 +140,18 @@ OVH_ENV_FILE=                    # 配置文件自身的位置, 默认工作目�
 TG_WEBHOOK_SECRET=               # 自定义 webhook secret_token; 留空则首次注册时自动生成并落库
 TG_WEBHOOK_SECRET_OPTIONAL=false # true 时跳过 secret 校验, 仅本地调试用, 公网部署不要开
 TG_ALLOWED_USER_IDS=             # 群聊场景下允许下单的 user id, 逗号分隔; 私聊不需要
+
+# --- 出站代理（可不填，留空=直连）---
+OUTBOUND_PROXY=                  # 所有外网请求走这个代理: http / https / socks5 / socks5h 均可,
+                                 # 可带认证 socks5://user:pass@host:port; 重启生效
+                                 # 本机自调(127.0.0.1)强制直连不走代理
+                                 # 右上角「代理」指示器逐 host 展示连通性(60s 自动重检)
+
+# --- 自动下单延迟（可不填，0=不延迟）---
+AUTO_ORDER_DELAY_SECONDS=60      # 监控补货跳变 / Telegram 触发的下单,入队后先等 N 秒才开始抢购
+                                 # 留出"看到通知→进队列取消"的窗口,或避开上架瞬间的限流
+                                 # 只作用自动触发的下单,网页手动创建的任务立即执行
+                                 # 重启不重新计时(按任务创建时间续算),队列页显示倒计时
 ```
 
 OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab 录入,落 SQLite `ovh_accounts` 表(每个账户一行,独立 endpoint / AppKey / Secret / ConsumerKey / Zone),**加密存储**。`.gitignore` 默认拒绝所有 `.env` 入库。
@@ -175,6 +188,8 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 | 自动检测更新 | ✅ | 拉 GitHub Releases 比版本号,有新版显示 ✨ |
 | **在线更新** | ✅ | 点一下自替换 + 自动重启,强制校验 SHA256,新版起不来自动回滚 |
 | **控制台接入方式可选** | ✅ | HTML5 KVM / **Java KVM(.jnlp)** / SOL(URL) / SOL(SSH),由用户选 |
+| **出站代理** | ✅ | `OUTBOUND_PROXY` 配置,OVH / Telegram / GitHub / Webhook 等所有外网请求统一走 http/https/socks5 代理,回环强制直连,右上角指示器逐 host 展示连通性 |
+| **自动下单延迟** | ✅ | `AUTO_ORDER_DELAY_SECONDS` 配置,监控跳变 / Telegram / VPS 触发的下单先等 N 秒再抢,手动下单不受影响,队列页显示倒计时 |
 | 配置绑定狙击 | ❌ | 已下线 |
 
 
@@ -218,6 +233,20 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 - **抢购历史**:订单 + 价格 + 倒计时 + OVH 订单链接直跳,每行带账户标识 chip
 - **详细日志**:实时刷新,按级别 / 关键字筛选
 - **自动检测更新**:仪表盘 mount 时调一次 `GET /api/version/check-update` 拉 GitHub releases 比版本号,有新版在版本号旁显示 ✨ chip 跳 release 页;后端纯被动响应,无 goroutine / 无定时
+
+### 出站代理
+- **全站生效**:配了 `OUTBOUND_PROXY` 后,OVH API / Telegram / GitHub Releases / 自定义 Webhook 等所有出网请求统一走代理,支持 http / https / socks5 / socks5h,可带认证 `socks5://user:pass@host:port`
+- **回环强制直连**:127.0.0.1 / localhost / ::1 的自调请求不走代理(健康检查 / 监控自检),避免"代理挂了→监控误判本地服务"
+- **右上角指示器**:「代理」chip 常驻 TopBar,逐 host 展示连通性与延迟(60s 自动重检,可手动触发)。配完代理的第一件事就是来这儿确认这些 host 真的都在走代理
+- 不配置 = 直连,无默认行为;配了但 URL 非法会大声告警并按直连跑(防止"以为走了代理其实没走")
+
+### 自动下单延迟
+- **生效范围**:监控补货跳变、Telegram 触发、VPS 补货触发的**自动**下单,入队后先等 N 秒才开始抢购;网页上手动创建的任务立即执行
+- **用途**:留出"看到通知→进队列取消"的窗口,或避开上架瞬间的限流
+- **不阻塞**:队列层"到期判定",延迟期间不查库存、不占并发槽;VPS 链路用异步 timer,不阻塞监控循环
+- **重启安全**:延迟随任务落库(`queue.delay_seconds`),重启按任务创建时间续算剩余等待,不会从头等
+- **倒计时可见**:延迟中的任务在队列页显示「延迟中」徽章 + 剩余秒数,可随时取消;右上角「延迟 Ns」chip 常驻提示当前配置
+- 不配置(0)= 立即下单,无默认行为;配了但解析失败/负数会大声告警并按 0 处理("延迟静默失效比不延迟更危险")
 
 ## 持久化
 

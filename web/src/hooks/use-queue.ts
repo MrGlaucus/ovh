@@ -20,6 +20,8 @@ export interface QueueItem {
   retryCount: number;
   /** 真正提交给 OVH 并失败的次数（无货的轮次不计）。后端按它封顶重试。 */
   failureCount?: number;
+  /** 入队后延迟多少秒才开始首次检查（自动触发的下单用，0 = 不延迟） */
+  delaySeconds?: number;
   /** 后端 types.QueueItem 还会传回这几个字段（多为 omitempty），前端目前不渲染但保留类型对齐 */
   maxRetries?: number;
   lastCheckTime?: number;

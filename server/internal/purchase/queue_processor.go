@@ -105,6 +105,15 @@ func ProcessQueueLoop(state *app.State) {
 			if it.Status != "running" {
 				continue
 			}
+			// 延迟窗口:入队后 DelaySeconds 秒内静默等待 ——
+			// 不查库存、不计数、不写 history,只跳过。到期后自动进入正常轮询。
+			// CreatedAt 落库,重启后按创建时刻续算剩余延迟,不会从头等。
+			if it.DelaySeconds > 0 && it.LastCheckTime == 0 {
+				if created, ok := types.ParseTS(it.CreatedAt); ok &&
+					time.Since(created) < time.Duration(it.DelaySeconds)*time.Second {
+					continue
+				}
+			}
 			if it.LastCheckTime == 0 || float64(current)-it.LastCheckTime >= float64(it.RetryInterval) {
 				ready = append(ready, it)
 			}

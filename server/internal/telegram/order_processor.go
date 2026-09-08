@@ -185,6 +185,8 @@ func ProcessOrder(state *app.State, planCode, datacenter string, quantity int, o
 					RetryCount:    0,
 					LastCheckTime: 0,
 					FromTelegram:  true,
+					// Telegram 触发也算"自动下单":应用全局延迟,消息里会回执剩余等待时间
+					DelaySeconds: state.AutoOrderDelaySeconds,
 				}
 				ordersToCreate = append(ordersToCreate, item)
 				state.Logger.Debug(fmt.Sprintf("[Telegram下单] 创建订单项: planCode=%s, datacenter=%s, options=%v (ID: %s)",

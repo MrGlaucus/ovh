@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS queue (
   quick_order            INTEGER NOT NULL DEFAULT 0,
   priority               INTEGER NOT NULL DEFAULT 0,
   from_telegram          INTEGER NOT NULL DEFAULT 0,
-  config_sniper_task_id  TEXT    NOT NULL DEFAULT ''
+  config_sniper_task_id  TEXT    NOT NULL DEFAULT '',
+  delay_seconds          INTEGER NOT NULL DEFAULT 0 -- 入队后延迟 N 秒才首次检查(自动下单)
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status     ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_plan_code  ON queue(plan_code);

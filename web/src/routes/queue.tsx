@@ -684,7 +684,31 @@ function QueueRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  // 延迟窗口内的任务每秒 tick 一次,驱动倒计时。暂停时倒计时照走——
+  // 后端按 CreatedAt 续算剩余延迟,暂停只是不检查,不会冻结等待时间。
+  const delaying =
+    item.status === "running" && !!item.delaySeconds && item.delaySeconds > 0 && item.retryCount === 0;
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!delaying) return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [delaying]);
+  const delayLeft = delaying
+    ? Math.max(
+        0,
+        item.delaySeconds! - Math.floor((Date.now() - new Date(item.createdAt).getTime()) / 1000),
+      )
+    : 0;
+  const inDelayWindow = delaying && delayLeft > 0;
+
   const chip = (() => {
+    if (inDelayWindow)
+      return (
+        <Chip tone="warning">
+          <StatusDot tone="warning" pulse size="xs" />延迟中
+        </Chip>
+      );
     if (item.status === "running")
       return (
         <Chip tone="success">
@@ -742,6 +766,8 @@ function QueueRow({
               <span>已停止重试（原因见抢购历史）</span>
             ) : item.status === "completed" ? (
               <span>已完成</span>
+            ) : inDelayWindow ? (
+              <span>延迟下单中，还剩 {delayLeft} 秒后开始</span>
             ) : (
               <span>
                 下次尝试 {item.retryCount > 0 ? `${item.retryInterval}秒后（第 ${item.retryCount + 1} 次）` : "即将开始"}
