@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -142,6 +143,18 @@ type State struct {
 	saveQueueMu      sync.Mutex
 	saveHistoryMu    sync.Mutex
 	saveServersMu    sync.Mutex
+
+	// 启动时哪张表没读出来。
+	//
+	// Save* 全是"DELETE 整表 + 重新 INSERT 内存快照"。LoadAll 读失败时只记了条日志,
+	// 内存留空,于是**第一次保存就把那张表整个抹了** —— 加一列忘了同步结构体、
+	// 库文件被别的进程锁住、磁盘临时 IO 错,任何一种都够把用户全部抢购历史/队列
+	// 永久删掉,而且删得静悄悄。
+	//
+	// 所以:读失败的表一律禁止再写。宁可这次运行不落库,也不能拿空内存去覆盖磁盘上
+	// 那份还完好的数据。用户重启一次(或修好 schema)就能恢复。
+	loadFailedMu sync.RWMutex
+	loadFailed   map[string]string
 	VPSSubscriptions []types.VPSSubscription
 	VPSCheckInterval int
 
@@ -253,14 +266,14 @@ func (s *State) LoadAll() {
 		s.AccountsMu.Unlock()
 		s.Logger.Info("已加载 OVH 账户: "+intStr(len(accs))+" 个", "system")
 	} else {
-		s.Logger.Error("load accounts: "+err.Error(), "system")
+		s.MarkLoadFailed("ovh_accounts", err)
 	}
 
 	// queue
 	if items, err := s.DB.ListQueue(); err == nil {
 		s.Queue = items
 	} else {
-		s.Logger.Error("load queue: "+err.Error(), "system")
+		s.MarkLoadFailed("queue", err)
 	}
 	if s.Queue == nil {
 		s.Queue = []types.QueueItem{}
@@ -270,7 +283,7 @@ func (s *State) LoadAll() {
 	if items, err := s.DB.ListHistory(); err == nil {
 		s.History = items
 	} else {
-		s.Logger.Error("load history: "+err.Error(), "system")
+		s.MarkLoadFailed("history", err)
 	}
 	if s.History == nil {
 		s.History = []types.PurchaseHistoryEntry{}
@@ -288,7 +301,7 @@ func (s *State) LoadAll() {
 		}
 		s.Logger.Info("已从 SQLite 加载服务器目录并同步到缓存", "system")
 	} else if err != nil {
-		s.Logger.Error("load servers: "+err.Error(), "system")
+		s.MarkLoadFailed("servers", err)
 	}
 	if s.ServerPlans == nil {
 		s.ServerPlans = []types.ServerPlan{}
@@ -298,7 +311,7 @@ func (s *State) LoadAll() {
 	if subs, err := s.DB.ListVPSSubscriptions(); err == nil {
 		s.VPSSubscriptions = subs
 	} else {
-		s.Logger.Error("load vps subs: "+err.Error(), "system")
+		s.MarkLoadFailed("vps_subscriptions", err)
 	}
 	if s.VPSSubscriptions == nil {
 		s.VPSSubscriptions = []types.VPSSubscription{}
@@ -371,6 +384,9 @@ func (s *State) CountPurchase() (success, failed int) {
 // 每类数据一把独立的保存锁:历史和队列互不阻塞。
 // 注意这把锁必须包住整个"快照+写库",而不只是写库。
 func (s *State) SaveQueue() error {
+	if err := s.SaveBlocked("queue"); err != nil {
+		return err
+	}
 	s.saveQueueMu.Lock()
 	defer s.saveQueueMu.Unlock()
 	s.QueueMu.Lock()
@@ -380,8 +396,47 @@ func (s *State) SaveQueue() error {
 	return s.DB.ReplaceQueue(cp)
 }
 
+// MarkLoadFailed 记下某张表启动时没读出来,之后禁止覆盖写它。
+func (s *State) MarkLoadFailed(table string, err error) {
+	s.loadFailedMu.Lock()
+	if s.loadFailed == nil {
+		s.loadFailed = make(map[string]string)
+	}
+	s.loadFailed[table] = err.Error()
+	s.loadFailedMu.Unlock()
+	s.Logger.Error(
+		"load "+table+" 失败,已禁止本次运行覆盖写该表(避免用空内存抹掉磁盘上的数据): "+err.Error(),
+		"system",
+	)
+}
+
+// SaveBlocked 读失败的表返回非 nil,调用方据此放弃保存。
+func (s *State) SaveBlocked(table string) error {
+	s.loadFailedMu.RLock()
+	reason, bad := s.loadFailed[table]
+	s.loadFailedMu.RUnlock()
+	if !bad {
+		return nil
+	}
+	return fmt.Errorf("拒绝写 %s:启动时这张表就没读出来(%s),再写会用空内存覆盖掉磁盘上的数据。请修复后重启", table, reason)
+}
+
+// LoadFailures 返回启动时读失败的表,给健康检查/前端横幅用。
+func (s *State) LoadFailures() map[string]string {
+	s.loadFailedMu.RLock()
+	defer s.loadFailedMu.RUnlock()
+	out := make(map[string]string, len(s.loadFailed))
+	for k, v := range s.loadFailed {
+		out[k] = v
+	}
+	return out
+}
+
 // SaveHistory 把内存中 History 整表覆盖写入 SQLite
 func (s *State) SaveHistory() error {
+	if err := s.SaveBlocked("history"); err != nil {
+		return err
+	}
 	s.saveHistoryMu.Lock()
 	defer s.saveHistoryMu.Unlock()
 	s.HistoryMu.Lock()
@@ -393,6 +448,9 @@ func (s *State) SaveHistory() error {
 
 // SaveServers 把内存中 ServerPlans 整表覆盖写入 SQLite
 func (s *State) SaveServers() error {
+	if err := s.SaveBlocked("servers"); err != nil {
+		return err
+	}
 	s.saveServersMu.Lock()
 	defer s.saveServersMu.Unlock()
 	s.ServerPlansMu.RLock()

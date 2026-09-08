@@ -277,6 +277,42 @@ func checkVPSDCAvailabilityOS(state *app.State, planCode, ovhSubsidiary, osFilte
 	return data, nil
 }
 
+// cloneSubs 深拷贝订阅快照。
+//
+// 以前这里是 copy(subs, state.VPSSubscriptions) —— 结构体是复制了,但 LastStatus 是
+// map、History/Datacenters 是 slice,复制出来的还是同一个底层对象。检查循环随后在
+// **锁外**往 lastStatus[code] 写状态,而 SaveSubscriptions 那边正拿着同一个 map 做
+// JSON 序列化。Go 的 map 并发读写不是数据竞争那么客气,是 runtime 直接
+// `fatal error: concurrent map read and map write` 把整个进程打死 —— recover 也拦不住。
+// 抢购工具半夜静默退出就没有然后了。
+//
+// 所以快照必须连引用类型一起复制:循环里怎么改都只动自己那一份,
+// 改完再在锁内按 ID 合并回去。
+func cloneSubs(src []types.VPSSubscription) []types.VPSSubscription {
+	out := make([]types.VPSSubscription, len(src))
+	copy(out, src)
+	for i := range out {
+		if src[i].LastStatus != nil {
+			m := make(map[string]string, len(src[i].LastStatus))
+			for k, v := range src[i].LastStatus {
+				m[k] = v
+			}
+			out[i].LastStatus = m
+		}
+		if src[i].Datacenters != nil {
+			d := make([]string, len(src[i].Datacenters))
+			copy(d, src[i].Datacenters)
+			out[i].Datacenters = d
+		}
+		if src[i].History != nil {
+			h := make([]map[string]interface{}, len(src[i].History))
+			copy(h, src[i].History) // 单条 history 写入后不再改,浅拷贝到这层就够
+			out[i].History = h
+		}
+	}
+	return out
+}
+
 // SaveSubscriptions 把订阅 + check_interval 写回 SQLite
 // saveSubsMu 保存串行化,同 monitor.saveMu。
 // VPS 这边尤其确凿:后台监控循环每轮都调 SaveSubscriptions,
@@ -284,11 +320,16 @@ func checkVPSDCAvailabilityOS(state *app.State, planCode, ovhSubsidiary, osFilte
 var saveSubsMu sync.Mutex
 
 func SaveSubscriptions(state *app.State) error {
+	if err := state.SaveBlocked("vps_subscriptions"); err != nil {
+		state.Logger.Error(err.Error(), "vps")
+		return err
+	}
 	saveSubsMu.Lock()
 	defer saveSubsMu.Unlock()
 	state.VPSSubsMu.Lock()
-	subs := make([]types.VPSSubscription, len(state.VPSSubscriptions))
-	copy(subs, state.VPSSubscriptions)
+	// 同样要深拷贝:ReplaceVPSSubscriptions 会在锁外把 LastStatus 序列化成 JSON,
+	// 浅拷贝的话它读的是和内存里同一个 map。
+	subs := cloneSubs(state.VPSSubscriptions)
 	interval := state.VPSCheckInterval
 	state.VPSSubsMu.Unlock()
 	if err := state.DB.ReplaceVPSSubscriptions(subs); err != nil {
@@ -416,8 +457,7 @@ func monitorLoopGen(state *app.State, gen int64) {
 		}
 
 		state.VPSSubsMu.Lock()
-		subs := make([]types.VPSSubscription, len(state.VPSSubscriptions))
-		copy(subs, state.VPSSubscriptions)
+		subs := cloneSubs(state.VPSSubscriptions)
 		interval := state.VPSCheckInterval
 		state.VPSSubsMu.Unlock()
 

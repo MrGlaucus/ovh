@@ -54,25 +54,33 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 	// 先拍快照,网络请求不能拿着 HistoryMu
 	state.HistoryMu.Lock()
 	type target struct {
-		taskID, orderID, accountID, statusAt, status, purchaseTime string
+		entryID, orderID, accountID, statusAt, status, purchaseTime string
 	}
 	var targets []target
 	for _, h := range state.History {
 		if h.Status != "success" || h.OrderID == "" || orderStatusTerminal[h.OrderStatus] {
 			continue
 		}
-		targets = append(targets, target{h.TaskID, h.OrderID, h.AccountID, h.OrderStatusAt, h.OrderStatus, h.PurchaseTime})
+		// 按历史条目自己的 ID 定位,不能按 TaskID。
+		// VPS 那边一条订阅下的每一单 TaskID 都是 "vps:"+sub.ID,同一个值;
+		// 按 TaskID 回写只会命中第一条,于是第二单的状态被写到第一单头上,
+		// 而第二单自己永远拿不到状态 → 每一轮都重新去查,直到 30 天上限。
+		targets = append(targets, target{h.ID, h.OrderID, h.AccountID, h.OrderStatusAt, h.OrderStatus, h.PurchaseTime})
 	}
 	state.HistoryMu.Unlock()
 
 	now := time.Now()
 	updated := 0
 	for _, t := range targets {
-		if pt, err := time.Parse(time.RFC3339, t.purchaseTime); err == nil && now.Sub(pt) > orderStatusMaxAge {
+		// 这两处以前用 time.Parse(time.RFC3339, ...) 解 NowISO 写出来的时间戳,
+		// 而 NowISO 不带时区 → 每次都解析失败 → `err == nil &&` 短路 → 两个节流
+		// 全是死代码:30 天上限没生效,2 分钟最小间隔也没生效,
+		// 后台每 10 分钟就把所有未终态订单全查一遍,手动刷新更是完全不设防。
+		if pt, ok := types.ParseTS(t.purchaseTime); ok && now.Sub(pt) > orderStatusMaxAge {
 			continue
 		}
 		if !force && t.statusAt != "" {
-			if at, err := time.Parse(time.RFC3339, t.statusAt); err == nil && now.Sub(at) < orderStatusMinInterval {
+			if at, ok := types.ParseTS(t.statusAt); ok && now.Sub(at) < orderStatusMinInterval {
 				continue
 			}
 		}
@@ -86,7 +94,7 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 			state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", t.orderID, err.Error()), "purchase")
 			continue
 		}
-		if applyOrderStatus(state, t.taskID, status) {
+		if applyOrderStatus(state, t.entryID, status) {
 			updated++
 		}
 	}
@@ -98,11 +106,11 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 
 // applyOrderStatus 写回一条历史的状态。状态变了才算"更新"(日志用),
 // 但 OrderStatusAt 每次都记,节流靠它。
-func applyOrderStatus(state *app.State, taskID, status string) bool {
+func applyOrderStatus(state *app.State, entryID, status string) bool {
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	for i := range state.History {
-		if state.History[i].TaskID != taskID {
+		if state.History[i].ID != entryID {
 			continue
 		}
 		changed := state.History[i].OrderStatus != status

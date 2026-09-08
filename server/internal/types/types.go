@@ -1,6 +1,9 @@
 package types
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Config struct {
 	AppKey      string `json:"appKey"`
@@ -241,5 +244,32 @@ type CacheInfo struct {
 
 // NowISO 返回 ISO8601 时间（与 datetime.now().isoformat() 一致）
 func NowISO() string {
-	return time.Now().Format("2006-01-02T15:04:05.000000")
+	return time.Now().Format(NowISOLayout)
+}
+
+// NowISOLayout 是 NowISO 的布局。**注意它没有时区偏移** —— 这不是 RFC3339。
+// 用 time.Parse(time.RFC3339, ...) 去解它一定失败,而失败通常被 `err == nil &&`
+// 这类写法静默吞掉,于是整段逻辑变成永不生效的死代码。
+// 实际踩到的:订单状态刷新的两处节流(2 分钟最小间隔 / 30 天上限)全废,
+// 每轮都对所有未终态订单打 OVH;队列按创建时间排序也退化成了不排序。
+// 解析自家时间戳一律走 ParseTS。
+const NowISOLayout = "2006-01-02T15:04:05.000000"
+
+// ParseTS 解析本项目自己写出来的时间戳。
+//
+// 历史上存过两种格式:NowISO(无时区,本地时间)和 time.RFC3339Nano,
+// 库里两种都有,所以解析必须两种都认。第二个返回值为 false 表示确实解不出来,
+// 调用方要显式决定"解不出来时怎么办",不要再写成静默跳过。
+func ParseTS(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, NowISOLayout, "2006-01-02T15:04:05"} {
+		// NowISO 没带时区,按本地时区解 —— 它本来就是 time.Now() 的本地时间
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }

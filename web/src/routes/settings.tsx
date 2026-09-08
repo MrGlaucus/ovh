@@ -600,20 +600,28 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
   const create = useCreateAccount();
   const update = useUpdateAccount();
   const isEdit = !!acc;
+  // 编辑时三个凭据一律留空。后端不再下发明文（只给掩码），
+  // 留空 = 保持原值（UpdateAccount 本来就是这个语义）。
+  // 以前这里回填明文，等价于让 GET /api/accounts 必须吐出可用的凭据 ——
+  // 那正是「任意网页读走 OVH 凭据」那条链的最后一环。
   const [form, setForm] = useState({
     name: acc?.name || "",
-    appKey: acc?.appKey || "",
-    appSecret: acc?.appSecret || "",
-    consumerKey: acc?.consumerKey || "",
+    appKey: "",
+    appSecret: "",
+    consumerKey: "",
     zone: acc?.zone || "IE",
   });
   const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
-  const canSubmit = form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
+  // 新建时三个凭据必填；编辑时可以全留空（只改名字/区域）
+  const canSubmit = isEdit
+    ? !!form.name.trim()
+    : form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
 
   const submit = async () => {
     if (!canSubmit) return;
     const payload = {
       name: form.name.trim(),
+      // 留空的凭据不发 —— 后端见空即保持原值
       appKey: form.appKey.trim(),
       appSecret: form.appSecret.trim(),
       consumerKey: form.consumerKey.trim(),
@@ -638,15 +646,24 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
         <div className="space-y-4 py-2">
           <Field label="账户名称 *">
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="主号 / 小号 A" autoFocus />
+            {isEdit && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                下面三个凭据留空即保持不变。出于安全考虑，后端不再把已保存的凭据发回浏览器
+                （只显示掩码），要更换请重新填写完整值。
+              </p>
+            )}
           </Field>
           <Field label="APP KEY *">
-            <Input type="password" value={form.appKey} onChange={(e) => set("appKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            <Input type="password" value={form.appKey} onChange={(e) => set("appKey", e.target.value)}
+              placeholder={isEdit ? (acc?.appKey || "留空 = 不修改") : "xxxxxxxxxxxxxxxx"} />
           </Field>
           <Field label="APP SECRET *">
-            <Input type="password" value={form.appSecret} onChange={(e) => set("appSecret", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            <Input type="password" value={form.appSecret} onChange={(e) => set("appSecret", e.target.value)}
+              placeholder={isEdit ? (acc?.appSecret || "留空 = 不修改") : "xxxxxxxxxxxxxxxx"} />
           </Field>
           <Field label="CONSUMER KEY *">
-            <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" />
+            <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)}
+              placeholder={isEdit ? (acc?.consumerKey || "留空 = 不修改") : "xxxxxxxxxxxxxxxx"} />
           </Field>
           <Field
             label="OVH 子公司 (Zone)"

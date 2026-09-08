@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,7 +68,10 @@ func Middleware(cfg Config) gin.HandlerFunc {
 			return
 		}
 
-		if key != cfg.APIKey {
+		// 常量时间比较。远程时序攻击在网络抖动面前基本不可行,
+		// 但同项目的 telegram/security.go 已经用了 ConstantTimeCompare,
+		// 没有理由这里松一档。
+		if subtle.ConstantTimeCompare([]byte(key), []byte(cfg.APIKey)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error":   "Invalid API key",
 				"message": "API密钥无效，禁止访问",
@@ -76,7 +80,12 @@ func Middleware(cfg Config) gin.HandlerFunc {
 			return
 		}
 
-		// 可选时间戳校验（防重放）：与服务器时间相差超过 5 分钟则拒绝
+		// X-Request-Time 时间戳校验。
+		//
+		// 注意它提供的防护接近于零:头不存在就跳过、解析失败也跳过,
+		// 而官方前端从来不发这个头(全项目 grep 零命中)。攻击者当然更不会发。
+		// 保留只是为了兼容可能存在的外部调用方;真正的防护是 API Key 本身。
+		// 不要因为它出现在 CORS AllowHeaders 里就以为这是一道有效的闸。
 		if ts := c.GetHeader("X-Request-Time"); ts != "" {
 			if reqMs, err := strconv.ParseInt(ts, 10, 64); err == nil {
 				diff := time.Now().UnixMilli() - reqMs

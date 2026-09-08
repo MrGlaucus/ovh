@@ -95,8 +95,10 @@ func main() {
 	cfgStore := config.New(sqliteDB)
 	state := app.NewState(paths, cfgStore, lg, sqliteDB)
 	state.APIKey = os.Getenv("API_SECRET_KEY")
+	usingDefaultAPIKey := false
 	if state.APIKey == "" {
 		state.APIKey = "123456"
+		usingDefaultAPIKey = true
 	}
 	state.Port = os.Getenv("PORT")
 	if state.Port == "" {
@@ -152,6 +154,22 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
+	// 默认不信任任何代理。gin 默认信任所有代理 + 读 X-Forwarded-For,
+	// 于是 c.ClientIP() 直接返回请求头里的值 —— 而 /api/internal/monitor/price
+	// 的「仅限本地」判定就是拿 ClientIP 做的,任何人加一个
+	// X-Forwarded-For: 127.0.0.1 就能绕过去,驱动服务端用真实凭据建/删 OVH 购物车
+	// (消耗 API 配额,补货窗口被限流就是错过抢购)。
+	//
+	// 真的在反向代理后面跑,用 TRUSTED_PROXIES 显式声明(逗号分隔 IP/CIDR)。
+	trusted := []string{}
+	for _, p := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			trusted = append(trusted, p)
+		}
+	}
+	if err := r.SetTrustedProxies(trusted); err != nil {
+		console.Warn("SetTrustedProxies 失败,将按不信任代理处理", "err", err)
+	}
 	r.Use(gin.Recovery())
 	// CORS 只放行同机来源。
 	//
@@ -512,6 +530,18 @@ func main() {
 	// 如果只想锁本机回环，设 LISTEN_HOST=127.0.0.1
 	host := os.Getenv("LISTEN_HOST")
 	addr := host + ":" + state.Port
+	// 安全告警必须在监听之前、而且要显眼。
+	// 数据库密钥那套(密文对不上直接拒绝启动)的标准,鉴权这边一直没有:
+	// 「默认密钥 123456」+「LISTEN_HOST 空 = 所有网卡」组合起来,
+	// 装完就是一台任何人都能操作 OVH 账户的机器,而启动日志一个字都不提。
+	if !enableAuth {
+		console.Error("⚠️  API 密钥校验已关闭(ENABLE_API_KEY_AUTH=false):任何人都能调用全部接口,包括下单和重装。仅限本地调试")
+	} else if usingDefaultAPIKey {
+		console.Error("⚠️  正在使用默认 API 密钥 123456 —— 请立刻在 .env 里设置 API_SECRET_KEY")
+		if host == "" {
+			console.Error("⚠️  并且监听所有网卡(LISTEN_HOST 为空):同网段任何人都能用默认密钥操作你的 OVH 账户")
+		}
+	}
 	console.Info("Listening", "addr", addr, "auth", enableAuth, "ui", hasUI(), "dataDir", paths.DataDir)
 
 	srv := &http.Server{Addr: addr, Handler: r}

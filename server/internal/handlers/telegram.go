@@ -84,9 +84,17 @@ func warnLegacyWebhook(state *app.State) {
 // TelegramWebhook POST /api/telegram/webhook
 // 这条路由在鉴权白名单里（Telegram 不可能带 X-API-Key），所以安全完全靠下面这条链：
 //
-//	secret_token → body 上限 → update_id 幂等 → 发送者授权 → 频率限制 → 业务
+//	secret_token → body 上限 → 发送者授权 → update_id 幂等 → 频率限制 → 业务
 //
 // 少任何一环，知道 URL 的人就能直接伪造回调下单。
+//
+// 关于「兼容模式」(legacy):webhook 已注册但 secret 尚未注册时,第一环放行。
+// 这时候剩下的"授权"校验的是**攻击者自己写的 JSON 字段**(chat.id),
+// 而 chat_id 不是密钥 —— 设置页明文显示、日志里到处都是、截图备份里都有,
+// 且猜错不限速(限流在授权之后)。所以兼容模式下等于没有鉴权。
+//
+// 处理办法:兼容模式照常收 Telegram 的消息(否则升级期间通知全断),
+// 但**一切会花钱的动作直接拒绝** —— 下单不是"少收一条通知"能类比的损失。
 func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1) secret_token：证明请求真的来自 Telegram
@@ -99,6 +107,8 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		if legacy {
 			warnLegacyWebhook(state)
 		}
+		// 兼容模式标记进 context,下面的下单入口据此拒绝
+		c.Set("tgLegacyMode", legacy)
 
 		// 2) body 上限：防止超大 body 打爆内存
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, telegram.MaxTelegramBodyBytes)
@@ -115,7 +125,22 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			return
 		}
 
-		// 3) update_id 幂等：Telegram 没收到 200 就会重投同一条 update，
+		// 3) 发送者授权 —— 必须排在幂等写入之前。
+		//
+		// 以前顺序是「幂等 → 授权」,于是未授权请求也会先往 telegram_updates 写一行。
+		// 兼容模式下(见下面 legacy 的说明)任何人都能走到这一步,于是可以:
+		//   · 无限插行撑爆磁盘(update_id 是任意 int64,清理只在 %50==0 时抽样触发)
+		//   · **投毒**:预占一段连续的 update_id,之后 Telegram 真发来的同号 update
+		//     被判成"重复投递"直接丢弃 —— 一键下单和文本下单静默失效,
+		//     日志里只有一行「忽略重复投递」。对抢购工具来说这是最坏的失败模式。
+		authorized := telegram.IsAuthorizedActor(state, actorChatID(data), actorUserID(data))
+		if !authorized {
+			state.Logger.Warn("拒绝未授权的 Telegram 请求(未写入幂等表)", "telegram")
+			c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
+			return
+		}
+
+		// 4) update_id 幂等：Telegram 没收到 200 就会重投同一条 update，
 		//    没有这一步，一次网络抖动就会重复下单。
 		if updateID := parseUpdateID(data["update_id"]); updateID > 0 && state.DB != nil {
 			claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
@@ -150,8 +175,55 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	}
 }
 
+// refuseInLegacyMode 兼容模式下拒绝花钱的动作。
+//
+// 兼容模式(secret 未注册)时唯一的"鉴权"是请求体里的 chat_id,
+// 而那不是密钥。收通知可以将就,下单不行 —— 一单就是真实订单,
+// 占库存、已弃 14 天撤销期。
+func refuseInLegacyMode(state *app.State, c *gin.Context) bool {
+	if legacy, _ := c.Get("tgLegacyMode"); legacy == true {
+		state.Logger.Error("兼容模式(webhook secret 未注册)下拒绝执行下单动作。"+
+			"请到设置页点一次「注册 Webhook」启用强校验", "telegram")
+		c.JSON(http.StatusForbidden, gin.H{
+			"ok":    false,
+			"error": "legacy_mode_order_refused",
+		})
+		return true
+	}
+	return false
+}
+
+// actorChatID / actorUserID 从 update 里取出发送者标识,
+// callback_query 和 message 两种形态各取各的位置。
+// 提前取是为了把授权判断挪到幂等写入之前(见 webhook handler 里的说明)。
+func actorChatID(data map[string]interface{}) interface{} {
+	if cb, ok := data["callback_query"].(map[string]interface{}); ok {
+		msg, _ := cb["message"].(map[string]interface{})
+		return getNested(msg, "chat", "id")
+	}
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		return getNested(msg, "chat", "id")
+	}
+	return nil
+}
+
+func actorUserID(data map[string]interface{}) interface{} {
+	if cb, ok := data["callback_query"].(map[string]interface{}); ok {
+		from, _ := cb["from"].(map[string]interface{})
+		return from["id"]
+	}
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		from, _ := msg["from"].(map[string]interface{})
+		return from["id"]
+	}
+	return nil
+}
+
 // handleTelegramCallback 处理「一键下单」按钮回调。
 func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Context, cb map[string]interface{}) {
+	if refuseInLegacyMode(state, c) {
+		return
+	}
 	cbData, _ := cb["data"].(string)
 	message, _ := cb["message"].(map[string]interface{})
 	chatID := getNested(message, "chat", "id")
@@ -193,6 +265,23 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	}
 
 	buttonID := strOr(callbackObj, "u", "uuid")
+	// 没有按钮 id 就不许下单。
+	//
+	// 以前 claim / 过期 / 重放三道判定全在 if buttonID != "" 里面 ——
+	// callback_data 里不带 u,planCode/机房/配置就直接取 JSON 的 p/d/o,
+	// telegram_order_buttons 一次都不查。于是 README 承诺的
+	// 「同一个按钮只能下单一次、超 24h 作废」对任何能构造 body 的人都不成立:
+	// 同一组 {"a":"add_to_queue","p":"...","d":"..."} 换个 update_id 就能重放,
+	// 想下几单下几单。
+	//
+	// 正常 TG 客户端改不了 callback_data,所以这条要配合兼容模式或 secret 泄漏;
+	// 但既然一次性 nonce 是我们唯一的防重放,就不该留一条绕过它的路。
+	if buttonID == "" {
+		state.Logger.Warn("拒绝没有按钮 id 的下单回调(无法防重放)", "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
+		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
+		return
+	}
 	planCode := strOr(callbackObj, "p", "planCode")
 	dc := strOr(callbackObj, "d", "datacenter")
 	// btnAccountID:发通知时记下的「触发订阅所用账户」。planCode 是分区的,
@@ -244,7 +333,14 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 				options = cached.Options
 				state.Logger.Info("从内存缓存恢复按钮配置（旧按钮）: "+buttonID, "telegram")
 			} else {
-				state.Logger.Warn("按钮 UUID 不存在: "+buttonID, "telegram")
+				// 库里没有、内存缓存也没有 → 拒绝。
+				// 以前这里只打一行 Warn 就继续往下走,照样拿 JSON 里的 p/d 下单 ——
+				// 按钮行被 DeleteExpiredTelegramButtons 清掉、换库、换机器都会落进
+				// 这个分支,等于防重放形同虚设。
+				state.Logger.Warn("按钮 UUID 不存在,拒绝下单: "+buttonID, "telegram")
+				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
+				c.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_not_found"})
+				return
 			}
 		}
 	}
@@ -341,6 +437,9 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 
 // handleTelegramMessage 处理文本下单消息。
 func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]interface{}) {
+	if refuseInLegacyMode(state, c) {
+		return
+	}
 	text, _ := msg["text"].(string)
 	text = strings.TrimSpace(text)
 	chatID := getNested(msg, "chat", "id")

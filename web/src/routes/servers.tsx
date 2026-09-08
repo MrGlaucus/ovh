@@ -12,6 +12,7 @@ import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useServers, useAddToMonitor, type ServerPlan } from "@/hooks/use-servers";
@@ -227,6 +228,16 @@ function ServersPage() {
         </div>
       )}
 
+      {/* 库存接口挂了 —— 必须说出来。卡片上的红点这时候来自目录里的静态字段,
+          不是实时库存,把它当成"缺货"会让用户直接放弃一台其实有货的机器。 */}
+      {availQ.isError && (
+        <LoadFailedBanner
+          title="实时库存读取失败，下面显示的是目录里的静态状态"
+          error={availQ.error}
+          onRetry={() => availQ.refetch()}
+        />
+      )}
+
       {/* 网格 */}
       {q.isPending ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -234,6 +245,15 @@ function ServersPage() {
             <Skeleton key={i} className="h-[260px] rounded-2xl" />
           ))}
         </div>
+      ) : q.isError ? (
+        <Card>
+          <LoadFailed
+            icon={Server}
+            title="机型列表读取失败"
+            error={q.error}
+            onRetry={() => q.refetch()}
+          />
+        </Card>
       ) : filtered.length === 0 ? (
         <Card>
           <EmptyState
@@ -249,6 +269,7 @@ function ServersPage() {
               key={srv.planCode}
               server={srv}
               realtimeDcMap={availMap[srv.planCode]}
+              availError={availQ.isError}
               price={priceMap[srv.planCode]}
               priceLoading={catalogQ.isPending}
               subsidiary={subsidiary}
@@ -265,6 +286,7 @@ function ServersPage() {
             <DetailContent
               server={detailServer}
               realtimeDcMap={availMap[detailServer.planCode]}
+              availError={availQ.isError}
               variants={variantIndex[detailServer.planCode]}
               defaultPrice={priceMap[detailServer.planCode]}
               priceLoading={catalogQ.isPending}
@@ -283,6 +305,7 @@ function ServersPage() {
 function ServerCard({
   server,
   realtimeDcMap,
+  availError,
   price,
   priceLoading,
   subsidiary,
@@ -290,6 +313,8 @@ function ServerCard({
 }: {
   server: ServerPlan;
   realtimeDcMap?: Record<string, string>;
+  /** 实时库存接口挂了 —— 红点只是目录静态值,不能叫"缺货" */
+  availError?: boolean;
   price?: PriceInfo;
   /** 目录还在拉 → 显示"加载中";已拉完仍无价 → 显示"该子公司无报价" */
   priceLoading: boolean;
@@ -325,8 +350,15 @@ function ServerCard({
   const total = dcStatuses.length;
   const okCount = dcStatuses.filter((s) => s.isOk).length;
 
-  const tone = okCount > 0 ? "success" : "danger";
-  const statusText = okCount > 0 ? `${okCount}/${total} 可用` : "暂时缺货";
+  // 库存接口挂了且这台机器没拿到实时数据 → 我们压根不知道有没有货。
+  // 这时候显示"暂时缺货"是假消息:用户会跳过一台其实能抢的机器。
+  const stockUnknown = !!availError && !realtimeDcMap;
+  const tone = stockUnknown ? "warning" : okCount > 0 ? "success" : "danger";
+  const statusText = stockUnknown
+    ? "库存未知"
+    : okCount > 0
+      ? `${okCount}/${total} 可用`
+      : "暂时缺货";
 
   return (
     <Card className="overflow-hidden transition-colors hover:bg-secondary/30">
@@ -344,12 +376,12 @@ function ServerCard({
               )}
             </div>
           </div>
-          <Chip tone={tone as any}>
-            {okCount > 0 ? (
-              <StatusDot tone="success" pulse size="xs" />
-            ) : (
-              <StatusDot tone="danger" size="xs" />
-            )}
+          <Chip tone={tone as any} title={stockUnknown ? "实时库存接口请求失败,未能确认这台机器的状态" : undefined}>
+            <StatusDot
+              tone={stockUnknown ? "warning" : okCount > 0 ? "success" : "danger"}
+              pulse={!stockUnknown && okCount > 0}
+              size="xs"
+            />
             {statusText}
           </Chip>
         </div>
@@ -418,6 +450,7 @@ function SpecRow({ icon, text }: { icon: React.ReactNode; text: string }) {
 function DetailContent({
   server,
   realtimeDcMap,
+  availError,
   variants,
   defaultPrice,
   priceLoading,
@@ -427,6 +460,8 @@ function DetailContent({
 }: {
   server: ServerPlan;
   realtimeDcMap?: Record<string, string>;
+  /** 页面级实时库存接口挂了 */
+  availError?: boolean;
   /** 此 planCode 在 OVH availability 接口里的所有 FQN 变体 */
   variants?: AvailabilityItem[];
   /** 用默认配置算出的代表价，作为用户尚未变动时的兜底显示 */
@@ -523,6 +558,12 @@ function DetailContent({
   }).length;
   const ratio = total > 0 ? ok / total : 0;
 
+  // 这个弹窗里的库存有两个来源:换了下单账户时走 orderAvail(该账户所在站点),
+  // 否则用页面级那一份。哪一份挂了就得说哪一份挂了 —— 用户正要在这里按下抢购,
+  // 把"没问到"画成红色"暂时缺货"是这个工具能犯的最严重的谎。
+  const stockFailed = orderEndpoint ? orderAvail.isError : !!availError;
+  const stockUnknown = stockFailed && !orderDcMap;
+
   // option chip 上的有货预判。
   // OVH availability FQN 只包含 planCode.memory.storage[.systemStorage] 三段,
   // 带宽 / vRack / CPU / other 这些 addon 不在 FQN 里 → 它们的库存跟主机解耦,
@@ -562,7 +603,9 @@ function DetailContent({
             <DialogTitle className="font-mono text-xl truncate">{server.planCode}</DialogTitle>
             <DialogDescription className="truncate mt-0.5">{server.name}</DialogDescription>
           </div>
-          {ok > 0 ? (
+          {stockUnknown ? (
+            <Chip tone="warning"><StatusDot tone="warning" size="xs" />库存未知</Chip>
+          ) : ok > 0 ? (
             <Chip tone="success"><StatusDot tone="success" pulse size="xs" />当前可用</Chip>
           ) : (
             <Chip tone="danger"><StatusDot tone="danger" size="xs" />暂时缺货</Chip>
@@ -626,6 +669,15 @@ function DetailContent({
             />
           ))}
 
+        {/* 库存接口挂了 —— 下面的红绿点这时候不代表真实库存,必须在按下抢购之前说清楚。 */}
+        {stockFailed && (
+          <LoadFailedBanner
+            title="实时库存读取失败，下面的红绿点不代表当前真实库存"
+            error={orderEndpoint ? orderAvail.error : undefined}
+            onRetry={() => (orderEndpoint ? orderAvail.refetch() : undefined)}
+          />
+        )}
+
         {/* DC 多选（点击切换） + 全选/反选 */}
         <div>
           <div className="flex items-center justify-between mb-2.5 gap-2 flex-wrap">
@@ -635,7 +687,7 @@ function DetailContent({
             </h3>
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-muted-foreground">
-                {`${ok}/${total} 可用 · ${Math.round(ratio * 100)}%`}
+                {stockUnknown ? "库存未知" : `${ok}/${total} 可用 · ${Math.round(ratio * 100)}%`}
               </span>
               <Button
                 variant="outline"

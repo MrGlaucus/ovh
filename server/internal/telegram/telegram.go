@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,26 @@ import (
 // VerifyConfig 检查 Telegram 是否可用:Token / Chat ID 是否填写 + bot 是否能 getMe + chat 是否可访问。
 // 用于 AddSubscription 等"必须 TG 有效"的强制校验。
 // 返回 (ok, 失败原因)。所有失败原因都是面向终端用户的中文短句。
+
+// tokenRe 匹配 Telegram API URL 里的 bot token 段。
+var tokenRe = regexp.MustCompile(`/bot[0-9]+:[A-Za-z0-9_-]+`)
+
+// scrub 抹掉字符串里的 Bot Token。
+//
+// Go 的 *url.Error 文本长这样:
+//
+//	Post "https://api.telegram.org/bot<完整TOKEN>/sendMessage": dial tcp ...
+//
+// 而这类部署连 api.telegram.org 本来就常失败。以前这些 scrub(err.Error()) 被直接
+// 拼进日志 —— 明文 Token 落进 logs/ 并通过 GET /api/logs 显示在前端;
+// 有几处还把同一串当 error 返回,出现在「添加订阅」的报错和 webhook 信息接口里。
+//
+// Token 能冒充你发通知、甚至通过 webhook 触发下单,config.go 专门为它做了加密落库,
+// 这条路等于把那份保护绕过去了。
+func scrub(s string) string {
+	return tokenRe.ReplaceAllString(s, "/bot***")
+}
+
 func VerifyConfig(state *app.State) (bool, string) {
 	cfg := state.Config.Get()
 	token := strings.TrimSpace(cfg.TgToken)
@@ -33,7 +54,7 @@ func VerifyConfig(state *app.State) (bool, string) {
 	// 1) getMe 验 token
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/getMe")
 	if err != nil {
-		return false, "无法连接 Telegram API: " + err.Error()
+		return false, "无法连接 Telegram API: " + scrub(err.Error())
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -50,7 +71,7 @@ func VerifyConfig(state *app.State) (bool, string) {
 	// 2) getChat 验 chat_id (bot 是否能访问这个 chat)
 	resp2, err := client.Get("https://api.telegram.org/bot" + token + "/getChat?chat_id=" + chatID)
 	if err != nil {
-		return false, "无法连接 Telegram API: " + err.Error()
+		return false, "无法连接 Telegram API: " + scrub(err.Error())
 	}
 	body2, _ := io.ReadAll(resp2.Body)
 	resp2.Body.Close()
@@ -90,18 +111,20 @@ func SendMessage(state *app.State, message string, replyMarkup map[string]interf
 
 	body, _ := json.Marshal(payload)
 
-	state.Logger.Info("发送HTTP请求到Telegram API: "+url[:min(45, len(url))]+"...", "")
+	// 不能截断了事:"https://api.telegram.org/bot" 就占 28 字符,
+	// 取前 45 位等于每发一条消息就把 Token 前 17 位记进日志。
+	state.Logger.Info("发送HTTP请求到Telegram API: "+scrub(url), "")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		state.Logger.Error("发送Telegram消息时发生未预期错误: "+err.Error(), "")
+		state.Logger.Error("发送Telegram消息时发生未预期错误: "+scrub(err.Error()), "")
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		state.Logger.Error("发送Telegram消息时发生网络错误: "+err.Error(), "")
+		state.Logger.Error("发送Telegram消息时发生网络错误: "+scrub(err.Error()), "")
 		return false
 	}
 	defer resp.Body.Close()
@@ -149,8 +172,8 @@ func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]i
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+err.Error(), "telegram")
-		return false, err.Error(), nil
+		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
+		return false, scrub(err.Error()), nil
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -190,8 +213,8 @@ func GetWebhookInfo(state *app.State) (bool, map[string]interface{}, string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
 	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+err.Error(), "telegram")
-		return false, nil, err.Error()
+		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
+		return false, nil, scrub(err.Error())
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -256,8 +279,9 @@ func SendReply(state *app.State, chatID interface{}, text string, replyToMessage
 type OrderInfo struct {
 	PlanCode   string
 	Datacenter string
-	Quantity   int
-	Options    []string
+	// Quantity 每个机房下几台。有上限,见 MaxOrderQuantity。
+	Quantity int
+	Options  []string
 }
 
 // 格式: plancode [datacenter] [quantity] [options(逗号分隔)]
@@ -305,7 +329,7 @@ func ParseOrderMessage(text string) *OrderInfo {
 	case 1:
 		p := remaining[0]
 		if n, ok := parsePositiveInt(p); ok {
-			result.Quantity = n
+			result.Quantity = clampQuantity(n)
 		} else if len(p) >= 3 && len(p) <= 4 && isAllLowerAlpha(p) {
 			result.Datacenter = p
 		}
@@ -314,10 +338,10 @@ func ParseOrderMessage(text string) *OrderInfo {
 		if len(p1) >= 3 && len(p1) <= 4 && isAllLowerAlpha(p1) {
 			result.Datacenter = p1
 			if n, ok := parsePositiveInt(p2); ok {
-				result.Quantity = n
+				result.Quantity = clampQuantity(n)
 			}
 		} else if n, ok := parsePositiveInt(p1); ok {
-			result.Quantity = n
+			result.Quantity = clampQuantity(n)
 			if len(p2) >= 3 && len(p2) <= 4 && isAllLowerAlpha(p2) {
 				result.Datacenter = p2
 			}
@@ -328,6 +352,26 @@ func ParseOrderMessage(text string) *OrderInfo {
 
 // parsePositiveInt 只接受纯十进制 ASCII 数字字符串，
 // 不接受 "-1" / "+5" / " 3" 等带符号或空白的版本（strconv.Atoi 会通过）。
+// MaxOrderQuantity 一条聊天消息能指定的最大数量。
+// 没有上限时 "planCode 4000000000" 会让 order_processor 先把 40 亿个
+// QueueItem append 进一个切片 —— 进程当场 OOM 被杀。
+const MaxOrderQuantity = 20
+
+// MaxOrderFanout 一条消息最多创建多少个抢购任务。
+// 不指定机房时任务数 = 配置数 × 有货机房数 × 数量,很容易远超用户直觉。
+const MaxOrderFanout = 60
+
+// clampQuantity 把数量夹到 [1, MaxOrderQuantity]
+func clampQuantity(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > MaxOrderQuantity {
+		return MaxOrderQuantity
+	}
+	return n
+}
+
 func parsePositiveInt(s string) (int, bool) {
 	if s == "" {
 		return 0, false
