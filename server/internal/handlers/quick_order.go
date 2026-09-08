@@ -173,7 +173,10 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 				h := state.History[i]
 				if h.PlanCode == body.PlanCode && h.Datacenter == body.Datacenter && h.Status == "success" &&
 					fingerprint(h.Options) == fp {
-					if t, err := time.Parse(time.RFC3339Nano, h.PurchaseTime); err == nil {
+					// PurchaseTime 是 types.NowISO() 写的,不带时区 —— 用 RFC3339Nano
+					// 解必然失败,于是这道"刚刚已经买成过同款,别再买一次"的闸门
+					// 一直是死代码。它拦的是重复扣款,不是显示问题。
+					if t, ok := types.ParseTS(h.PurchaseTime); ok {
 						if nowTS-t.Unix() < 120 {
 							state.HistoryMu.Unlock()
 							state.Logger.Info("检测到近期成功订单，拒绝再次入队", "quick_order")

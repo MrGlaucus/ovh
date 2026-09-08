@@ -69,7 +69,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		errMsg := err.Error()
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
 		recordFailure(state, item, errMsg)
-		return Outcome{Attempted: true}
+		return attemptOutcome(err)
 	}
 	tl.mark("查库存")
 
@@ -178,7 +178,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	}, &cartResult); err != nil {
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 		recordFailure(state, item, err.Error())
-		return Outcome{Attempted: true}
+		return attemptOutcome(err)
 	}
 	cartID, _ = cartResult["cartId"].(string)
 	tl.mark("建购物车")
@@ -214,7 +214,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
 		recordFailure(state, item, errMsg)
-		return Outcome{Attempted: true}
+		return attemptOutcome(err)
 	}
 	tl.mark("绑定购物车")
 	state.Logger.Info("购物车绑定成功", "purchase")
@@ -249,7 +249,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 			recordFailure(state, item, err.Error())
-			return Outcome{Attempted: true}
+			return attemptOutcome(err)
 		}
 	}
 	if n, ok := numconv.ToInt64(itemResult["itemId"]); ok {
@@ -260,6 +260,8 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生未知错误: %s", item.PlanCode, errMsg), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
 		recordFailure(state, item, errMsg)
+		// 这里 OVH 是 200 回来的,只是 body 里没有 itemId —— 不是传输问题,
+		// 重试大概率还是同一个响应,该计数。
 		return Outcome{Attempted: true}
 	}
 	tl.mark("加购商品")
@@ -341,7 +343,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的基础商品ID: %d", itemID), "purchase")
 			recordFailure(state, item, errMsg)
-			return Outcome{Attempted: true}
+			return attemptOutcome(err)
 		}
 	}
 
@@ -363,7 +365,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败: %s（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", err.Error(), len(filtered))
 				state.Logger.Error(errMsg, "purchase")
 				recordFailure(state, item, errMsg)
-				return Outcome{Attempted: true}
+				return attemptOutcome(err)
 			}
 			state.Logger.Info(fmt.Sprintf("找到 %d 个可用的 Eco 硬件选项。", len(availableEcoOpts)), "purchase")
 
@@ -426,7 +428,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 					// 关键选项添加失败 → 整单失败。不能静默继续 checkout,否则会下到错误配置。
 					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败: %s（已取消下单避免下到错误配置）", t.planCode, err.Error())
 					recordFailure(state, item, errMsg)
-					return Outcome{Attempted: true}
+					return attemptOutcome(err)
 				}
 				state.Logger.Info(fmt.Sprintf("成功添加 Eco 选项: %s", t.planCode), "purchase")
 			}
@@ -464,7 +466,9 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		recordTiming(timingKey, tl, "failed")
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s (%s)", item.PlanCode, errMsg, tl.String()), "purchase")
 		recordFailure(state, item, errMsg)
-		return Outcome{Attempted: true}
+		// checkout 这一步最要紧:补货瞬间大家都在下单,429 是常态。
+		// 把它记成一次"真正的失败尝试"会让任务在唯一有货的那一分钟里自己判死。
+		return attemptOutcome(err)
 	}
 	tl.mark("下单")
 	recordTiming(timingKey, tl, "ordered")

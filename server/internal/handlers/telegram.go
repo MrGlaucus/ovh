@@ -415,11 +415,30 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	state.Queue = append(state.Queue, item)
 	state.QueueMu.Unlock()
 	if err := state.SaveQueue(); err != nil {
-		// 落库失败 → 归还按钮，让用户可以重试
+		// 落库失败 → 把内存里这条也撤掉,再归还按钮。
+		//
+		// 以前只归还按钮、不撤内存:任务还在队列里跑着,而按钮又可以再按一次 ——
+		// 用户按第二次就是同一台机器的第二条任务,抢到就是两笔真实订单、两次扣款。
+		// 而且下面照样回"✅ 已添加到抢购队列",用户完全不知道出过事。
+		// 撤销 + 归还按钮 + 明确告知,三件事必须一起做,重试才是安全的。
 		state.Logger.Error("Telegram 入队后保存失败: "+err.Error(), "telegram")
+		state.QueueMu.Lock()
+		for i := range state.Queue {
+			if state.Queue[i].ID == item.ID {
+				state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
+				break
+			}
+		}
+		state.QueueMu.Unlock()
 		if claimed {
 			_ = state.DB.UnclaimTelegramButton(buttonID)
 		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "入队失败，请重试", true)
+		telegram.SendReply(state, chatID,
+			"⚠️ 入队失败：任务没能写进数据库，已撤销，未开始抢购。\n原因: "+err.Error()+"\n\n可以再按一次按钮重试。",
+			int64(messageID))
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save queue: " + err.Error()})
+		return
 	}
 
 	optsStr := strings.Join(options, ", ")

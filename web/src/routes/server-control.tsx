@@ -11,6 +11,7 @@ import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
 import {
   useOwnedServers,
   useServerServiceInfo,
@@ -47,7 +48,8 @@ function ServerControlPage() {
   const { hidden, toggle } = useHideIp();
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
-  const { data: accounts } = useAccounts();
+  const accountsQ = useAccounts();
+  const accounts = accountsQ.data;
   const servers = q.data || [];
 
   // 首次没选过账户 → 自动选默认账户
@@ -87,19 +89,40 @@ function ServerControlPage() {
         description={
           activeAcc
             ? `管理 OVH 独立服务器 · 当前账户 ${activeAcc.name} (${activeAcc.zone})`
-            : "管理 OVH 独立服务器"
+            : accountsQ.isError
+              // 账户列表没拉到时不能沉默地退回默认文案,否则用户以为"就是没显示账户名"
+              ? "管理 OVH 独立服务器 · 账户信息读取失败,下面的数据属于哪个账户暂时无法确认"
+              : "管理 OVH 独立服务器"
         }
         action={
           <div className="flex flex-wrap items-center gap-2">
             {/* 账户在左侧菜单栏统一切换,这里只显示当前是谁 ——
                 以前这里也能切,和列表页那个各切各的,于是"用 A 账户浏览、用 B 账户下单"
                 一键就能做出来,而三区目录互不相通,这种组合必然失败 */}
-            <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-[12px]">
-              <User className="w-3.5 h-3.5 text-muted-foreground" />
-              {(accounts || []).find((a) => a.id === activeAccount)?.name || "未选择账户"}
-              <span className="text-muted-foreground">
-                {(accounts || []).find((a) => a.id === activeAccount)?.zone}
-              </span>
+            <span
+              className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-md border text-[12px] ${
+                accountsQ.isError ? "border-destructive/40 bg-destructive/5" : "border-border"
+              }`}
+              title={accountsQ.isError ? errorMessage(accountsQ.error) : undefined}
+            >
+              <User className={`w-3.5 h-3.5 ${accountsQ.isError ? "text-destructive" : "text-muted-foreground"}`} />
+              {/* 账户列表读失败时绝不能显示「未选择账户」:那句话的意思是"你还没选",
+                  用户会去左侧菜单挑一个;这里其实是"我们不知道你选的是谁",该做的是重试。
+                  三区目录互不相通,认错账户 = 后面所有操作打在错误的站点上。 */}
+              {accountsQ.isError ? (
+                <button type="button" className="text-destructive underline" onClick={() => accountsQ.refetch()}>
+                  账户读取失败 · 重试
+                </button>
+              ) : accountsQ.isPending ? (
+                <span className="text-muted-foreground">账户读取中…</span>
+              ) : (
+                <>
+                  {(accounts || []).find((a) => a.id === activeAccount)?.name || "未选择账户"}
+                  <span className="text-muted-foreground">
+                    {(accounts || []).find((a) => a.id === activeAccount)?.zone}
+                  </span>
+                </>
+              )}
             </span>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -119,6 +142,19 @@ function ServerControlPage() {
 
       {q.isPending ? (
         <Skeleton className="h-[500px] rounded-2xl" />
+      ) : q.isError ? (
+        // 列表没拉到 ≠ 这个账户下没有机器。以前一律走「暂无服务器」+「您的 OVH 账户下还没有
+        // 独立服务器」,用户看完就去别的账户找 / 以为机器被销毁了,而实际只是这次请求挂了。
+        <Card>
+          <div className="p-4 sm:p-6">
+            <LoadFailed
+              icon={Server}
+              title="服务器列表读取失败"
+              error={q.error}
+              onRetry={() => q.refetch()}
+            />
+          </div>
+        </Card>
       ) : servers.length === 0 ? (
         <Card>
           <EmptyState
@@ -178,7 +214,12 @@ function ServerSelector({
   onChange: (serviceName: string) => void;
   hidden: boolean;
 }) {
-  const { data: aliases } = useServerAliases();
+  // 别名读失败是这里唯一可以"静默降级"的一项:aliasOf 拿不到别名就回退显示原始名字
+  // (service_name / OVH 的 display name),显示出来的东西依然真实,只是少了自定义标签,
+  // 不会让用户对机器本身产生误判。所以不做失败提示,但下面重命名对话框要提醒一句 ——
+  // 那里的输入框留空 + 保存等于删除别名,而读失败时它看起来也是空的。
+  const aliasesQ = useServerAliases();
+  const aliases = aliasesQ.data;
   const [ctxMenu, setCtxMenu] = useState<null | { server: OwnedServer; x: number; y: number }>(null);
   const [renaming, setRenaming] = useState<null | OwnedServer>(null);
 
@@ -293,6 +334,7 @@ function ServerSelector({
     <RenameDialog
       server={renaming}
       currentAlias={renaming ? aliases?.[renaming.serviceName] || "" : ""}
+      aliasesUnavailable={aliasesQ.isError}
       onClose={() => setRenaming(null)}
     />
     </>
@@ -303,10 +345,13 @@ function ServerSelector({
 function RenameDialog({
   server,
   currentAlias,
+  aliasesUnavailable,
   onClose,
 }: {
   server: OwnedServer | null;
   currentAlias: string;
+  /** 别名表这次没拉到 —— 输入框里的"空"不代表"原本就没设过别名" */
+  aliasesUnavailable?: boolean;
   onClose: () => void;
 }) {
   const set = useSetServerAlias();
@@ -342,6 +387,12 @@ function RenameDialog({
           <p className="text-[11px] text-muted-foreground">
             别名仅在本程序里显示,不会下发到 OVH。
           </p>
+          {aliasesUnavailable && (
+            <p className="text-[11px] text-warning border border-warning/40 bg-warning/5 rounded-xl px-3 py-2">
+              别名列表这次没读到,上面的输入框是空的并不代表这台机器原本没有别名。
+              现在直接保存空值会把已有别名删掉,建议先刷新页面。
+            </p>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               取消
@@ -365,7 +416,18 @@ function ServerTabs({ server }: { server: OwnedServer }) {
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [engagementOpen, setEngagementOpen] = useState(false);
 
+  /**
+   * 监控开关下发的是「取反」,取的是 monitoring.data。
+   * 读失败时 monitoring.data 是 undefined(等价 false),按钮会写「监控 已关」,
+   * 而 OVH 那边监控其实开着 —— 用户以为在开启,实际一点就把它关了。
+   * 所以状态未知时不发指令,先把状态读回来。
+   */
+  const monitoringUnknown = monitoring.isError;
   const handleToggleMonitoring = async () => {
+    if (monitoringUnknown) {
+      monitoring.refetch();
+      return;
+    }
     try {
       await toggleMon.mutateAsync({ serviceName: server.serviceName, enabled: !monitoring.data });
       toast.success(monitoring.data ? "OVH 监控已关闭" : "OVH 监控已开启");
@@ -427,15 +489,34 @@ function ServerTabs({ server }: { server: OwnedServer }) {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 rounded-full"
+                    className={`h-7 rounded-full ${monitoringUnknown ? "border-destructive/40 text-destructive" : ""}`}
                     onClick={handleToggleMonitoring}
-                    disabled={toggleMon.isPending}
+                    disabled={toggleMon.isPending || monitoring.isPending}
                   >
-                    <Activity className={`w-3.5 h-3.5 mr-1 ${monitoring.data ? "text-success" : "text-muted-foreground"}`} />
-                    {monitoring.data ? "监控 已开" : "监控 已关"}
+                    <Activity
+                      className={`w-3.5 h-3.5 mr-1 ${
+                        monitoringUnknown
+                          ? "text-destructive"
+                          : monitoring.data
+                            ? "text-success"
+                            : "text-muted-foreground"
+                      }`}
+                    />
+                    {/* 三态分开写:读取中 / 读不到 / 真实开关状态。绝不能把"没读到"画成"已关" */}
+                    {monitoring.isPending
+                      ? "监控 读取中…"
+                      : monitoringUnknown
+                        ? "监控 状态未知 · 重试"
+                        : monitoring.data
+                          ? "监控 已开"
+                          : "监控 已关"}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>OVH 自动监控（异常会邮件通知）</TooltipContent>
+                <TooltipContent>
+                  {monitoringUnknown
+                    ? `监控状态读取失败,点击重试：${errorMessage(monitoring.error)}`
+                    : "OVH 自动监控（异常会邮件通知）"}
+                </TooltipContent>
               </Tooltip>
 
               <Tooltip>

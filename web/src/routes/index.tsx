@@ -13,6 +13,7 @@ import {
   Info,
   CheckCheck,
   Calendar,
+  AlertTriangle,
   type LucideIcon,
 } from "lucide-react";
 import { UpdateButton } from "@/components/common/UpdateButton";
@@ -22,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, LoadFailedBanner, errorMessage } from "@/components/common/LoadFailed";
 import { Skeleton } from "@/components/common/Skeleton";
 import { MetricRing } from "@/components/common/MetricRing";
 import { useStats } from "@/hooks/use-stats";
@@ -44,9 +46,28 @@ function DashboardPage() {
     .filter((i) => ["running", "pending", "paused"].includes(i.status))
     .slice(0, 4);
 
+  // 统计还没读到(加载中或失败)时,数值一律是 undefined —— KpiCard 会渲染成「—」。
+  // 绝不能 `?? 0`:仪表盘上一个大大的 0 是条业务结论("现在没有任务在跑"、
+  // "一台机器都没抢到"),而请求失败的真实含义是"我们不知道"。用户照着假 0
+  // 会得出"抢购停了,再建一单"的结论,于是重复下单。
+  const statsUnknown = stats.isPending || stats.isError;
+  const statsUnknownText = stats.isError ? "读取失败" : "读取中…";
+
+  // 系统监控同理:没读到就别画环。0% CPU 是个具体读数,看起来像"机器很闲"。
+  const metricsHint = sys.isError ? "读取失败" : "读取中…";
+  const metricsTitle = sys.isError ? `系统监控读取失败:${errorMessage(sys.error)}` : "正在读取系统监控";
+
   return (
     <div className="space-y-6">
       <PageHeader icon={BarChart3} title="仪表盘" description="OVH 服务器抢购平台状态概览" />
+
+      {stats.isError && (
+        <LoadFailedBanner
+          title="仪表盘统计读取失败"
+          error={stats.error}
+          onRetry={() => stats.refetch()}
+        />
+      )}
 
       {/* 顶部 KPI */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -57,6 +78,7 @@ function DashboardPage() {
           linkTo="/queue"
           linkText="查看队列"
           loading={stats.isPending}
+          failed={stats.isError}
         />
         <KpiCard
           label="服务器总数"
@@ -72,6 +94,7 @@ function DashboardPage() {
           linkTo="/servers"
           linkText="查看服务"
           loading={stats.isPending}
+          failed={stats.isError}
         />
         <KpiCard
           label="下单成功(待付款)"
@@ -80,6 +103,7 @@ function DashboardPage() {
           linkTo="/history"
           linkText="查看历史"
           loading={stats.isPending}
+          failed={stats.isError}
         />
       </div>
 
@@ -103,6 +127,17 @@ function DashboardPage() {
                   <Skeleton key={i} className="h-16 rounded-xl" />
                 ))}
               </div>
+            ) : queue.isError ? (
+              /* 队列没读到 ≠ 队列是空的。渲染成"暂无活跃任务"+"创建抢购任务"按钮,
+                 是在直接引导用户对着一个可能正在跑的队列再建一单 —— 同机型同机房
+                 抢两遍,后端拒不掉的那部分就是重复下单。 */
+              <LoadFailed
+                icon={ClipboardList}
+                title="活跃队列读取失败"
+                error={queue.error}
+                onRetry={() => queue.refetch()}
+                compact
+              />
             ) : activeQueue.length === 0 ? (
               <EmptyState
                 icon={Calendar}
@@ -149,13 +184,20 @@ function DashboardPage() {
               <h2 className="text-[15px] font-semibold">系统状态</h2>
             </div>
             <div className="space-y-1">
+              {/* 这一行是真的在测连通性:/stats 请求失败 = 后端这条路不通,
+                  "未连接"就是它本来的意思,所以只需要把"还在问"的加载态摘出去。 */}
               <SystemRow
                 icon={<Link2 className="w-3.5 h-3.5" />}
                 label="API 连接"
-                ok={!!stats.data}
+                ok={!!stats.data && !stats.isError}
                 onText="已连接"
                 offText="未连接"
+                unknown={stats.isPending}
+                unknownText="检测中…"
               />
+              {/* 下面两行读的是 /stats 里的业务字段,请求没成功就等于这两个字段没拿到。
+                  写成"暂无任务" / "待启用",是把"我们没问到"包装成了"后台确实闲着 /
+                  监控确实没开" —— 用户会据此去手动重开监控、或者以为抢购已经停了。 */}
               <SystemRow
                 icon={<Bot className="w-3.5 h-3.5" />}
                 label="自动抢购"
@@ -163,6 +205,8 @@ function DashboardPage() {
                 onText="运行中"
                 offText="暂无任务"
                 neutralOff
+                unknown={statsUnknown}
+                unknownText={statsUnknownText}
               />
               <SystemRow
                 icon={<Bell className="w-3.5 h-3.5" />}
@@ -171,6 +215,8 @@ function DashboardPage() {
                 onText="运行中"
                 offText="待启用"
                 warnOff
+                unknown={statsUnknown}
+                unknownText={statsUnknownText}
               />
               <div className="flex justify-between items-center px-3 py-2.5 mt-1 border-t border-border pt-3">
                 <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
@@ -178,8 +224,33 @@ function DashboardPage() {
                   系统版本
                 </div>
                 <div className="inline-flex items-center gap-2">
-                  <span className="text-xs font-mono font-semibold">v{version.data || "—"}</span>
-                  <UpdateButton check={update.data} />
+                  <span
+                    className="text-xs font-mono font-semibold"
+                    title={
+                      version.isError
+                        ? `版本号读取失败:${errorMessage(version.error)}`
+                        : undefined
+                    }
+                  >
+                    v{version.data || "—"}
+                  </span>
+                  {/* UpdateButton 在 check 为空时直接 return null,所以检查失败会让
+                      "有新版本"这件事整个消失 —— 页面看起来跟"已是最新"一模一样,
+                      用户可能几个月都不知道自己在跑一个有已知 bug 的版本。
+                      失败要留一句低调的提示,并且点一下能重试。 */}
+                  {update.isError ? (
+                    <button
+                      type="button"
+                      onClick={() => update.refetch()}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                      title={`更新检查失败:${errorMessage(update.error)}(点击重试)`}
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      更新检查失败
+                    </button>
+                  ) : (
+                    <UpdateButton check={update.data} />
+                  )}
                 </div>
               </div>
             </div>
@@ -187,41 +258,48 @@ function DashboardPage() {
         </Card>
       </div>
 
-      {/* 系统监控:CPU / 内存 / 磁盘 三个圆环 */}
+      {/* 系统监控:CPU / 内存 / 磁盘 三个圆环。
+          读不到就换成未知环(空轨道 + 中心「—」),不要拿 `?? 0` 顶上去:
+          三个 0% 的绿环是"宿主机很空闲"这条读数,而真相是我们一个数都没拿到。
+          抢购工具里这条差别很要命 —— 用户会因为"机器闲着"去加并发、加任务。 */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-0">
-            <MetricRing
-              label="CPU"
-              subLabel={sys.data ? `${sys.data.cpu.cores} 核心` : "—"}
-              percent={sys.data?.cpu.percent ?? 0}
-            />
+            {sys.data ? (
+              <MetricRing
+                label="CPU"
+                subLabel={`${sys.data.cpu.cores} 核心`}
+                percent={sys.data.cpu.percent}
+              />
+            ) : (
+              <MetricRingUnknown label="CPU" hint={metricsHint} title={metricsTitle} failed={sys.isError} />
+            )}
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-0">
-            <MetricRing
-              label="内存"
-              subLabel={
-                sys.data
-                  ? `${formatBytesShort(sys.data.memory.usedBytes)} / ${formatBytesShort(sys.data.memory.totalBytes)}`
-                  : "—"
-              }
-              percent={sys.data?.memory.percent ?? 0}
-            />
+            {sys.data ? (
+              <MetricRing
+                label="内存"
+                subLabel={`${formatBytesShort(sys.data.memory.usedBytes)} / ${formatBytesShort(sys.data.memory.totalBytes)}`}
+                percent={sys.data.memory.percent}
+              />
+            ) : (
+              <MetricRingUnknown label="内存" hint={metricsHint} title={metricsTitle} failed={sys.isError} />
+            )}
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-0">
-            <MetricRing
-              label={sys.data?.disk.path || "磁盘"}
-              subLabel={
-                sys.data
-                  ? `${formatBytesShort(sys.data.disk.usedBytes)} / ${formatBytesShort(sys.data.disk.totalBytes)}`
-                  : "—"
-              }
-              percent={sys.data?.disk.percent ?? 0}
-            />
+            {sys.data ? (
+              <MetricRing
+                label={sys.data.disk.path || "磁盘"}
+                subLabel={`${formatBytesShort(sys.data.disk.usedBytes)} / ${formatBytesShort(sys.data.disk.totalBytes)}`}
+                percent={sys.data.disk.percent}
+              />
+            ) : (
+              <MetricRingUnknown label="磁盘" hint={metricsHint} title={metricsTitle} failed={sys.isError} />
+            )}
           </CardContent>
         </Card>
       </div>
@@ -245,6 +323,14 @@ function formatBytesShort(n: number): string {
 
 /* ---------- 小组件 ---------- */
 
+/**
+ * KPI 卡片。
+ *
+ * value 为 undefined = 这个数我们没拿到,一律显示「—」。
+ * 以前写的是 `value ?? 0`,请求一失败仪表盘就变成"活跃队列 0 / 服务器总数 0 /
+ * 下单成功 0" —— 三条看起来很确定的业务结论,全是假的。
+ * failed 只负责在卡片上补一句"读取失败",让用户知道该重试而不是该重新建单。
+ */
 function KpiCard({
   label,
   value,
@@ -253,6 +339,7 @@ function KpiCard({
   linkTo,
   linkText,
   loading,
+  failed,
 }: {
   label: string;
   value: number | undefined;
@@ -261,7 +348,10 @@ function KpiCard({
   linkTo: string;
   linkText: string;
   loading?: boolean;
+  /** 请求失败(区别于"还在加载"和"后端真的返回 0") */
+  failed?: boolean;
 }) {
+  const valueUnknown = value === undefined;
   return (
     <Card>
       <CardContent className="p-5">
@@ -275,10 +365,21 @@ function KpiCard({
           {loading ? (
             <Skeleton className="w-16 h-10 rounded-md" />
           ) : (
-            <span className="text-[32px] font-bold leading-none">{value ?? 0}</span>
+            <span
+              className={`text-[32px] font-bold leading-none ${valueUnknown ? "text-muted-foreground" : ""}`}
+              title={valueUnknown ? "当前数值未知" : undefined}
+            >
+              {valueUnknown ? "—" : value}
+            </span>
           )}
           {extra}
         </div>
+        {failed && (
+          <p className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-destructive">
+            <AlertTriangle className="w-3 h-3" />
+            读取失败
+          </p>
+        )}
         <Link to={linkTo} className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
           {linkText}
           <ChevronRight className="w-3 h-3" />
@@ -311,6 +412,13 @@ function QueueStatusChip({ status }: { status: string }) {
   );
 }
 
+/**
+ * 系统状态行。
+ *
+ * ok 是个 boolean,天然只有"是 / 否"两格 —— 而数据没读到时正确答案是第三格"不知道"。
+ * 挤进"否"就会把 offText 说出口:"暂无任务"、"待启用",两句都是在替后端下结论。
+ * unknown 就是那第三格:灰点 + 一句"读取失败 / 读取中…",不承诺任何业务事实。
+ */
 function SystemRow({
   icon,
   label,
@@ -319,6 +427,8 @@ function SystemRow({
   offText,
   neutralOff,
   warnOff,
+  unknown,
+  unknownText = "读取失败",
 }: {
   icon: React.ReactNode;
   label: string;
@@ -327,8 +437,20 @@ function SystemRow({
   offText: string;
   neutralOff?: boolean;
   warnOff?: boolean;
+  /** 数据没拿到(加载中或请求失败):既不是 on 也不是 off */
+  unknown?: boolean;
+  unknownText?: string;
 }) {
-  const dotTone = ok ? "success" : warnOff ? "warning" : neutralOff ? "muted" : "danger";
+  const dotTone = unknown
+    ? "muted"
+    : ok
+      ? "success"
+      : warnOff
+        ? "warning"
+        : neutralOff
+          ? "muted"
+          : "danger";
+  const text = unknown ? unknownText : ok ? onText : offText;
   return (
     <div className="flex justify-between items-center px-3 py-2.5 rounded-lg hover:bg-secondary transition-colors">
       <div className="inline-flex items-center gap-2 text-[13px]">
@@ -336,8 +458,72 @@ function SystemRow({
         <span>{label}</span>
       </div>
       <div className="inline-flex items-center gap-1.5">
-        <StatusDot tone={dotTone as any} pulse={ok} size="xs" />
-        <span className={`text-xs ${ok ? "font-medium" : "text-muted-foreground"}`}>{ok ? onText : offText}</span>
+        <StatusDot tone={dotTone as any} pulse={!unknown && ok} size="xs" />
+        <span className={`text-xs ${!unknown && ok ? "font-medium" : "text-muted-foreground"}`}>{text}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 未知态的监控环:只画灰轨道,中心是「—」。
+ *
+ * 几何参数照抄 MetricRing,保证跟旁边有数据的环大小、位置、缺口方向完全一致,
+ * 切换时不跳版。存在的唯一理由是 MetricRing 的 percent 是必填 number ——
+ * 没有一个 number 能表达"不知道",0 只会被读成"空闲"。
+ */
+function MetricRingUnknown({
+  label,
+  hint,
+  title,
+  failed,
+  size = 96,
+}: {
+  label: string;
+  hint: string;
+  title?: string;
+  failed?: boolean;
+  size?: number;
+}) {
+  const stroke = 8;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const visibleArc = 0.75 * c;
+
+  return (
+    <div className="flex items-center justify-between gap-4 px-5 py-4 h-full" title={title}>
+      <div className="min-w-0">
+        <div className="text-[12px] text-muted-foreground">{label}</div>
+        <div
+          className={`mt-1 text-[18px] font-semibold tabular-nums inline-flex items-center gap-1 ${
+            failed ? "text-destructive" : "text-muted-foreground"
+          }`}
+        >
+          {failed && <AlertTriangle className="w-3.5 h-3.5" />}
+          {hint}
+        </div>
+      </div>
+      <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+        <svg
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
+          style={{ transform: "rotate(135deg)" }}
+        >
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            className="stroke-border"
+            strokeDasharray={`${visibleArc} ${c}`}
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="text-[20px] font-semibold text-muted-foreground">—</span>
+        </div>
       </div>
     </div>
   );

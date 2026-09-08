@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { Check, ChevronsUpDown, Plus, User } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAccounts } from "@/hooks/use-accounts";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,24 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
 
   if (accounts.isPending) {
     return <div className="mx-3 mt-3 h-[52px] rounded-lg bg-muted animate-pulse" />;
+  }
+
+  // 读取失败 ≠ 一个账户都没有。这里是全站唯一的账户入口,一旦塌成虚线的
+  // "添加 OVH 账户",下游每个页面都会跟着按"没有账户"降级:机型列表空、
+  // 下单按钮灰、控制台说没绑定 —— 用户看到的是"我的账户没了",于是去重新
+  // 填一遍 AppKey/AppSecret,而真相只是这一次 /accounts 请求没成功。
+  // 失败必须说成失败,并且给一个重试口。
+  if (accounts.isError) {
+    return (
+      <div className="mx-3 mt-3">
+        <LoadFailed
+          title="账户列表读取失败"
+          error={accounts.error}
+          onRetry={() => accounts.refetch()}
+          compact
+        />
+      </div>
+    );
   }
 
   if (!list.length) {

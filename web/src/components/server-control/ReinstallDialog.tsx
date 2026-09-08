@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
 import {
   useServerTemplates,
   useReinstallServer,
@@ -184,6 +185,42 @@ export function ReinstallDialog({
   const useCustomStorage = storageMode === "custom";
 
   /**
+   * 挡住提交的读失败清单。
+   *
+   * 重装不可逆:数据全清、装完才发现装错就只能再装一次。这个对话框里每一块"看起来像事实"的
+   * 文案背后都是一次请求 —— 请求挂了但界面照旧写「不支持硬件 RAID」「该模板没有内置分区方案」
+   * 「未检测到磁盘组信息」,用户就会在信息缺失的情况下改方案、然后按下确认。
+   * 所以只要当前存储模式真正依赖的那几项没读到,就锁住按钮,让他先重试。
+   *
+   * 只挑相关项,不搞"任何一处失败全锁死":
+   *   - 模板列表:任何模式都要用(而且它带 localStorage 缓存,失败时屏幕上那份可能是旧的)
+   *   - 磁盘组  :高级存储配置要按磁盘组配 RAID / 分区;ZFS 预设要拿它算 /var/lib/vz 上限
+   *   - 硬件 RAID 支持情况:高级存储配置里决定"能不能选硬件 RAID"
+   *   - 内置分区方案:scheme 模式下唯一的选项来源
+   */
+  const blockingErrors: { label: string; error: unknown; retry: () => void }[] = [];
+  if (tpl.isError) {
+    blockingErrors.push({ label: "系统模板列表", error: tpl.error, retry: () => tpl.refetch() });
+  }
+  if ((useCustomStorage || useProxmox9Zfs) && disk.isError) {
+    blockingErrors.push({ label: "磁盘组信息", error: disk.error, retry: () => disk.refetch() });
+  }
+  if (useCustomStorage && raid.isError) {
+    blockingErrors.push({ label: "硬件 RAID 支持情况", error: raid.error, retry: () => raid.refetch() });
+  }
+  if (storageMode === "scheme" && ps.isError) {
+    blockingErrors.push({ label: "内置分区方案", error: ps.error, retry: () => ps.refetch() });
+  }
+  const blocked = blockingErrors.length > 0;
+
+  // 一旦进入 blocked,把"已点过下一步"的确认态收回。
+  // 否则重试成功的那一刻按钮直接停在「确认重装（不可逆）」上,用户随手一点就提交了 ——
+  // 而中间界面上的数据换过一轮,他并不知道自己确认的还是不是原来那份配置。
+  useEffect(() => {
+    if (blocked) setConfirming(false);
+  }, [blocked]);
+
+  /**
    * /var/lib/vz 的上限，口径必须跟后端一致，否则用户填了个前端放行、后端 400 的值。
    * 后端（server_control_basic.go 的 ZFS 分支）算法：
    *   RAID0 → 总容量 = 单盘容量 × 盘数；RAID1 等 → 总容量 = 单盘容量（镜像，可用只有一块）
@@ -221,6 +258,12 @@ export function ReinstallDialog({
   const handleSubmit = async () => {
     if (!templateName) {
       toast.error("请选择系统模板");
+      return;
+    }
+    // 兜底:按钮已经 disabled,但状态可能在点击那一刻才翻成 error
+    if (blocked) {
+      setConfirming(false);
+      toast.error(`${blockingErrors.map((b) => b.label).join("、")}没读出来,重试成功后再提交重装`);
       return;
     }
     // OVH 的 customizations.hostname 只接受合法主机名/FQDN，非法值会被 OVH 以英文错误码打回
@@ -297,6 +340,41 @@ export function ReinstallDialog({
         </DialogHeader>
 
         <div className="overflow-y-auto flex-1 -mx-6 px-6 space-y-5">
+          {/* 读失败总览 —— 有任何一条就锁住提交,见 blockingErrors 注释 */}
+          {blocked && (
+            <div className="border border-destructive/40 bg-destructive/5 rounded-2xl p-3 space-y-2">
+              <div className="flex items-start gap-2 text-[12px]">
+                <AlertTriangle className="w-4 h-4 text-destructive mt-0.5 flex-shrink-0" />
+                <div className="leading-relaxed">
+                  <p className="font-semibold">有配置没读出来,已暂时锁住重装按钮</p>
+                  <p className="text-muted-foreground">
+                    重装会清空全部数据且不可撤销。下面这些数据没拿到时,界面上对应位置显示的
+                    并不是这台机器的真实情况,照着它选出来的方案可能装出一份完全不同的系统。
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1.5 pl-6">
+                {blockingErrors.map((b) => (
+                  <div key={b.label} className="flex items-start justify-between gap-2 text-[11px]">
+                    <span className="min-w-0">
+                      <span className="font-semibold">{b.label}读取失败</span>
+                      <span className="text-muted-foreground"> · {errorMessage(b.error)}</span>
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-[11px] flex-shrink-0"
+                      onClick={b.retry}
+                    >
+                      重试
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Windows 提示 */}
           <div className="border border-info/40 bg-info/5 rounded-2xl p-3 text-[12px] flex items-start gap-2">
             <Zap className="w-4 h-4 text-info mt-0.5 flex-shrink-0" />
@@ -331,12 +409,32 @@ export function ReinstallDialog({
                 className="pl-9"
               />
             </div>
+            {/* 「共 N 个模板」是个断言。拉失败又没有本地缓存时它会显示「共 0 个」,
+                等于告诉用户这台机器一个系统都装不了。 */}
             <p className="text-[11px] text-muted-foreground mt-1 mb-2">
-              {search ? `找到 ${filtered.length} 个匹配模板` : `共 ${(tpl.data || []).length} 个模板`}
+              {tpl.isError && (tpl.data || []).length === 0
+                ? "模板列表读取失败,数量未知"
+                : search
+                  ? `找到 ${filtered.length} 个匹配模板`
+                  : `共 ${(tpl.data || []).length} 个模板`}
               {tpl.dataUpdatedAt > 0 && (
                 <> · 缓存于 {new Date(tpl.dataUpdatedAt).toLocaleString("zh-CN")}</>
               )}
             </p>
+
+            {/* 这个 query 带 localStorage initialData:刷新失败时屏幕上仍会留着上次的模板列表,
+                连"共 N 个"都是旧的。不标出来的话,OVH 那边已经下架 / 新增过的模板用户完全看不出来,
+                挑一个早已不存在的模板去重装,只会在提交时被 OVH 打回(甚至装成别的版本)。 */}
+            {tpl.isError && (tpl.data || []).length > 0 && (
+              <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/5 px-3 py-2 text-[11px] mb-2">
+                <AlertTriangle className="w-3.5 h-3.5 text-warning flex-shrink-0 mt-0.5" />
+                <p className="leading-relaxed text-foreground/80">
+                  下面这份模板列表是本地缓存的<span className="font-semibold">旧数据</span>,本次刷新失败
+                  （{errorMessage(tpl.error)}）。上面的"共 N 个"同样是旧的,OVH 那边可能已经增删过模板 ——
+                  请点上方"刷新"重试成功后再选。
+                </p>
+              </div>
+            )}
 
             {tpl.isPending ? (
               // 跟正式列表同尺寸 + 同左右栏布局的骨架,中间转圈 + 文案,避免"白屏 5 秒不知道在干啥"
@@ -357,6 +455,14 @@ export function ReinstallDialog({
                   </div>
                 </div>
               </div>
+            ) : tpl.isError && (tpl.data || []).length === 0 ? (
+              // 「未找到匹配模板」会被读成"搜索词不对",用户只会反复换关键词,永远等不到结果
+              <LoadFailed
+                icon={HardDrive}
+                title="系统模板列表读取失败"
+                error={tpl.error}
+                onRetry={() => tpl.refetch()}
+              />
             ) : filtered.length === 0 ? (
               <EmptyState icon={HardDrive} title="未找到匹配模板" />
             ) : (
@@ -562,7 +668,13 @@ export function ReinstallDialog({
                     />
                     {/* 上限跟后端同口径：RAID1 只算单盘容量，且要扣 /boot + swap + 根目录预留 */}
                     <p className="text-[11px] text-muted-foreground mt-1">
-                      剩余分给根目录（/），最大 {vzMaxKnown ? `${zfsCap.maxVzGB} GB` : "未知（磁盘信息读取中）"}
+                      {/* 磁盘信息读失败时不能继续写"读取中",那会让用户一直等一个不会来的数字 */}
+                      剩余分给根目录（/），最大{" "}
+                      {vzMaxKnown
+                        ? `${zfsCap.maxVzGB} GB`
+                        : disk.isError
+                          ? "未知（磁盘信息读取失败，上方可重试）"
+                          : "未知（磁盘信息读取中）"}
                       {zfsCap.singleDiskGB > 0 && (
                         <>
                           {" "}
@@ -592,6 +704,16 @@ export function ReinstallDialog({
               <label className="block text-[12px] font-semibold mb-1.5">内置分区方案</label>
               {ps.isPending ? (
                 <Skeleton className="h-9 rounded-md" />
+              ) : ps.isError ? (
+                // 原来读失败也照样显示「该模板没有内置分区方案，请改用其它存储模式。」——
+                // 这句话是在直接指挥用户改重装方案,而方案可能好端端地在那儿,只是这次没问到。
+                <LoadFailed
+                  compact
+                  icon={Cog}
+                  title="内置分区方案读取失败"
+                  error={ps.error}
+                  onRetry={() => ps.refetch()}
+                />
               ) : (ps.data || []).length === 0 ? (
                 <p className="text-[12px] text-muted-foreground">该模板没有内置分区方案，请改用其它存储模式。</p>
               ) : (
@@ -626,6 +748,16 @@ export function ReinstallDialog({
                 {/* 磁盘组 + 硬件 RAID */}
                 {disk.isPending ? (
                   <Skeleton className="h-20 rounded-md" />
+                ) : disk.isError ? (
+                  // 「未检测到磁盘组信息」= 断言这机器没有可配置的磁盘组,用户会跳过 RAID 直接提交,
+                  // 结果是拿一份没有任何磁盘约束的存储配置去重装。
+                  <LoadFailed
+                    compact
+                    icon={HardDrive}
+                    title="磁盘组信息读取失败"
+                    error={disk.error}
+                    onRetry={() => disk.refetch()}
+                  />
                 ) : Object.keys(disk.data || {}).length === 0 ? (
                   <p className="text-[12px] text-muted-foreground">未检测到磁盘组信息</p>
                 ) : (
@@ -655,7 +787,17 @@ export function ReinstallDialog({
                           </div>
                           <div>
                             <label className="block text-[11px] text-muted-foreground mb-1">硬件 RAID 模式</label>
-                            {!raid.data?.supported ? (
+                            {/* hook 现在只把 404/501（OVH 明说没有 RAID 控制器）当成 supported:false,
+                                其余错误会抛出来走 isError —— 否则这里会在读失败时言之凿凿地写
+                                「此服务器不支持硬件 RAID」,用户照办改用软 RAID 装完才发现白折腾。 */}
+                            {raid.isPending ? (
+                              <Skeleton className="h-9 rounded-md" />
+                            ) : raid.isError ? (
+                              <p className="text-[11px] text-destructive">
+                                硬件 RAID 支持情况读取失败（{errorMessage(raid.error)}）。
+                                现在无法判断这台机器能不能做硬件 RAID，请用上方"重试"读回来再决定。
+                              </p>
+                            ) : !raid.data?.supported ? (
                               <p className="text-[11px] text-warning">
                                 此服务器不支持硬件 RAID，可改用下方"软 RAID"。
                               </p>
@@ -783,8 +925,19 @@ export function ReinstallDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button onClick={handleSubmit} disabled={!templateName || mut.isPending}>
-            {mut.isPending ? "提交中…" : confirming ? "确认重装（不可逆）" : "下一步"}
+          {/* blocked 时按钮锁死:信息缺失下按不可逆的重装,是这个对话框里代价最大的一种误操作 */}
+          <Button
+            onClick={handleSubmit}
+            disabled={!templateName || mut.isPending || blocked}
+            title={blocked ? `${blockingErrors.map((b) => b.label).join("、")}读取失败，请先重试` : undefined}
+          >
+            {mut.isPending
+              ? "提交中…"
+              : blocked
+                ? "配置未读全，暂不可重装"
+                : confirming
+                  ? "确认重装（不可逆）"
+                  : "下一步"}
           </Button>
         </DialogFooter>
       </DialogContent>

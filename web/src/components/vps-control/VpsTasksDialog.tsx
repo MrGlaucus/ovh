@@ -5,6 +5,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { Chip } from "@/components/common/Chip";
 import { useVpsTasks, type VpsTask } from "@/hooks/use-vps-control";
 
@@ -36,6 +37,16 @@ export function VpsTasksDialog({
         <div className="flex-1 overflow-y-auto -mx-6 px-6">
           {q.isPending ? (
             <Skeleton className="h-40 rounded-2xl" />
+          ) : q.isError ? (
+            // 没问到任务列表却写「暂无任务历史」,用户会以为刚提交的重装 / 回滚 / 改密根本没建起来,
+            // 于是回去再点一次 —— 破坏性操作被重复下发。失败必须说成失败。
+            <LoadFailed
+              icon={ListTodo}
+              title="任务历史读取失败"
+              error={q.error}
+              onRetry={() => q.refetch()}
+              compact
+            />
           ) : (q.data || []).length === 0 ? (
             <EmptyState icon={ListTodo} title="暂无任务历史" />
           ) : (

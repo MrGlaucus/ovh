@@ -601,8 +601,16 @@ export function useServerRaidProfiles(serviceName: string | null, enabled = true
           supported: res.data?.supported !== false,
           profiles: (res.data?.profiles || []) as any[],
         };
-      } catch {
-        return { supported: false, profiles: [] as any[] };
+      } catch (e: any) {
+        // 404 / 501 = OVH 明确回答"这台机器没有硬件 RAID 控制器",这是业务事实,照常返回 supported:false。
+        // 其余(断网 / 5xx / 超时)是"我们没问到",必须抛出去让 isError 生效。
+        // 以前一律 catch 成 supported:false,isError 结构上永远是 false,重装对话框于是在读失败时
+        // 也斩钉截铁地写「此服务器不支持硬件 RAID」—— 用户照着改用软 RAID,按下的是不可逆的重装。
+        const status = e?.response?.status;
+        if (status === 404 || status === 501) {
+          return { supported: false, profiles: [] as any[] };
+        }
+        throw e;
       }
     },
     enabled: !!serviceName && enabled,
@@ -823,13 +831,21 @@ export function useServerBiosSettings(serviceName: string | null, enabled = true
     queryFn: async () => {
       try {
         const res = await api.get(`/server-control/${serviceName}/bios-settings`);
+        // SGX 只是个可选子项,单独拿不到不算整体失败,所以只有它继续吞成 null
         const sgxRes = await api.get(`/server-control/${serviceName}/bios-settings/sgx`).catch(() => null);
         return {
-          settings: res.data || {},
+          settings: (res.data || {}) as any,
           sgx: sgxRes?.data?.sgx ?? sgxRes?.data?.data ?? sgxRes?.data ?? null,
         };
-      } catch {
-        return { settings: {}, sgx: null };
+      } catch (e: any) {
+        // 404 / 501 = 这个机型压根不暴露 BIOS 设置,是业务事实,返回空对象让界面走空态。
+        // 其余错误必须抛出去:以前一律 catch 成 {},isError 永远是 false,对话框只会写
+        // 「未获取到 BIOS 设置」—— 跟"这机器确实没有"长得一模一样,用户根本不会想到去重试。
+        const status = e?.response?.status;
+        if (status === 404 || status === 501) {
+          return { settings: {} as any, sgx: null };
+        }
+        throw e;
       }
     },
     enabled: !!serviceName && enabled,

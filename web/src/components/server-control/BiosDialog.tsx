@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useServerBiosSettings } from "@/hooks/use-server-control";
 
 /** BIOS 设置查看（含 SGX 子项；只读，旧前端也是只读展示） */
@@ -34,6 +35,11 @@ export function BiosDialog({
         <div className="overflow-y-auto -mx-6 px-6 space-y-4">
           {q.isPending ? (
             <Skeleton className="h-40 rounded-2xl" />
+          ) : q.isError ? (
+            // hook 里以前把所有异常吞成 {},这里就永远只显示「未获取到 BIOS 设置」——
+            // 和"这个机型确实不暴露 BIOS"完全无法区分。现在 hook 只对 404/501 返回空对象
+            // (那才是业务事实),其余错误抛出来走这条分支。
+            <LoadFailed icon={Cog} title="BIOS 设置读取失败" error={q.error} onRetry={() => q.refetch()} />
           ) : keys.length === 0 && !sgx ? (
             <EmptyState icon={Cog} title="未获取到 BIOS 设置" />
           ) : (

@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Pencil,
   User,
+  HelpCircle,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -25,6 +26,7 @@ import { AccountChip } from "@/components/common/AccountChip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/common/Skeleton";
+import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
 import {
   Dialog,
   DialogContent,
@@ -66,6 +68,17 @@ function MonitorPage() {
 
   const subs = list.data || [];
 
+  // 监控状态是三态:还在读 / 读失败 / 真数据。后两者绝不能混。
+  // status 接口挂了 ≠ 监控停了 —— 后端的监控协程照跑、订阅照检查,只是这一次 HTTP 没问到。
+  // 以前这里直接 `status.data?.running` 取到 undefined,界面就白纸黑字写「已停止」,
+  // 订阅数 / 间隔 / 已知服务器还一律 ?? 0。用户据此去重加订阅、重启监控,
+  // 反而把本来在跑的东西弄乱。所以未知就必须说未知,数字一律显示 —。
+  const running = !!status.data?.running;
+  const statusUnknown = status.isPending || status.isError;
+  /** 状态里的数字:0 是有含义的真值（真的一条订阅都没有），不能拿它冒充"没读到" */
+  const statNum = (v: number | undefined): number | string =>
+    status.isPending ? "…" : status.isError || v === undefined ? "—" : v;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -99,7 +112,11 @@ function MonitorPage() {
         <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center">
-              {status.data?.running ? (
+              {statusUnknown ? (
+                <HelpCircle
+                  className={`w-5 h-5 ${status.isError ? "text-warning" : "text-muted-foreground"}`}
+                />
+              ) : running ? (
                 <Bell className="w-5 h-5 text-success" />
               ) : (
                 <BellOff className="w-5 h-5 text-muted-foreground" />
@@ -109,18 +126,31 @@ function MonitorPage() {
               <div className="text-sm font-semibold">监控状态</div>
               <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
                 <StatusDot
-                  tone={status.data?.running ? "success" : "muted"}
-                  pulse={status.data?.running}
+                  tone={status.isError ? "warning" : running ? "success" : "muted"}
+                  pulse={running && !statusUnknown}
                   size="xs"
                 />
-                {status.data?.running ? "运行中" : "已停止"}
+                {status.isPending ? "读取中…" : status.isError ? "状态未知" : running ? "运行中" : "已停止"}
               </div>
+              {status.isError && (
+                <button
+                  type="button"
+                  className="block text-left text-[11px] text-destructive underline underline-offset-2 mt-0.5 max-w-xs"
+                  onClick={() => status.refetch()}
+                  title="重新读取监控状态"
+                >
+                  读不到监控状态：{errorMessage(status.error)} · 点此重试
+                </button>
+              )}
             </div>
           </div>
           <div className="flex gap-6 text-sm">
-            <Stat label="订阅数" value={status.data?.subscriptions_count ?? 0} />
-            <IntervalStat current={status.data?.check_interval ?? 0} />
-            <Stat label="已知服务器" value={status.data?.known_servers_count ?? 0} />
+            <Stat label="订阅数" value={statNum(status.data?.subscriptions_count)} />
+            <IntervalStat
+              current={status.isError ? undefined : status.data?.check_interval}
+              unknownLabel={status.isPending ? "…" : "—"}
+            />
+            <Stat label="已知服务器" value={statNum(status.data?.known_servers_count)} />
           </div>
         </CardContent>
       </Card>
@@ -132,6 +162,18 @@ function MonitorPage() {
             <Skeleton key={i} className="h-24 rounded-2xl" />
           ))}
         </div>
+      ) : list.isError ? (
+        /* 列表没读到 ≠ 一条订阅都没有。以前这里直接掉进"暂无订阅",
+           而订阅其实还在后端跑着 —— 用户看见空列表会照着再加一遍,
+           同一个型号被订两次,补货时就通知两次、自动下单两次。 */
+        <Card>
+          <LoadFailed
+            icon={Bell}
+            title="订阅列表读取失败"
+            error={list.error}
+            onRetry={() => list.refetch()}
+          />
+        </Card>
       ) : subs.length === 0 ? (
         <Card>
           <EmptyState
@@ -318,6 +360,20 @@ function HistoryPanel({ planCode }: { planCode: string }) {
     );
   }
 
+  // "暂无历史记录"是一句结论:这台机器从订阅到现在一次都没变过货,
+  // 用户会据此判断"这型号根本不补货,别等了"。读失败时说这句话就是在给假消息。
+  if (history.isError) {
+    return (
+      <LoadFailed
+        icon={HistoryIcon}
+        title="变化历史读取失败"
+        error={history.error}
+        onRetry={() => history.refetch()}
+        compact
+      />
+    );
+  }
+
   const entries = history.data || [];
 
   return (
@@ -403,10 +459,15 @@ function AddSubscriptionDialog({
   const [autoPay, setAutoPay] = useState(false);
   // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
   const [globalAccountId] = useActiveAccount();
-  const { data: allAccounts } = useAccounts();
+  const accountsQ = useAccounts();
+  const allAccounts = accountsQ.data;
   const autoOrderAccountId =
     globalAccountId || allAccounts?.find((a) => a.isDefault)?.id || allAccounts?.[0]?.id || "";
   const activeAcc = findAccountByID(allAccounts, autoOrderAccountId);
+  // 账户列表读失败 ≠ 一个账户都没配。两种情况以前都显示「未选择账户」,
+  // 然后自动下单被静默拦掉 —— 用户看到的是一条没有理由的死路:
+  // 去账户页明明有账户,回来还是"未选择"。失败必须说出失败,并给重试。
+  const accountsFailed = accountsQ.isError && !activeAcc;
 
   const reset = () => {
     setPlanCode("");
@@ -449,7 +510,12 @@ function AddSubscriptionDialog({
       .filter(Boolean);
 
     if (autoOrder && !autoOrderAccountId) {
-      toast.error("开启自动下单时必须选择 OVH 账户(否则只通知不下单)");
+      // 读失败和"真的没账户"要给不同的话:前者该重试,后者该去加账户
+      toast.error(
+        accountsFailed
+          ? `账户列表读取失败(${errorMessage(accountsQ.error)}),先重试再开自动下单`
+          : "开启自动下单时必须选择 OVH 账户(否则只通知不下单)"
+      );
       return;
     }
     const payload = {
@@ -571,15 +637,45 @@ function AddSubscriptionDialog({
                 {/* 订阅的下单账户就绑当前账户 —— 页面上再放一个选择器,
                     就会出现"用 A 账户看库存、订阅却绑到 B 账户"的错配,
                     而三区库存互不相通,触发时才发现下不了单 */}
-                <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
-                  <User className="w-3.5 h-3.5 text-muted-foreground" />
-                  <span className="text-[13px] font-medium">{activeAcc?.name || "未选择账户"}</span>
-                  {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
-                  <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
-                </div>
+                {accountsFailed ? (
+                  <div className="flex items-start gap-2 px-3 py-2 rounded-xl border border-destructive/40 bg-destructive/5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-destructive flex-shrink-0 mt-0.5" />
+                    <span className="text-[12px] min-w-0 break-words">
+                      账户列表读取失败：{errorMessage(accountsQ.error)}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto flex-shrink-0"
+                      onClick={() => accountsQ.refetch()}
+                    >
+                      重试
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
+                    <User className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-[13px] font-medium">
+                      {accountsQ.isPending ? "读取账户…" : activeAcc?.name || "未选择账户"}
+                    </span>
+                    {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
+                    <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
+                  </div>
+                )}
                 <p className="text-[11px] text-muted-foreground mt-1">
                   触发时用这个账户下单;关掉上面的开关 = 只通知不下单
                 </p>
+                {/* 提交会被拦掉的两种理由写在这里,别让用户点了才知道 */}
+                {accountsFailed ? (
+                  <p className="text-[11px] text-destructive mt-1">
+                    账户没读出来之前不能配自动下单 —— 提交了也只会变成"只通知"
+                  </p>
+                ) : !accountsQ.isPending && !autoOrderAccountId ? (
+                  <p className="text-[11px] text-destructive mt-1">
+                    还没有可用的 OVH 账户,自动下单会被拒绝。先去设置页添加账户
+                  </p>
+                ) : null}
               </div>
               <div>
               <label className="block text-xs font-medium text-muted-foreground mb-1.5">
@@ -627,7 +723,11 @@ function AddSubscriptionDialog({
             <Button
               type="submit"
               disabled={create.isPending || update.isPending || notifyBlocked || notifyChecking}
-              title={notifyBlocked ? "没有可用的通知通道,无法添加订阅" : undefined}
+              title={
+                notifyBlocked
+                  ? notifyReason || "没有可用的通知通道,无法添加订阅"
+                  : undefined
+              }
             >
               {create.isPending || update.isPending
                 ? "提交中…"
@@ -653,14 +753,26 @@ function Stat({ label, value }: { label: string; value: number | string }) {
   );
 }
 
-/** 检查间隔：点一下就地改。后端合法区间 5-3600 秒，越界会被夹紧并回传真实生效值。 */
-function IntervalStat({ current }: { current: number }) {
+/**
+ * 检查间隔：点一下就地改。后端合法区间 5-3600 秒，越界会被夹紧并回传真实生效值。
+ *
+ * current 可能是 undefined —— 状态接口挂了的时候。这时候显示 0s 是在编数字
+ * （0 秒是个根本不存在的间隔），点进去编辑框还会预填 0,一保存就把一个
+ * 正在跑的监控改成用户压根没打算要的值。所以未知就显示 — 且不给改。
+ */
+function IntervalStat({
+  current,
+  unknownLabel = "—",
+}: {
+  current?: number;
+  unknownLabel?: string;
+}) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(String(current));
+  const [value, setValue] = useState(current === undefined ? "" : String(current));
   const mut = useSetMonitorInterval();
 
   useEffect(() => {
-    if (!editing) setValue(String(current));
+    if (!editing) setValue(current === undefined ? "" : String(current));
   }, [current, editing]);
 
   const submit = async () => {
@@ -672,6 +784,20 @@ function IntervalStat({ current }: { current: number }) {
     await mut.mutateAsync(Math.round(n));
     setEditing(false);
   };
+
+  if (current === undefined) {
+    return (
+      <div>
+        <div className="text-muted-foreground text-xs">检查间隔</div>
+        <div
+          className="font-semibold tabular-nums text-muted-foreground"
+          title="监控状态没读到,当前间隔未知 —— 先把状态读回来再改"
+        >
+          {unknownLabel}
+        </div>
+      </div>
+    );
+  }
 
   if (!editing) {
     return (

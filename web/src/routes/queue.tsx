@@ -20,6 +20,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import { Skeleton } from "@/components/common/Skeleton";
 import {
   Dialog,
@@ -123,12 +124,35 @@ function QueuePage() {
         }
       />
 
+      {/* 每条链路上一轮的耗时/结论读不到时,行里的 TimingChip 和「上一轮 无货/已下单/出错」
+          会整块消失,看起来像"这条任务从来没跑过"。这块只是辅助信息,任务本身照常在跑,
+          给一条提示、别让用户误读那片空白就够。 */}
+      {timings.isError && items.length > 0 && (
+        <LoadFailedBanner
+          title="上一轮耗时/结果读取失败,任务照常在跑"
+          error={timings.error}
+          onRetry={() => timings.refetch()}
+        />
+      )}
+
       {queue.isPending ? (
         <div className="space-y-3">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-20 rounded-2xl" />
           ))}
         </div>
+      ) : queue.isError ? (
+        /* 这页是"我有哪些任务在跑"的唯一真相来源。请求挂了还画「暂无任务 · 点右上角新建」,
+           用户会以为任务压根没建成,回头再建一遍 —— 同一台机器排两条队,抢到就是两笔真实订单。
+           所以失败必须自己占一支,不能跟空态共用。 */
+        <Card>
+          <LoadFailed
+            icon={ClipboardList}
+            title="队列读取失败,不代表队列是空的"
+            error={queue.error}
+            onRetry={() => queue.refetch()}
+          />
+        </Card>
       ) : items.length === 0 ? (
         <Card>
           <EmptyState
@@ -216,7 +240,11 @@ function CreateQueueDialog({
   // 库存按"实际下单的那个账户"所在站点查:EU/US/CA 三站的 availabilities 互不相通
   // (实测 US 站 423 个 planCode,只有 134 个与 EU 重合),用别区的库存点红绿灯,
   // 用户会照着不存在的货建任务,然后在抢购时才被 OVH 拒。
-  const { data: accounts } = useAccounts();
+  // 留整个 query 而不是只解构 data:账户列表挂了 → accountId 为空 → canSubmit 恒 false
+  // → 创建按钮永久灰着。不把 isError 摆出来,用户只看到一个点不动的按钮,不知道是自己没填够
+  // 还是我们没读到账户。
+  const accountsQ = useAccounts();
+  const accounts = accountsQ.data;
   const accountId = globalAccountId || accounts?.find((a) => a.isDefault)?.id || accounts?.[0]?.id || "";
   const activeAcc = findAccountByID(accounts, accountId);
   const orderEndpoint = activeAcc?.endpoint || "";
@@ -387,7 +415,16 @@ function CreateQueueDialog({
           <div>
             <label className="block text-[13px] font-medium mb-1.5">OVH 账户</label>
             <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
-              <span className="text-[13px] font-medium">{activeAcc?.name || "未选择账户"}</span>
+              {/* 「未选择账户」只该出现在"确实没选/没有账户"时。列表没读到也写这四个字,
+                  等于把一次网络失败说成用户自己的配置问题。 */}
+              <span className="text-[13px] font-medium">
+                {activeAcc?.name ||
+                  (accountsQ.isPending
+                    ? "读取账户中…"
+                    : accountsQ.isError
+                      ? "账户列表读取失败"
+                      : "未选择账户")}
+              </span>
               {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
               <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
             </div>
@@ -395,6 +432,21 @@ function CreateQueueDialog({
               下单用该账户的凭据,购物车 subsidiary 跟随账户 zone。planCode 也要是这个站点的 ——
               三区目录互不相通
             </p>
+            {/* 没有账户就没法下单,底下的创建按钮会一直灰着 —— 必须讲清是"没读到"还是"真没有" */}
+            {accountsQ.isError && (
+              <div className="mt-2">
+                <LoadFailedBanner
+                  title="账户列表读取失败,创建按钮会一直灰着"
+                  error={accountsQ.error}
+                  onRetry={() => accountsQ.refetch()}
+                />
+              </div>
+            )}
+            {!accountsQ.isPending && !accountsQ.isError && !accountId && (
+              <p className="text-[11px] text-destructive mt-1">
+                还没有任何 OVH 账户,先到「设置 → OVH 账户」添加一个才能建任务。
+              </p>
+            )}
           </div>
 
           {/* 服务器计划代码 */}
@@ -410,6 +462,18 @@ function CreateQueueDialog({
               <p className="text-[11px] text-muted-foreground mt-1 truncate">
                 {matchedServer.cpu} · {matchedServer.memory} · {matchedServer.storage}
               </p>
+            )}
+            {/* 目录没拉到 ≠ 这个站点没有机型。目录挂了下拉列表就是空的,matchedServer 也必为空,
+                界面会连着说两句假话:"没机型可选" + "catalog 里没这个型号"。
+                planCode 仍可手输,所以这里只提示,不禁用。 */}
+            {servers.isError && (
+              <div className="mt-2">
+                <LoadFailedBanner
+                  title="机型目录读取失败,下拉列表是空的(不是这个站点没有机型)"
+                  error={servers.error}
+                  onRetry={() => servers.refetch()}
+                />
+              </div>
             )}
           </div>
 
@@ -520,9 +584,17 @@ function CreateQueueDialog({
             <label className="block text-[13px] font-medium mb-1.5">
               可选配置
               <span className="text-muted-foreground ml-2 font-normal">
+                {/* "catalog 里没找到这个型号"是个结论,只有目录确实读到了才下得了。
+                    目录还没到手 / 读失败时照说这句,用户会以为是自己型号填错了。 */}
                 {grouped
                   ? "（点击 chip 选择,留空走 OVH 默认下单）"
-                  : "（catalog 里没找到这个型号,需要手填 addon planCode）"}
+                  : !planCode.trim()
+                    ? "（先选个型号,再挑可选配置）"
+                    : servers.isError
+                      ? "（机型目录没读到,列不出可选配置;可重试目录,或直接手填 addon planCode）"
+                      : servers.isPending
+                        ? "（机型目录读取中…）"
+                        : "（catalog 里没找到这个型号,需要手填 addon planCode）"}
               </span>
             </label>
             {grouped ? (

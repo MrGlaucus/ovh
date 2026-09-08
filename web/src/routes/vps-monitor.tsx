@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Pencil,
   User,
+  HelpCircle,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -38,6 +39,7 @@ import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/common/Skeleton";
+import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
 import {
   Dialog,
   DialogContent,
@@ -99,7 +101,17 @@ function VPSMonitorPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const subs = list.data || [];
+  // 监控状态是三态:还在读 / 读失败 / 真数据。后两者绝不能混成一个 `!!status.data?.running`。
+  // 状态接口挂了 ≠ 监控停了 —— 后端的 VPS 监控照跑,只是这一次 HTTP 没问到。
+  // 而这一页比服务器监控更危险:running 猜成 false 之后,右上角那颗按钮会跟着
+  // 变成「启动监控」,用户手一点,发出去的其实是对一个**正在跑**的监控做 start,
+  // 后果不是"没反应",是把它按用户没打算的方式重启/弄停。
+  // 所以未知状态下按钮不做启停,只让人先把状态读回来;数字也一律显示 —。
   const running = !!status.data?.running;
+  const statusUnknown = status.isPending || status.isError;
+  /** 状态里的数字:0 是有含义的真值（真的一条订阅都没有），不能拿它冒充"没读到" */
+  const statNum = (v: number | undefined): number | string =>
+    status.isPending ? "…" : status.isError || v === undefined ? "—" : v;
 
   return (
     <div className="space-y-6">
@@ -117,13 +129,28 @@ function VPSMonitorPage() {
               <Plus className="w-4 h-4" />
               添加订阅
             </Button>
+            {/* 状态未知时这颗按钮只负责"把状态读回来",不做启停:
+                它的文案和它实际发的请求都是从 running 猜出来的,猜错就是误操作 */}
             <Button
-              variant={running ? "destructive" : "outline"}
-              onClick={() => toggle.mutate(running)}
-              disabled={toggle.isPending}
+              variant={statusUnknown || !running ? "outline" : "destructive"}
+              onClick={() => (statusUnknown ? status.refetch() : toggle.mutate(running))}
+              disabled={toggle.isPending || (statusUnknown && status.isFetching)}
+              title={
+                status.isError
+                  ? `监控状态读取失败：${errorMessage(status.error)}。读不到状态就不知道该启还是该停,先重试`
+                  : status.isPending
+                    ? "正在读取监控状态…"
+                    : undefined
+              }
             >
-              {running ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
-              {running ? "停止监控" : "启动监控"}
+              {statusUnknown ? (
+                <RefreshCw className={`w-4 h-4 ${status.isFetching ? "animate-spin" : ""}`} />
+              ) : running ? (
+                <BellOff className="w-4 h-4" />
+              ) : (
+                <Bell className="w-4 h-4" />
+              )}
+              {status.isPending ? "读取状态…" : status.isError ? "状态未知 · 重试" : running ? "停止监控" : "启动监控"}
             </Button>
             <Button
               variant="outline"
@@ -141,7 +168,11 @@ function VPSMonitorPage() {
         <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center">
-              {running ? (
+              {statusUnknown ? (
+                <HelpCircle
+                  className={`w-5 h-5 ${status.isError ? "text-warning" : "text-muted-foreground"}`}
+                />
+              ) : running ? (
                 <Bell className="w-5 h-5 text-success" />
               ) : (
                 <BellOff className="w-5 h-5 text-muted-foreground" />
@@ -150,14 +181,35 @@ function VPSMonitorPage() {
             <div>
               <div className="text-sm font-semibold">VPS 监控状态</div>
               <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                <StatusDot tone={running ? "success" : "muted"} pulse={running} size="xs" />
-                {running ? "运行中" : "已停止"}
+                <StatusDot
+                  tone={status.isError ? "warning" : running ? "success" : "muted"}
+                  pulse={running && !statusUnknown}
+                  size="xs"
+                />
+                {status.isPending ? "读取中…" : status.isError ? "状态未知" : running ? "运行中" : "已停止"}
               </div>
+              {status.isError && (
+                <button
+                  type="button"
+                  className="block text-left text-[11px] text-destructive underline underline-offset-2 mt-0.5 max-w-xs"
+                  onClick={() => status.refetch()}
+                  title="重新读取监控状态"
+                >
+                  读不到监控状态：{errorMessage(status.error)} · 点此重试
+                </button>
+              )}
             </div>
           </div>
           <div className="flex gap-6 text-sm">
-            <Stat label="订阅数" value={status.data?.subscriptions_count ?? 0} />
-            <Stat label="检查间隔" value={`${status.data?.check_interval ?? 0}s`} />
+            <Stat label="订阅数" value={statNum(status.data?.subscriptions_count)} />
+            <Stat
+              label="检查间隔"
+              value={
+                statusUnknown
+                  ? statNum(status.data?.check_interval)
+                  : `${status.data?.check_interval ?? 0}s`
+              }
+            />
           </div>
         </CardContent>
       </Card>
@@ -168,6 +220,18 @@ function VPSMonitorPage() {
             <Skeleton key={i} className="h-24 rounded-2xl" />
           ))}
         </div>
+      ) : list.isError ? (
+        /* 列表没读到 ≠ 一条订阅都没有。以前直接掉进"暂无 VPS 订阅",
+           而订阅其实还在后端跑着 —— 用户看见空列表会照着再加一遍,
+           同一个型号被订两次,补货时就通知两次、自动下单两次。 */
+        <Card>
+          <LoadFailed
+            icon={Cloud}
+            title="VPS 订阅列表读取失败"
+            error={list.error}
+            onRetry={() => list.refetch()}
+          />
+        </Card>
       ) : subs.length === 0 ? (
         <Card>
           <EmptyState
@@ -364,6 +428,20 @@ function VPSHistoryPanel({ id }: { id: string }) {
     );
   }
 
+  // "暂无历史记录"是一句结论:这个型号从订阅到现在一次都没补过货,
+  // 用户会据此判断"别等了,换一个型号"。读失败时说这句话就是在给假消息。
+  if (history.isError) {
+    return (
+      <LoadFailed
+        icon={HistoryIcon}
+        title="变化历史读取失败"
+        error={history.error}
+        onRetry={() => history.refetch()}
+        compact
+      />
+    );
+  }
+
   const entries = history.data || [];
 
   return (
@@ -448,10 +526,16 @@ function AddVPSDialog({
   const [autoPay, setAutoPay] = useState(false);
   // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
   const [globalAccountId] = useActiveAccount();
-  const { data: allAccounts } = useAccounts();
+  const accountsQ = useAccounts();
+  const allAccounts = accountsQ.data;
   const autoOrderAccountId =
     globalAccountId || allAccounts?.find((a) => a.isDefault)?.id || allAccounts?.[0]?.id || "";
   const activeAcc = findAccountByID(allAccounts, autoOrderAccountId);
+  // 账户列表读失败 ≠ 一个账户都没配。两种情况以前都显示「未选择账户」,
+  // 然后自动下单被静默拦掉 —— 用户看到的是一条没有理由的死路:
+  // 去账户页明明有账户,回来还是"未选择"。而且这一页的站点列表也是按
+  // activeAcc.endpoint 算的,账户没读到时那份列表同样不可信,得一起说清楚。
+  const accountsFailed = accountsQ.isError && !activeAcc;
   // 订阅的站点必须和当前账户同区:三个站点的库存和购物车互不相通,
   // 拿美区账户订阅欧区子公司,补货时才发现根本买不了。不该给的选项就别给。
   const allowedSubsidiaries = subsidiariesForEndpoint(activeAcc?.endpoint);
@@ -522,7 +606,12 @@ function AddVPSDialog({
       .filter(Boolean);
 
     if (autoOrder && !autoOrderAccountId) {
-      toast.error("开启自动下单时必须选 OVH 账户");
+      // 读失败和"真的没账户"要给不同的话:前者该重试,后者该去加账户
+      toast.error(
+        accountsFailed
+          ? `账户列表读取失败(${errorMessage(accountsQ.error)}),先重试再开自动下单`
+          : "开启自动下单时必须选 OVH 账户"
+      );
       return;
     }
     const payload = {
@@ -627,6 +716,14 @@ function AddVPSDialog({
                   ))}
                 </SelectContent>
               </Select>
+              {/* 可选站点是按当前账户的 endpoint 算的。账户没读到时这份列表
+                  只是默认值,不是"你这个账户能用的站点" —— 选错站点的症状是
+                  永远无货,必须提前说,不能让它看起来像已经按账户过滤过了 */}
+              {accountsFailed && (
+                <p className="text-[11px] text-destructive mt-1">
+                  账户读取失败,下面的站点没按账户过滤,可能选到当前账户买不了的站点
+                </p>
+              )}
             </div>
           </div>
 
@@ -699,15 +796,45 @@ function AddVPSDialog({
                 {/* 订阅的下单账户就绑当前账户 —— 页面上再放一个选择器,
                     就会出现"用 A 账户看库存、订阅却绑到 B 账户"的错配,
                     而三区库存互不相通,触发时才发现下不了单 */}
-                <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
-                  <User className="w-3.5 h-3.5 text-muted-foreground" />
-                  <span className="text-[13px] font-medium">{activeAcc?.name || "未选择账户"}</span>
-                  {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
-                  <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
-                </div>
+                {accountsFailed ? (
+                  <div className="flex items-start gap-2 px-3 py-2 rounded-xl border border-destructive/40 bg-destructive/5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-destructive flex-shrink-0 mt-0.5" />
+                    <span className="text-[12px] min-w-0 break-words">
+                      账户列表读取失败：{errorMessage(accountsQ.error)}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto flex-shrink-0"
+                      onClick={() => accountsQ.refetch()}
+                    >
+                      重试
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
+                    <User className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-[13px] font-medium">
+                      {accountsQ.isPending ? "读取账户…" : activeAcc?.name || "未选择账户"}
+                    </span>
+                    {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
+                    <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
+                  </div>
+                )}
                 <p className="text-[11px] text-muted-foreground mt-1">
                   触发时用这个账户下单;关掉上面的开关 = 只通知不下单
                 </p>
+                {/* 提交会被拦掉的两种理由写在这里,别让用户点了才知道 */}
+                {accountsFailed ? (
+                  <p className="text-[11px] text-destructive mt-1">
+                    账户没读出来之前不能配自动下单 —— 提交了也只会变成"只通知"
+                  </p>
+                ) : !accountsQ.isPending && !autoOrderAccountId ? (
+                  <p className="text-[11px] text-destructive mt-1">
+                    还没有可用的 OVH 账户,自动下单会被拒绝。先去设置页添加账户
+                  </p>
+                ) : null}
               </div>
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1.5">
@@ -773,7 +900,11 @@ function AddVPSDialog({
             <Button
               type="submit"
               disabled={create.isPending || notifyBlocked || notifyChecking}
-              title={notifyBlocked ? "没有可用的通知通道,无法添加订阅" : undefined}
+              title={
+                notifyBlocked
+                  ? notifyReason || "没有可用的通知通道,无法添加订阅"
+                  : undefined
+              }
             >
               {create.isPending ? "提交中…" : notifyChecking ? "校验通知…" : "确认添加"}
             </Button>

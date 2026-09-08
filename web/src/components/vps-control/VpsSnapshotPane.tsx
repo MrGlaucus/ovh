@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
@@ -28,6 +29,21 @@ export function VpsSnapshotPane({ serviceName }: { serviceName: string }) {
   const [editDesc, setEditDesc] = useState("");
 
   if (snap.isPending) return <Skeleton className="h-40 rounded-2xl" />;
+  // 快照读失败 ≠ 没有快照。
+  // 后端在 OVH 返 404(确实没做过快照)时会转成 200 + snapshot:null,所以走到 isError 一定是没问到。
+  // 这时如果还按下面的「暂无快照」渲染,有两个实打实的后果:
+  //   1. 用户以为回滚点没了,白白重做一遍准备工作,或者干脆放弃回滚;
+  //   2. 顺手点「创建快照」,撞上 OVH 的"已存在快照"(免费档每台只允许 1 个),白等一次报错。
+  if (snap.isError) {
+    return (
+      <LoadFailed
+        icon={Camera}
+        title="快照信息读取失败"
+        error={snap.error}
+        onRetry={() => snap.refetch()}
+      />
+    );
+  }
 
   const handleCreate = async () => {
     try {

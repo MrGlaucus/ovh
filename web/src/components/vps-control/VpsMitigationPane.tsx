@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/common/Chip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { DetailErrorTag } from "@/components/common/PartialNotice";
 import {
   useVpsMitigation, useEnableVpsMitigation, useDisableVpsMitigation,
@@ -17,6 +18,20 @@ export function VpsMitigationPane({ serviceName }: { serviceName: string }) {
   const disable = useDisableVpsMitigation(serviceName);
 
   if (list.isPending) return <Skeleton className="h-40 rounded-2xl" />;
+  // 读失败 ≠ 这台 VPS 没有 IP。后端拿不到 /vps/{svc}/ips 时直接返 500,这里 data 就是空数组,
+  // 再走下面的「该 VPS 无 IP」等于在 DDoS 页面上告诉用户"没 IP,不用配防护" —— 防护就此被跳过。
+  // 注:mitigation 这套端点 EU / US / CA 三区都注册,不存在"本区没这个能力"的情况,
+  // 所以这里的 isError 一律是真失败,可以放心报错(参见 use-vps-control.ts 里 unsupported 的约定)。
+  if (list.isError) {
+    return (
+      <LoadFailed
+        icon={ShieldAlert}
+        title="DDoS 缓解信息读取失败"
+        error={list.error}
+        onRetry={() => list.refetch()}
+      />
+    );
+  }
 
   const blocks = list.data || [];
   if (blocks.length === 0) {

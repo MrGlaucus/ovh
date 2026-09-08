@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { Chip } from "@/components/common/Chip";
 import { useServerNetworkSpecs } from "@/hooks/use-server-control";
 
@@ -56,6 +57,10 @@ export function NetworkSpecsDialog({
         <div className="overflow-y-auto -mx-6 px-6 space-y-4 flex-1">
           {q.isPending ? (
             <Skeleton className="h-60 rounded-2xl" />
+          ) : q.isError ? (
+            // 「无网络规格数据」等于替 OVH 承认"这机器没带宽 / 没流量配额信息",
+            // 用户会照着这个结论去开工单或改用途。请求挂了就说请求挂了。
+            <LoadFailed icon={Network} title="网络规格读取失败" error={q.error} onRetry={() => q.refetch()} />
           ) : !data ? (
             <EmptyState icon={Network} title="无网络规格数据" />
           ) : (

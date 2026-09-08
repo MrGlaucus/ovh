@@ -66,8 +66,11 @@ func ProcessQueueLoop(state *app.State) {
 			if ap != bp {
 				return ap < bp
 			}
-			at, _ := time.Parse(time.RFC3339Nano, a.CreatedAt)
-			bt, _ := time.Parse(time.RFC3339Nano, b.CreatedAt)
+			// CreatedAt 是 types.NowISO() 写的,不带时区,RFC3339Nano 解不出来。
+			// 以前这里两个 t 都是零值 → at.After(bt) 恒 false → 同优先级的任务
+			// 排序完全没生效,先入队的不一定先跑。ParseTS 两种历史格式都认。
+			at, _ := types.ParseTS(a.CreatedAt)
+			bt, _ := types.ParseTS(b.CreatedAt)
 			return at.After(bt)
 		})
 

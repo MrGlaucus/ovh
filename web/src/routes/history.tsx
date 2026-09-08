@@ -12,6 +12,7 @@ import { AccountChip } from "@/components/common/AccountChip";
 import { TimingChip } from "@/components/common/TimingChip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import {
   Dialog,
   DialogContent,
@@ -192,6 +193,22 @@ function HistoryPage() {
           <CardContent className="p-4 space-y-2">
             {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
           </CardContent>
+        </Card>
+      ) : list.isError ? (
+        /* 这页管的是订单的付款倒计时。请求挂了还画「没有匹配的订单」,用户会以为自己压根没下过单,
+           于是不去付款 —— 未付款订单 15 天到点自动作废,钱和机器一起没了。全站误导里就数这一条
+           后果最实在,所以失败态必须自己占一支,并且要把"这不是说你没有订单"写在脸上。 */
+        <Card>
+          <LoadFailed
+            icon={Clock}
+            title="抢购历史读取失败 —— 不是「你没有订单」,是我们没读到"
+            error={list.error}
+            onRetry={() => list.refetch()}
+          />
+          <p className="px-6 pb-5 text-[11px] text-muted-foreground text-center">
+            未付款的订单仍在走 15 天倒计时,别把这片空白当成"没有订单"。
+            请重试,或直接去 OVH 管理面板确认待付款的订单。
+          </p>
         </Card>
       ) : filtered.length === 0 ? (
         <Card>

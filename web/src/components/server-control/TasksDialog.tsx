@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useServerTasks, type ServerTask } from "@/hooks/use-server-control";
 import { PartialNotice, DetailErrorTag } from "@/components/common/PartialNotice";
 import { TimeslotsDialog } from "./TimeslotsDialog";
@@ -40,6 +41,10 @@ export function TasksDialog({
                   <Skeleton key={i} className="h-12 rounded-md" />
                 ))}
               </div>
+            ) : q.isError ? (
+              // 列表没拉到 ≠ 这台机器没有任务。写「暂无任务记录」会让用户以为刚提交的
+              // 重启 / 重装根本没建起来,从而再提交一遍 —— 同一台机器上跑两个运维任务。
+              <LoadFailed icon={Activity} title="任务列表读取失败" error={q.error} onRetry={() => q.refetch()} />
             ) : (q.data || []).length === 0 ? (
               <EmptyState icon={Activity} title="暂无任务记录" />
             ) : (

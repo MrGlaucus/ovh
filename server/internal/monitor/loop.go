@@ -157,6 +157,15 @@ func (m *Monitor) monitorLoopGen(gen int64) {
 				}(sub, traceID)
 			}
 			wg.Wait()
+
+			// 本轮改出了新状态就落库。
+			// 以前这一步根本不存在:LastStatus / History 只活在内存里,
+			// 只有用户手动增删改订阅时才顺带被写进去。程序重启后 LastStatus 是空的,
+			// 下一轮就把"现在有货"误判成首次检查的初始存量 —— 不通知,也不自动下单。
+			// 用户重启一次,就正好错过一次补货。
+			if m.dirty.Swap(false) {
+				m.SaveToDB()
+			}
 		} else {
 			m.state.Logger.Info("当前无订阅，跳过检查", "monitor")
 		}

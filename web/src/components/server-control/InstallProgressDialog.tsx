@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useInstallStatus, type InstallStep } from "@/hooks/use-server-control";
 
 /** 安装进度面板：每 5s 轮询 /install/status，展示 step 列表和整体进度（对齐旧前端） */
@@ -35,6 +36,17 @@ export function InstallProgressDialog({
         <div className="overflow-y-auto -mx-6 px-6 space-y-3 flex-1">
           {q.isPending ? (
             <Skeleton className="h-40 rounded-2xl" />
+          ) : q.isError ? (
+            // 这个面板是重装进行中盯进度用的。查询失败要是也渲染成「当前无安装任务」,
+            // 用户看到的就是"装机任务已经不在了" —— 于是当成装完了去重启,
+            // 或者干脆再发一次重装,把正在跑的装机打断。失败必须说成失败。
+            // (查询本身每 5s 自动重试,重试按钮只是给用户一个立刻再试的入口)
+            <LoadFailed
+              icon={Activity}
+              title="安装进度读取失败"
+              error={q.error}
+              onRetry={() => q.refetch()}
+            />
           ) : !data?.hasInstallation || !status ? (
             <EmptyState icon={Activity} title="当前无安装任务" />
           ) : (

@@ -15,6 +15,7 @@ import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, LoadFailedBanner, errorMessage } from "@/components/common/LoadFailed";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -52,7 +53,10 @@ function VpsControlPage() {
   const { hidden, toggle } = useHideIp();
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [activeAccount, setActiveAccount] = useActiveServerControlAccount();
-  const { data: accounts } = useAccounts();
+  // 拿整个 query 而不是只解构 data:账户列表读失败时,下面「账户」那一格必须说清是没读到,
+  // 不能跟「还没选账户」共用「未选择」这一句 —— 两者要用户做的事完全不同。
+  const accountsQ = useAccounts();
+  const accounts = accountsQ.data;
   const vpsList = q.data || [];
 
   useEffect(() => {
@@ -78,6 +82,9 @@ function VpsControlPage() {
   // 大区判定统一走 lib/ovh-regions(对齐后端 ovh.EndpointRegion):endpoint 是用户可填的自由字符串,
   // 还有 kimsufi-* / soyoustart-* 品牌别名,散装 `=== "ovh-us"` 漏一种写法门控就失效。
   const activeEndpoint = (accounts || []).find((a) => a.id === activeAccount)?.endpoint || "";
+  // 别名读失败时 aliasOf 会退回 serviceName / displayName。
+  // 这条属于诚实降级:别名只是本地附加的一层装饰,退回原名不会让用户误判 OVH 侧的任何事实,
+  // 所以不单独报错 —— 真在这里加提示,反而会盖过同页更要命的那几处失败。
   const aliases = useServerAliases();
   const setAlias = useSetServerAlias();
 
@@ -107,16 +114,41 @@ function VpsControlPage() {
           {/* 账户在左侧菜单栏统一切换,这里只显示 */}
           <div className="flex items-center gap-2">
             <span className="text-[12px] text-muted-foreground">账户</span>
-            <span className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-[12px]">
-              <User className="w-3.5 h-3.5 text-muted-foreground" />
-              {(accounts || []).find((a) => a.id === activeAccount)?.name || "未选择"}
+            {/* 账户列表没读到时不能显示「未选择」:那句话的意思是"你还没挑账户",用户会去左侧菜单点一下,
+                可实际上是接口挂了,点开也没有可选项。而且整页的大区门控(isUS / region)全靠这份列表里的
+                endpoint,读不到就默认按欧区渲染,所以这里必须显式报错 + 给重试。 */}
+            <span
+              className={
+                "inline-flex items-center gap-1.5 h-9 px-3 rounded-md border text-[12px] " +
+                (accountsQ.isError ? "border-destructive/40 bg-destructive/5" : "border-border")
+              }
+              title={accountsQ.isError ? errorMessage(accountsQ.error) : undefined}
+            >
+              <User className={"w-3.5 h-3.5 " + (accountsQ.isError ? "text-destructive" : "text-muted-foreground")} />
+              {accountsQ.isError ? (
+                <>
+                  <span className="text-destructive">账户列表读取失败</span>
+                  <button type="button" className="underline text-muted-foreground" onClick={() => accountsQ.refetch()}>
+                    重试
+                  </button>
+                </>
+              ) : accountsQ.isPending ? (
+                <span className="text-muted-foreground">加载中…</span>
+              ) : (
+                (accounts || []).find((a) => a.id === activeAccount)?.name || "未选择"
+              )}
             </span>
           </div>
           <div className="flex items-center gap-2 flex-1 min-w-[280px]">
             <span className="text-[12px] text-muted-foreground">VPS</span>
             <Select value={selectedName || ""} onValueChange={setSelectedName}>
               <SelectTrigger className="h-9 w-full max-w-md">
-                <SelectValue placeholder={vpsList.length === 0 ? "无 VPS" : "选择 VPS"} />
+                {/* 「无 VPS」是一句业务结论 —— 只有真问到了、结果确实是空,才配这么写 */}
+                <SelectValue
+                  placeholder={
+                    q.isError ? "列表读取失败" : q.isPending ? "加载中…" : vpsList.length === 0 ? "无 VPS" : "选择 VPS"
+                  }
+                />
               </SelectTrigger>
               <SelectContent>
                 {vpsList.map((v) => {
@@ -135,27 +167,54 @@ function VpsControlPage() {
             </Select>
           </div>
           <div className="text-[11px] text-muted-foreground">
-            共 {vpsList.length} 台
+            {/* 读失败时的「共 0 台」是个假数字,不能跟真的"这个账户没有机器"长成一个样 */}
+            {q.isError && vpsList.length === 0 ? (
+              <span className="text-destructive">列表未读到</span>
+            ) : (
+              <>
+                共 {vpsList.length} 台
+                {q.isError && " · 本次刷新失败,数字是上次的"}
+              </>
+            )}
             {q.isFetching && " · 同步中…"}
           </div>
         </CardContent>
       </Card>
 
-      {/* 内容区 */}
-      {!q.isPending && vpsList.length === 0 ? (
+      {/* 内容区。
+          列表没问到 ≠ 该账户名下没有 VPS。以前两种情况共用「该账户下暂无 VPS」+「可以去 OVH 官网下单,
+          或换个有 VPS 的账户」,配合上面的「无 VPS」占位和「共 0 台」,三处一起把一次请求失败讲成了
+          一条账户事实 —— 用户会去换账户,甚至把已经买过的机器再买一台。
+          react-query 报错后仍保留上次的结果,所以有旧数据时保留详情,只在顶上挂条幅说明这次没刷新上。 */}
+      {q.isError && vpsList.length === 0 ? (
+        <Card>
+          <CardContent className="p-4">
+            <LoadFailed icon={Cloud} title="VPS 列表读取失败" error={q.error} onRetry={() => q.refetch()} />
+          </CardContent>
+        </Card>
+      ) : !q.isPending && vpsList.length === 0 ? (
         <Card>
           <CardContent className="py-12">
             <EmptyState icon={Cloud} title="该账户下暂无 VPS" description="可以去 OVH 官网下单,或换个有 VPS 的账户" />
           </CardContent>
         </Card>
       ) : selected ? (
-        <VpsDetail
-          server={selected}
-          aliases={aliases}
-          onSetAlias={setAlias}
-          isUS={isUsEndpoint(activeEndpoint)}
-          region={regionLabel(endpointRegion(activeEndpoint))}
-        />
+        <>
+          {q.isError && (
+            <LoadFailedBanner
+              title="VPS 列表刷新失败,下面是上次拿到的数据"
+              error={q.error}
+              onRetry={() => q.refetch()}
+            />
+          )}
+          <VpsDetail
+            server={selected}
+            aliases={aliases}
+            onSetAlias={setAlias}
+            isUS={isUsEndpoint(activeEndpoint)}
+            region={regionLabel(endpointRegion(activeEndpoint))}
+          />
+        </>
       ) : q.isPending ? (
         <Skeleton className="h-96 rounded-2xl" />
       ) : null}
@@ -406,7 +465,15 @@ function VpsDetail({
     }
   };
 
-  const ipDisplay = ips.data && ips.data.length > 0 ? maskSensitive(ips.data[0].ipAddress, hidden) : "—";
+  // 主 IP 摘要:失败和"确实没有 IP"必须给不同的字。以前两种情况都写「—」,
+  // 用户会当成这台 VPS 没分到公网地址,转头去开工单。
+  const ipDisplay = ips.isError
+    ? "读取失败"
+    : ips.isPending
+      ? "…"
+      : ips.data && ips.data.length > 0
+        ? maskSensitive(ips.data[0].ipAddress, hidden)
+        : "—";
 
   return (
     <>
@@ -432,6 +499,22 @@ function VpsDetail({
                 <Terminal className="w-3.5 h-3.5 text-muted-foreground" />
                 <span className="text-muted-foreground">系统</span>
                 <span className="font-medium truncate max-w-[220px]">{currentOS.data.name}</span>
+              </button>
+            )}
+            {/* 当前系统没读到时,原来是整颗胶囊消失 —— 页面上再也没有「系统」这一项,看起来像这台 VPS
+                没装系统 / 面板不支持,点胶囊进重装的入口也一起没了。
+                后端只在 OVH 明说"没有当前镜像记录"(404)时才返 null,其余限流 / 5xx 一律返错,
+                所以走到 isError 一定是"没问到",不是"这台没系统"。 */}
+            {currentOS.isError && (
+              <button
+                type="button"
+                onClick={() => currentOS.refetch()}
+                className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full border border-destructive/40 bg-destructive/5 hover:bg-destructive/10 cursor-pointer transition-colors text-[12px]"
+                title={errorMessage(currentOS.error)}
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                <span className="text-destructive">当前系统读取失败</span>
+                <span className="text-muted-foreground">点击重试</span>
               </button>
             )}
             {info.data?.expiration && (
@@ -461,18 +544,38 @@ function VpsDetail({
                 </span>
               </button>
             )}
+            {/* serviceinfo 挂掉时「到期」「续费」两颗胶囊会一起消失。页面上一点到期信息都没有,
+                跟"这台机器没有到期日、不用管续费"长得一模一样,用户就此错过续费窗口。
+                必须占位讲明是没问到,并把重试放在同一个位置。 */}
+            {info.isError && (
+              <button
+                type="button"
+                onClick={() => info.refetch()}
+                className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-3 rounded-full border border-destructive/40 bg-destructive/5 hover:bg-destructive/10 cursor-pointer transition-colors text-[12px]"
+                title={errorMessage(info.error)}
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-destructive" />
+                <span className="text-destructive">到期 / 续费信息读取失败</span>
+                <span className="text-muted-foreground">点击重试</span>
+              </button>
+            )}
           </div>
         </div>
 
         {/* 列表接口这次没拿到这台 VPS 的详情/计费信息。
-            「没查到」不能显示成「没开自动续费」或「unknown 状态」，那会让用户按错误前提去操作。 */}
-        {(server.error || server.renewalType === null || server.status === null) && (
+            「没查到」不能显示成「没开自动续费」或「unknown 状态」，那会让用户按错误前提去操作。
+            这条 warning 原来只看列表返回的 server.error，不看 info.isError —— 于是兜底那句
+            「请以下方「续费」胶囊为准」在 serviceinfo 自己也挂掉时成了空话:那颗胶囊根本不会渲染。
+            所以 info.isError 也要进条件，并且优先说它。 */}
+        {(server.error || server.renewalType === null || server.status === null || info.isError) && (
           <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/5 px-3 py-2 text-[11px] text-foreground/80 mt-3">
             <AlertTriangle className="w-3.5 h-3.5 text-warning flex-shrink-0 mt-0.5" />
             <span>
-              {server.error
-                ? `该 VPS 的详情未能获取（${server.error}），下方配置信息可能不完整。`
-                : "该 VPS 的续费 / 计费信息这次没查到，列表里的续费状态显示为「未知」而非「手动」，请以下方「续费」胶囊为准。"}
+              {info.isError
+                ? `该 VPS 的到期 / 续费信息这次没查到（${errorMessage(info.error)}）。「没查到」既不是「没有到期日」也不是「没开自动续费」，读到之前别拿它当续费依据，点上方红色胶囊可重试。`
+                : server.error
+                  ? `该 VPS 的详情未能获取（${server.error}），下方配置信息可能不完整。`
+                  : "该 VPS 的续费 / 计费信息这次没查到，列表里的续费状态显示为「未知」而非「手动」，请以下方「续费」胶囊为准。"}
             </span>
           </div>
         )}
@@ -576,6 +679,18 @@ function VpsDetail({
             {ips.isPending ? (
               <div className="p-4">
                 <Skeleton className="h-16 rounded-md" />
+              </div>
+            ) : ips.isError ? (
+              // 「无 IP」是在断言这台 VPS 没有公网地址 —— 那是要开工单找 OVH 的大事。
+              // 接口没问到的时候写这三个字,等于凭空造一条业务事实。
+              <div className="p-4">
+                <LoadFailed
+                  icon={Globe}
+                  title="IP 地址读取失败"
+                  error={ips.error}
+                  onRetry={() => ips.refetch()}
+                  compact
+                />
               </div>
             ) : (ips.data || []).length === 0 ? (
               <p className="px-4 py-6 text-sm text-muted-foreground text-center">无 IP</p>

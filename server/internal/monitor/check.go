@@ -798,6 +798,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	//     "首次检查"分支失效,当次有货既不通知也不触发 auto-order。
 	// 监控范围内的机房在上面的主循环里已经写过规范化状态了,所以这里不再补写。
 	sub.replaceLastStatus(lastStatus)
+	// 状态动过就标脏,循环末尾统一落一次库。不标的话 LastStatus 只活在内存里,
+	// 重启后当次有货会被当成"初始存量"吞掉(既不通知也不自动下单)。
+	m.dirty.Store(true)
 }
 
 func containsString(list []string, s string) bool {

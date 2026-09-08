@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -58,9 +59,14 @@ function SettingsPage() {
   const [active, setActive] = useState<typeof SECTIONS[number]["id"]>("password");
   const [form, setForm] = useState<SettingsConfig>({});
   const [apiKey, setApiKey] = useState("");
+  // 配置到底有没有读到手。没读到就绝不能保存 —— 见 onSave 里的说明。
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    if (cfg.data) setForm(cfg.data);
+    if (cfg.data) {
+      setForm(cfg.data);
+      setLoaded(true);
+    }
   }, [cfg.data]);
 
   useEffect(() => {
@@ -70,11 +76,23 @@ function SettingsPage() {
   const set = (k: keyof SettingsConfig, v: string) => setForm((prev) => ({ ...prev, [k]: v }));
 
   const onSave = () => {
+    // 配置没读到手的时候,form 还停在初始的 {} —— 所有输入框看上去都是"未配置"。
+    // 这时候按保存,等于拿一份空配置去覆盖后端真实的 Telegram Token / Chat ID /
+    // Webhook。这不是显示错误,是直接把用户的配置删了,而且他自己看不出来
+    // (界面本来就显示空,保存完还是空)。所以读失败时这个按钮必须是禁用的。
+    // 访问密码只写 localStorage,不经过后端配置,配置读失败也照存不误
     if (apiKey) setApiSecretKey(apiKey);
+    if (!loaded) {
+      toast.error("配置还没读取成功，已跳过后端配置的保存（避免用空值覆盖）");
+      return;
+    }
     // 提交前根据 zone 自动同步 endpoint，避免两者不一致
     const zone = form.zone || "IE";
     save.mutate({ ...form, zone, endpoint: endpointForZone(zone) });
   };
+
+  // 访问密码那一节只写 localStorage,不碰后端配置,所以配置读失败也能改。
+  const savableSection = active === "password" || loaded;
 
   return (
     <div className="space-y-6">
@@ -83,7 +101,11 @@ function SettingsPage() {
         title="API 设置"
         description="配置 OVH API 和通知设置"
         action={
-          <Button onClick={onSave} disabled={save.isPending}>
+          <Button
+            onClick={onSave}
+            disabled={save.isPending || !savableSection}
+            title={savableSection ? undefined : "配置尚未读取成功,现在保存会用空值覆盖后端已有的配置"}
+          >
             <Save className="w-4 h-4" />
             {save.isPending ? "保存中..." : "保存设置"}
           </Button>
@@ -121,6 +143,17 @@ function SettingsPage() {
           <CardContent className="p-4 sm:p-6">
             {cfg.isPending ? (
               <Skeleton className="h-64 rounded-2xl" />
+            ) : cfg.isError && active !== "password" && active !== "accounts" && active !== "cache" ? (
+              // 配置读失败时,Telegram / 通知通道那些输入框会全渲染成空 ——
+              // 看上去就是"你还没配过",而实际上后端存着真实配置。
+              // 在这里直接换成失败态,顺便挡住"照着空表单点保存"这条把配置删干净的路。
+              <LoadFailed
+                icon={SettingsIcon}
+                title="配置读取失败"
+                error={cfg.error}
+                onRetry={() => cfg.refetch()}
+                compact
+              />
             ) : active === "password" ? (
               <Section title="访问密码 / API Secret Key">
                 <Field label="访问密码 *" hint="后端 .env 中的 API_SECRET_KEY，本地仅保存在 localStorage">
@@ -202,6 +235,15 @@ function NotifySection({
         </div>
         {channels.isPending ? (
           <p className="text-[12px] text-muted-foreground">检测中…</p>
+        ) : channels.isError ? (
+          // 检测请求本身挂了。以前这里会渲染成一片空白 —— 既没有通道列表,
+          // 下面那条"一条可用通道都没有"的警告也因为守卫里带了 channels.data 而不出现。
+          // 用户看到的是"什么都没有",而不是"没检测成功"。
+          <LoadFailedBanner
+            title="通道检测失败，下面的状态不代表通道真的不可用"
+            error={channels.error}
+            onRetry={() => channels.refetch()}
+          />
         ) : (
           <div className="space-y-1.5">
             {(channels.data?.channels || []).map((c) => (
@@ -420,6 +462,16 @@ function CacheSection() {
     <Section title="缓存管理">
       {info.isPending ? (
         <Skeleton className="h-32 rounded-2xl" />
+      ) : info.isError ? (
+        // 这五行以前会在请求失败时全部渲染成假读数:条数 0、状态"已过期"、
+        // "从未刷新"、路径"—"。用户据此去点"清除全部",清的是一份他根本没看清的东西。
+        <LoadFailed
+          icon={Database}
+          title="缓存信息读取失败"
+          error={info.error}
+          onRetry={() => info.refetch()}
+          compact
+        />
       ) : (
         <div className="border border-border rounded-2xl p-4 space-y-2.5 text-[13px]">
           <Row label="内存缓存条数" value={info.data?.backend?.serverCount ?? 0} />
@@ -483,7 +535,17 @@ function AccountsSection() {
         </Button>
       </div>
 
-      {accounts.isPending ? (
+      {accounts.isError ? (
+        // 说成"还没有账户"会让用户重新粘一遍 OVH 三件套凭据,
+        // 而后端其实存着好好的 —— 重复添加只会多出一个重名账户。
+        <LoadFailed
+          icon={Globe}
+          title="账户列表读取失败"
+          error={accounts.error}
+          onRetry={() => accounts.refetch()}
+          compact
+        />
+      ) : accounts.isPending ? (
         <div className="space-y-2">
           {Array.from({ length: 2 }).map((_, i) => (
             <Skeleton key={i} className="h-24 rounded-2xl" />

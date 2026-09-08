@@ -9,6 +9,7 @@ import { Chip } from "@/components/common/Chip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
 import { PartialNotice } from "@/components/common/PartialNotice";
+import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import { useAccountInfo, useRefunds, useEmails, type EmailHistoryEntry } from "@/hooks/use-account";
 
 /** 账户管理：顶部 3 张 KPI + Tabs (邮件 / 退款) */
@@ -41,6 +42,17 @@ function AccountPage() {
             </p>
           </div>
         </div>
+      )}
+
+      {/* /me 请求挂了的话 me 为 undefined:三张 KPI 全变「—」、KYC 标签整个消失。
+          那副样子跟"这个账户就是没填这些信息 / 没做过 KYC"完全一样,而 KYC 没过 OVH 是会拦下单的
+          —— 用户照着这页判断自己的验证状态,两个方向都可能判错。所以整页必须先说一句"没读到"。 */}
+      {q.isError && (
+        <LoadFailedBanner
+          title="账户信息读取失败,下面的「—」不代表账户里没有这些信息"
+          error={q.error}
+          onRetry={() => q.refetch()}
+        />
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -141,6 +153,20 @@ function EmailsTab() {
           <div className="p-4 space-y-2">
             {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-14 rounded-xl" />)}
           </div>
+        ) : emails.isError ? (
+          /* 整条请求挂掉时 data 是 undefined,下面 `failedCount || 0` 只会读出 0,
+             于是一路掉进「暂无邮件」—— 那是"部分失败"的兜底,盖不住"整个请求失败"。
+             OVH 的下单确认、付款提醒、账户告警全在这条历史里,说成"没有邮件"
+             等于告诉用户 OVH 从没通知过他。 */
+          <div className="p-4">
+            <LoadFailed
+              icon={Inbox}
+              title="邮件历史读取失败,不是账户里没有邮件"
+              error={emails.error}
+              onRetry={() => emails.refetch()}
+              compact
+            />
+          </div>
         ) : (emails.data?.items || []).length === 0 ? (
           /* 空列表 + failedCount>0 = 这次一条都没读到，不是"账户没有邮件" */
           (emails.data?.failedCount || 0) > 0 ? (
@@ -217,6 +243,17 @@ function RefundsTab() {
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
           </div>
+        ) : refunds.isError ? (
+          /* 跟邮件同一个盲区:请求整条挂掉 → data 为 undefined → failedCount 算成 0 →
+             落到「暂无退款记录」。这块是钱:用户会据此认定"OVH 没退给我",然后去开工单/发起争议,
+             而实际上我们只是没问到。失败就老实说失败。 */
+          <LoadFailed
+            icon={Inbox}
+            title="退款记录读取失败,不代表没有退款"
+            error={refunds.error}
+            onRetry={() => refunds.refetch()}
+            compact
+          />
         ) : (refunds.data?.items || []).length === 0 ? (
           (refunds.data?.failedCount || 0) > 0 ? (
             <EmptyState

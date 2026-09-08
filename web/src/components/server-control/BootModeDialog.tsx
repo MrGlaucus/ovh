@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useServerBootModes, useSetServerBootMode, useRebootServer, type BootMode } from "@/hooks/use-server-control";
 import { toast } from "sonner";
 
@@ -58,6 +59,10 @@ export function BootModeDialog({
               <Skeleton key={i} className="h-28 rounded-2xl" />
             ))}
           </div>
+        ) : q.isError ? (
+          // 「暂无可选启动模式」会被读成"这台机器不能切启动模式",用户就放弃进 rescue 了 ——
+          // 而救援模式往往正是机器出问题时唯一的自救路径。读失败必须写成读失败。
+          <LoadFailed icon={HardDrive} title="启动模式读取失败" error={q.error} onRetry={() => q.refetch()} />
         ) : (q.data || []).length === 0 ? (
           <EmptyState icon={HardDrive} title="暂无可选启动模式" />
         ) : (

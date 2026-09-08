@@ -59,6 +59,8 @@ export function useMrtgTraffic(serviceName: string | null, period: MrtgPeriod) {
     isPending: download.isPending || upload.isPending,
     isFetching: download.isFetching || upload.isFetching,
     isError: download.isError || upload.isError,
+    // 把 error 也交出去:组件要拿它渲染"为什么没数据",不能只给一个 boolean
+    error: download.error ?? upload.error,
     refetch: () => Promise.all([download.refetch(), upload.refetch()]),
   };
 }

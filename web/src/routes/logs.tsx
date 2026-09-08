@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Chip } from "@/components/common/Chip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import {
   Dialog,
   DialogContent,
@@ -122,12 +123,42 @@ function LogsPage() {
           <span className="font-semibold">系统日志</span>
           <span className="text-muted-foreground">{filtered.length} 条</span>
         </div>
+        {/* 拉取失败但手里还有上一轮的日志:列表照常显示,顶上说清楚"这些是旧的"。
+            自动刷新开着的时候后端挂掉,页面表现是日志停止增长 —— 跟"系统很安静"
+            长得一模一样,不明说就等于骗人。 */}
+        {logs.isError && items.length > 0 && (
+          <div className="p-3 pb-0">
+            <LoadFailedBanner
+              title="日志刷新失败,以下是上一次拉到的内容"
+              error={logs.error}
+              onRetry={() => logs.refetch()}
+            />
+          </div>
+        )}
         {logs.isPending && items.length === 0 ? (
           <div className="p-4 space-y-2">
             {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-8" />)}
           </div>
+        ) : logs.isError && items.length === 0 ? (
+          /* 日志页是排错的最后一招。这里说"没有日志",用户读到的是"系统一切正常、
+             没什么可看的",于是停止排查 —— 而实际情况是我们连日志都没拿到。
+             失败必须写成失败,并把后端返回的原因一起摆出来。 */
+          <div className="p-4">
+            <LoadFailed
+              icon={FileText}
+              title="日志读取失败"
+              error={logs.error}
+              onRetry={() => logs.refetch()}
+              compact
+            />
+          </div>
         ) : filtered.length === 0 ? (
-          <EmptyState icon={FileText} title="没有日志" />
+          /* 到这儿才是真空态。再分一次:后端确实没日志,还是被搜索/级别筛掉了 */
+          <EmptyState
+            icon={FileText}
+            title={items.length === 0 ? "没有日志" : "没有匹配的日志"}
+            description={items.length === 0 ? undefined : `共 ${items.length} 条,当前筛选条件下一条都没命中`}
+          />
         ) : (
           <div className="max-h-[calc(100vh-340px)] overflow-y-auto divide-y divide-border">
             {filtered.map((log) => <LogRow key={log.id} log={log} />)}

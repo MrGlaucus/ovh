@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
+import { LoadFailed } from "@/components/common/LoadFailed";
 import { useMrtgTraffic, type MrtgPeriod, type MrtgInterface } from "@/hooks/use-mrtg";
 
 const PERIOD_LABEL: Record<MrtgPeriod, string> = {
@@ -41,7 +42,8 @@ function formatBandwidth(bps: number): string {
  */
 export function MrtgTrafficChart({ serviceName }: { serviceName: string }) {
   const [period, setPeriod] = useState<MrtgPeriod>("daily");
-  const { download, upload, isPending, isFetching, refetch } = useMrtgTraffic(serviceName, period);
+  // isError / error 以前漏解构了,拉失败时 merged 是空数组,界面就一路滑到「暂无流量数据」
+  const { download, upload, isPending, isFetching, isError, error, refetch } = useMrtgTraffic(serviceName, period);
 
   // 把 download interfaces 与 upload interfaces 按 mac 合并
   const merged = useMemo(() => {
@@ -85,6 +87,10 @@ export function MrtgTrafficChart({ serviceName }: { serviceName: string }) {
 
         {isPending ? (
           <Skeleton className="h-[420px] rounded-2xl" />
+        ) : isError ? (
+          // 请求挂了 ≠ 机器没流量。空态那句「该服务器尚未上报 MRTG 数据,或周期内没有流量」
+          // 会被读成"这机器没在跑 / 网卡没通",足以让人去重启甚至重装一台其实好好的机器。
+          <LoadFailed icon={Wifi} title="流量数据读取失败" error={error} onRetry={() => refetch()} />
         ) : merged.length === 0 ? (
           <EmptyState icon={Wifi} title="暂无流量数据" description="该服务器尚未上报 MRTG 数据，或周期内没有流量。" />
         ) : (
