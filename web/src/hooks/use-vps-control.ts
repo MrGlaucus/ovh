@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import type { PartialList } from "./partial-list";
+import { useActiveAccount } from "@/hooks/use-active-account";
 
 /* ────────────── 类型定义 ────────────── */
 
@@ -90,8 +91,9 @@ export interface VpsSnapshot {
 /* ────────────── List + Info + Status ────────────── */
 
 export function useOwnedVps() {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.vpsControl.list(),
+    queryKey: qk.vpsControl.list(accountId),
     queryFn: async () => {
       const res = await api.get("/vps-control/list");
       return (res.data?.vps || []) as OwnedVps[];
@@ -208,7 +210,7 @@ export function useVpsStart(svc: string) {
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/start`)).data,
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.vpsControl.list() });
+      qc.invalidateQueries({ queryKey: ["vps-control", "list"] });
       qc.invalidateQueries({ queryKey: qk.vpsControl.info(svc) });
     },
   });
@@ -219,7 +221,7 @@ export function useVpsStop(svc: string) {
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/stop`)).data,
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.vpsControl.list() });
+      qc.invalidateQueries({ queryKey: ["vps-control", "list"] });
       qc.invalidateQueries({ queryKey: qk.vpsControl.info(svc) });
     },
   });
@@ -372,7 +374,7 @@ export function useRevertVpsSnapshot(svc: string) {
   return useMutation({
     mutationFn: async () => (await api.post(`/vps-control/${svc}/snapshot/revert`)).data,
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.vpsControl.list() });
+      qc.invalidateQueries({ queryKey: ["vps-control", "list"] });
       qc.invalidateQueries({ queryKey: qk.vpsControl.tasks(svc) });
     },
   });

@@ -2,6 +2,9 @@ import { useState } from "react";
 import { Power, RotateCw, HardDrive, Monitor, Zap, Server, Cog, Activity } from "lucide-react";
 import type { OwnedServer } from "@/hooks/use-server-control";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { BootModeDialog } from "./BootModeDialog";
@@ -21,13 +24,20 @@ export function PowerTab({ server }: { server: OwnedServer }) {
   const [progressOpen, setProgressOpen] = useState(false);
   const [ipmiOpen, setIpmiOpen] = useState(false);
   const [splaOpen, setSplaOpen] = useState(false);
+  const [rebootOpen, setRebootOpen] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
 
-  const action = async (label: string, fn: () => Promise<unknown>) => {
+  const doReboot = async () => {
+    // 按下就发,不给第二次机会 —— 所以必须先确认、发的过程中必须禁用。
+    setRebooting(true);
     try {
-      await fn();
-      toast.success(`${label} 已发起`);
+      await api.post(`/server-control/${server.serviceName}/reboot`);
+      toast.success("重启已发起");
+      setRebootOpen(false);
     } catch (e: any) {
-      toast.error(e.response?.data?.error || `${label} 失败`);
+      toast.error(e.response?.data?.error || "重启失败");
+    } finally {
+      setRebooting(false);
     }
   };
 
@@ -38,7 +48,8 @@ export function PowerTab({ server }: { server: OwnedServer }) {
           icon={Power}
           title="重启服务器"
           description="硬重启(相当于按电源键,未落盘的数据会丢)"
-          onClick={() => action("重启", () => api.post(`/server-control/${server.serviceName}/reboot`))}
+          onClick={() => setRebootOpen(true)}
+          tone="warning"
         />
         <ActionCard
           icon={HardDrive}
@@ -94,6 +105,30 @@ export function PowerTab({ server }: { server: OwnedServer }) {
       <BiosDialog serviceName={server.serviceName} open={biosOpen} onOpenChange={setBiosOpen} />
       <InstallProgressDialog serviceName={server.serviceName} open={progressOpen} onOpenChange={setProgressOpen} />
       <IpmiDialog serviceName={server.serviceName} open={ipmiOpen} onOpenChange={setIpmiOpen} />
+
+      {/* 重启确认。
+          以前这张卡片是"点一下就直接硬重启" —— 没有确认、没有禁用、没有进行中反馈。
+          卡片自己的描述写着"相当于按电源键,未落盘的数据会丢",而误点一次就发生了,
+          连点两下就是两次重启。跑着业务的机器经不起这个。 */}
+      <Dialog open={rebootOpen} onOpenChange={(v) => !rebooting && setRebootOpen(v)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认硬重启 {server.serviceName}？</DialogTitle>
+            <DialogDescription>
+              这相当于按下电源键，不是操作系统里的正常重启：内存和磁盘缓存里还没落盘的数据会丢，
+              正在跑的服务会被直接切断。确认前请先在系统里停好业务。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRebootOpen(false)} disabled={rebooting}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={doReboot} disabled={rebooting}>
+              {rebooting ? "正在发起…" : "确认重启"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

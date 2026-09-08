@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import type { PartialList } from "./partial-list";
+import { useActiveAccount } from "@/hooks/use-active-account";
 
 export interface OwnedServer {
   serviceName: string;
@@ -79,8 +80,9 @@ export interface ServiceInfo {
  * 过滤逻辑照搬旧前端：只显示 state === 'ok' | 'active'，排除 expired / suspended / error
  */
 export function useOwnedServers() {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.serverControl.list(),
+    queryKey: qk.serverControl.list(accountId),
     queryFn: async () => {
       const res = await api.get("/server-control/list");
       const raw = (res.data?.servers || []) as OwnedServer[];
@@ -1315,8 +1317,9 @@ export interface ContactChangeRequestList {
 
 /** 查询所有变更联系人请求（用户全局而非按服务器）。后端返回 { status, data, total, failed } */
 export function useContactChangeRequests(enabled = true) {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.serverControl.contactRequests(),
+    queryKey: qk.serverControl.contactRequests(accountId),
     queryFn: async (): Promise<ContactChangeRequestList> => {
       try {
         const res = await api.get(`/ovh/contact-change-requests`);
@@ -1357,7 +1360,7 @@ export function useContactRequestAction() {
       return res.data;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.serverControl.contactRequests() });
+      qc.invalidateQueries({ queryKey: ["server-control", "contact-requests"] });
     },
   });
 }

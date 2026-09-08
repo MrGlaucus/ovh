@@ -61,8 +61,16 @@ export const qk = {
   },
 
   // 服务器控制（已购）
+  //
+  // 注意 list / contactRequests 必须带 accountId。
+  // 账户是在**请求**里注入的(api.ts 的拦截器加 ?account=),但 key 里没有它 ——
+  // 于是两个账户共用同一份缓存。切账户时虽然 invalidate 了,invalidate 只是标记过期
+  // 并在后台重拉,期间组件读到的 data 仍是上一个账户的:切过去的那几百毫秒里
+  // 看到的是别人的服务器列表、别人的 /me 身份信息;重拉一旦失败,就一直停在那儿。
+  // 把账户放进 key,切换即缓存未命中 → 走骨架屏,不会串号。
+  // (按 serviceName 索引的那些不用带:serviceName 在 OVH 全局唯一。)
   serverControl: {
-    list: () => ["server-control", "list"] as const,
+    list: (accountId: string) => ["server-control", "list", accountId] as const,
     hardware: (serviceName: string) => ["server-control", "hardware", serviceName] as const,
     serviceInfo: (serviceName: string) => ["server-control", "service-info", serviceName] as const,
     ips: (serviceName: string) => ["server-control", "ips", serviceName] as const,
@@ -93,7 +101,7 @@ export const qk = {
     options: (serviceName: string) => ["server-control", "options", serviceName] as const,
     ipSpecs: (serviceName: string) => ["server-control", "ip-specs", serviceName] as const,
     networkSpecs: (serviceName: string) => ["server-control", "network-specs", serviceName] as const,
-    contactRequests: () => ["server-control", "contact-requests"] as const,
+    contactRequests: (accountId: string) => ["server-control", "contact-requests", accountId] as const,
     engagement: (serviceName: string) => ["server-control", "engagement", serviceName] as const,
     engagementAvailable: (serviceName: string) => ["server-control", "engagement-available", serviceName] as const,
     engagementRequest: (serviceName: string) => ["server-control", "engagement-request", serviceName] as const,
@@ -104,7 +112,7 @@ export const qk = {
 
   // VPS 控制(已购 VPS 管理,跟监控库存的 vpsMonitor 不同)
   vpsControl: {
-    list: () => ["vps-control", "list"] as const,
+    list: (accountId: string) => ["vps-control", "list", accountId] as const,
     info: (svc: string) => ["vps-control", "info", svc] as const,
     status: (svc: string) => ["vps-control", "status", svc] as const,
     serviceInfo: (svc: string) => ["vps-control", "service-info", svc] as const,
@@ -124,11 +132,12 @@ export const qk = {
     mitigation: (svc: string) => ["vps-control", "mitigation", svc] as const,
   },
 
-  // 账户
+  // 账户。这三个是"当前账户是谁 / 它的退款和邮件",同上必须带 accountId ——
+  // 不带的话切账户的瞬间会把上一个账户的身份、KYC 状态、退款记录显示给下一个账户。
   account: {
-    info: () => ["account", "info"] as const,
-    refunds: () => ["account", "refunds"] as const,
-    emails: () => ["account", "emails"] as const,
+    info: (accountId: string) => ["account", "info", accountId] as const,
+    refunds: (accountId: string) => ["account", "refunds", accountId] as const,
+    emails: (accountId: string) => ["account", "emails", accountId] as const,
   },
 
   // 历史与日志

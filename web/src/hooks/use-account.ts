@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import { readPartialFailures, toPartialList, type PartialList } from "./partial-list";
+import { useActiveAccount } from "@/hooks/use-active-account";
 
 export interface AccountInfo {
   customerCode: string;
@@ -49,8 +50,9 @@ export interface AccountInfoResult {
 }
 
 export function useAccountInfo() {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.account.info(),
+    queryKey: qk.account.info(accountId),
     queryFn: async (): Promise<AccountInfoResult> => {
       const res = await api.get<AccountInfo>("/ovh/account/info");
       const raw = (res.headers as Record<string, unknown> | undefined)?.["x-subsidiary-mismatch"];
@@ -65,8 +67,9 @@ export function useAccountInfo() {
  * 不读这个头的话「列表少了几条」对用户完全不可见，所以这里统一包成 PartialList。
  */
 export function useRefunds() {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.account.refunds(),
+    queryKey: qk.account.refunds(accountId),
     queryFn: async (): Promise<PartialList<RefundRecord>> => {
       const res = await api.get<RefundRecord[]>("/ovh/account/refunds");
       return toPartialList(res.data, readPartialFailures(res.headers));
@@ -76,8 +79,9 @@ export function useRefunds() {
 
 /** 邮件历史。同 useRefunds：裸数组 + X-Partial-Failures 头 */
 export function useEmails() {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.account.emails(),
+    queryKey: qk.account.emails(accountId),
     queryFn: async (): Promise<PartialList<EmailHistoryEntry>> => {
       const res = await api.get<EmailHistoryEntry[]>("/ovh/account/email-history");
       return toPartialList(res.data, readPartialFailures(res.headers));
