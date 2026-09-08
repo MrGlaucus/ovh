@@ -13,6 +13,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -42,7 +43,7 @@ func ecoCatalogURL(subsidiary string) string {
 
 // fetchEcoCatalogBody 拉公开目录并把 body 交给 parse 处理(不带凭据,不占账户配额)。
 func fetchEcoCatalogBody(subsidiary string, parse func(io.Reader) error) error {
-	httpClient := &http.Client{Timeout: 60 * time.Second}
+	httpClient := proxy.HTTPClient(60 * time.Second)
 	req, err := http.NewRequest(http.MethodGet, ecoCatalogURL(subsidiary), nil)
 	if err != nil {
 		return err

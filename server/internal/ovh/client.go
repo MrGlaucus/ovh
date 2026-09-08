@@ -7,6 +7,7 @@ import (
 	"github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-buy/server/internal/config"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -65,6 +66,10 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SDK 内部默认用 http.DefaultClient(直连);换成共享代理 Transport,
+	// 这样 OUTBOUND_PROXY 对全部 OVH API 调用生效。Timeout 给 0:维持 SDK
+	// 原有的"无总超时"行为,由 Transport 层(dial/TLS)与请求侧控制时限。
+	cli.Client = proxy.HTTPClient(0)
 	f.cache[acc.ID] = cli
 	return cli, nil
 }
@@ -107,5 +112,6 @@ func (f *Factory) Client() (*ovh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	cli.Client = proxy.HTTPClient(0)
 	return cli, nil
 }

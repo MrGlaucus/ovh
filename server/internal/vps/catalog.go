@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // VPS 型号列表。
@@ -134,7 +135,7 @@ type catalogPlan struct {
 }
 
 func fetchModels(subsidiary string) ([]Model, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := proxy.HTTPClient(60 * time.Second)
 	req, err := http.NewRequest(http.MethodGet, vpsCatalogURL(subsidiary), nil)
 	if err != nil {
 		return nil, err

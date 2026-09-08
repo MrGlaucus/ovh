@@ -12,6 +12,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // 判断一个 planCode 属于哪个大区,必须以 /dedicated/server/datacenter/availabilities 为准,
@@ -67,7 +68,7 @@ var probeRegionHasPlan = func(region, planCode string) (bool, error) {
 	q.Set("planCode", planCode)
 	reqURL := ovh.APIBaseURLForRegion(region) + "/v1/dedicated/server/datacenter/availabilities?" + q.Encode()
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := proxy.HTTPClient(20 * time.Second)
 	resp, err := client.Get(reqURL)
 	if err != nil {
 		return false, err

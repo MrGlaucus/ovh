@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-buy/server/internal/notify"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // tgRecheckInterval loop 内 TG 健康检查节流间隔。5 分钟 verify 一次,
@@ -280,7 +281,7 @@ func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{},
 	}
 
 	var successCount, failCount int64
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := proxy.HTTPClient(30 * time.Second)
 	postOne := func(t orderTask) {
 		payload := map[string]interface{}{
 			"account_id":         accountID,

@@ -15,6 +15,7 @@ import (
 	"github.com/ovh-buy/server/internal/notify"
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -241,7 +242,7 @@ func checkVPSDCAvailabilityOS(state *app.State, planCode, ovhSubsidiary, osFilte
 
 	req, _ := http.NewRequest(http.MethodGet, fullURL, nil)
 	req.Header.Set("accept", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		// 网络抖动:下一轮还有机会

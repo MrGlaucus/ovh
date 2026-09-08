@@ -12,6 +12,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // catalogTTL OVH 公开 catalog 缓存时长，与前端 useOvhCatalog 的 staleTime 对齐
@@ -69,7 +70,7 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 		// 2. 直连 OVH 拉新数据。站点由子公司决定(三区目录互不相通,查错站点是 400 而不是空目录)
 		baseURL := catalogBaseURLForSubsidiary(sub)
 		url := fmt.Sprintf("%s/v1/order/catalog/public/eco?ovhSubsidiary=%s", baseURL, sub)
-		client := &http.Client{Timeout: 30 * time.Second}
+		client := proxy.HTTPClient(30 * time.Second)
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
 		req.Header.Set("accept", "application/json")
 

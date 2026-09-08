@@ -11,6 +11,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/numconv"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // optionsFromConfig 取本次配置组合要询价的 addon 列表
@@ -137,7 +138,7 @@ func (m *Monitor) verifyPriceAvailable(planCode, datacenter string, configInfo m
 		"datacenter": datacenter,
 		"options":    options,
 	})
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := proxy.HTTPClient(30 * time.Second)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -221,7 +222,7 @@ func (m *Monitor) GetPriceInfoText(planCode, datacenter string, configInfo map[s
 		"datacenter": datacenter,
 		"options":    options,
 	})
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := proxy.HTTPClient(30 * time.Second)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)

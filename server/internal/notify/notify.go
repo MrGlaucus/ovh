@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/telegram"
 )
 
@@ -87,7 +88,7 @@ func sendWebhook(url, message string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // VerifyConfig 检查 Telegram 是否可用:Token / Chat ID 是否填写 + bot 是否能 getMe + chat 是否可访问。
@@ -49,7 +50,7 @@ func VerifyConfig(state *app.State) (bool, string) {
 	if chatID == "" {
 		return false, "未配置 Telegram Chat ID"
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 
 	// 1) getMe 验 token
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/getMe")
@@ -115,7 +116,7 @@ func SendMessage(state *app.State, message string, replyMarkup map[string]interf
 	// 取前 45 位等于每发一条消息就把 Token 前 17 位记进日志。
 	state.Logger.Info("发送HTTP请求到Telegram API: "+scrub(url), "")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		state.Logger.Error("发送Telegram消息时发生未预期错误: "+scrub(err.Error()), "")
@@ -169,7 +170,7 @@ func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]i
 		q.Set("secret_token", secret)
 	}
 	req, _ := http.NewRequest(http.MethodPost, setURL+"?"+q.Encode(), nil)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
@@ -210,7 +211,7 @@ func GetWebhookInfo(state *app.State) (bool, map[string]interface{}, string) {
 	if cfg.TgToken == "" {
 		return false, nil, "未配置 Telegram Bot Token"
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 	resp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
 	if err != nil {
 		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
@@ -242,7 +243,7 @@ func AnswerCallback(state *app.State, callbackQueryID, text string, showAlert bo
 		"show_alert":        showAlert,
 	}
 	body, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := proxy.HTTPClient(5 * time.Second)
 	req, _ := http.NewRequest(http.MethodPost,
 		"https://api.telegram.org/bot"+cfg.TgToken+"/answerCallbackQuery",
 		bytes.NewReader(body))
@@ -265,7 +266,7 @@ func SendReply(state *app.State, chatID interface{}, text string, replyToMessage
 		"reply_to_message_id": replyToMessageID,
 	}
 	body, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := proxy.HTTPClient(10 * time.Second)
 	req, _ := http.NewRequest(http.MethodPost,
 		"https://api.telegram.org/bot"+cfg.TgToken+"/sendMessage",
 		bytes.NewReader(body))
