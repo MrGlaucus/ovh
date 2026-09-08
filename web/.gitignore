@@ -22,9 +22,6 @@ npm-debug.log*
 *.sln
 *.sw?
 
-# generated
-src/routeTree.gen.ts
-
 # env
 .env
 .env.local
