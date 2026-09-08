@@ -34,7 +34,8 @@ export function DelayStatus() {
           {enabled ? `延迟 ${delay}s` : "无延迟"}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[320px] p-0">
+      {/* z-[120]:首次运行的 AuthGate(z-100) / OvhCredsGate(z-90) 全屏遮罩上也要可点开 */}
+      <PopoverContent align="end" className="w-[320px] p-0 z-[120]">
         <div className="px-4 pt-3 pb-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[13px] font-semibold">下单延迟</span>

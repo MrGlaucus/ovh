@@ -61,7 +61,9 @@ export function ProxyStatus() {
           {label}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[340px] p-0">
+      {/* z-[120]:首次运行的 AuthGate(z-100) / OvhCredsGate(z-90) 全屏遮罩上
+          也要能点开面板看探测结果 */}
+      <PopoverContent align="end" className="w-[340px] p-0 z-[120]">
         <div className="px-4 pt-3 pb-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[13px] font-semibold">代理状态</span>

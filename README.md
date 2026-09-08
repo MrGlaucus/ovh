@@ -282,7 +282,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 
 ## 安全 / 鉴权
 
-- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update`)都要求 `X-API-Key` 请求头
+- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update` / `/api/proxy/status` / `/api/delay-config`)都要求 `X-API-Key` 请求头。后两个只读端点进白名单,是因为首次运行被 AuthGate / OvhCredsGate 全屏遮罩拦着,右上角的代理/延迟指示器登录前就得可见(代理地址已脱敏)
 - 两层全屏 gate:AuthGate(API 密钥) + OvhCredsGate(至少一个 OVH 账户)
 - API Key 存浏览器 localStorage,失效自动清除并要求重新输入
 - OVH 凭据落 SQLite `ovh_accounts` 表,前端通过 OvhCredsGate / 设置页"OVH 账户" tab 录入

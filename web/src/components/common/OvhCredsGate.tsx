@@ -5,6 +5,8 @@ import { KeyRound, Loader2, Globe, Settings as SettingsIcon } from "lucide-react
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ProxyStatus } from "@/components/layout/ProxyStatus";
+import { DelayStatus } from "@/components/layout/DelayStatus";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
@@ -179,6 +181,12 @@ function AccountOverlay({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <div className="fixed inset-0 z-[90] bg-background/95 backdrop-blur-sm flex items-center justify-center px-4 py-8 overflow-y-auto">
+      {/* 首次运行连 TopBar 都看不到,右上角指示器必须在这里再挂一份
+          (代理状态 / 下单延迟,接口在鉴权白名单里) */}
+      <div className="absolute top-4 right-4 flex items-center gap-2">
+        <ProxyStatus />
+        <DelayStatus />
+      </div>
       <div className="w-full max-w-lg border border-border rounded-2xl bg-background p-7 space-y-5">
         <div className="flex items-center gap-2.5">
           <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center">
