@@ -134,7 +134,14 @@ type State struct {
 	DeletedTaskIDsMu sync.Mutex
 	DeletedTaskIDs   map[string]struct{}
 
-	VPSSubsMu        sync.Mutex
+	VPSSubsMu sync.Mutex
+
+	// 保存串行化锁。Save* 是"快照 + 全表覆盖",两个并发保存里
+	// 晚拍快照的可能先落库,把新数据覆盖掉 —— 必须让"拍快照到写完"整段串行。
+	// 和上面那些数据锁分开:数据锁保护内存读写(要短),这些保护落库顺序(会持有到 IO 结束)。
+	saveQueueMu      sync.Mutex
+	saveHistoryMu    sync.Mutex
+	saveServersMu    sync.Mutex
 	VPSSubscriptions []types.VPSSubscription
 	VPSCheckInterval int
 
@@ -349,8 +356,23 @@ func (s *State) CountPurchase() (success, failed int) {
 	return
 }
 
-// SaveQueue 把内存中 Queue 整表覆盖写入 SQLite
+// Save* 系列都是"拍内存快照 → 全表 DELETE+INSERT"。
+//
+// 快照和写库必须在同一把锁里,否则并发调用会丢数据:
+// A 拍快照(60 条)→ B 拍快照(59 条)→ B 先写库 → A 后写库,
+// 库里最后是 A 那份也就罢了 —— 真实情况是 goroutine 调度随机,
+// 晚拍的快照经常先落库,新数据被旧快照整表覆盖。
+//
+// 实测(internal/app 的并发测试):一边追加 60 条历史一边并发触发保存,
+// 库里最后只剩 19~35 条,丢一半以上。而代码里有八处 `go state.SaveHistory()`
+// 是 fire-and-forget 调用的,批量抢购时会同时触发 —— 抢到的订单记录
+// 就这么没了,重启后历史里查无此单。
+//
+// 每类数据一把独立的保存锁:历史和队列互不阻塞。
+// 注意这把锁必须包住整个"快照+写库",而不只是写库。
 func (s *State) SaveQueue() error {
+	s.saveQueueMu.Lock()
+	defer s.saveQueueMu.Unlock()
 	s.QueueMu.Lock()
 	cp := make([]types.QueueItem, len(s.Queue))
 	copy(cp, s.Queue)
@@ -360,6 +382,8 @@ func (s *State) SaveQueue() error {
 
 // SaveHistory 把内存中 History 整表覆盖写入 SQLite
 func (s *State) SaveHistory() error {
+	s.saveHistoryMu.Lock()
+	defer s.saveHistoryMu.Unlock()
 	s.HistoryMu.Lock()
 	cp := make([]types.PurchaseHistoryEntry, len(s.History))
 	copy(cp, s.History)
@@ -369,6 +393,8 @@ func (s *State) SaveHistory() error {
 
 // SaveServers 把内存中 ServerPlans 整表覆盖写入 SQLite
 func (s *State) SaveServers() error {
+	s.saveServersMu.Lock()
+	defer s.saveServersMu.Unlock()
 	s.ServerPlansMu.RLock()
 	cp := make([]types.ServerPlan, len(s.ServerPlans))
 	copy(cp, s.ServerPlans)
