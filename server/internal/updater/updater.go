@@ -33,12 +33,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ovh-buy/server/internal/proxy"
+
 	"github.com/ovh-buy/server/internal/app"
 )
 
 const (
 	// Repo 上游仓库,与 handlers 里的检查逻辑保持一致
-	Repo = "gokele/ovh"
+	Repo = "MrGlaucus/ovh"
 	// UserAgent GitHub API 要求带 UA
 	UserAgent = "OVH-Console-Updater"
 	// ChecksumAsset 校验和文件名(build.sh 发版时生成并上传)
@@ -81,7 +83,7 @@ type Progress struct {
 	Error   string `json:"error,omitempty"`
 }
 
-func httpClient(timeout time.Duration) *http.Client { return &http.Client{Timeout: timeout} }
+func httpClient(timeout time.Duration) *http.Client { return proxy.HTTPClient(timeout) }
 
 // LatestReleaseURL 查最新版本的地址。
 // 可以用环境变量 OVH_UPDATE_API 覆盖:私有镜像/内网分发用得上,

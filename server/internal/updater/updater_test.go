@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,9 @@ func withFakeExe(t *testing.T, content string) string {
 }
 
 func TestPrepareAndInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 文件系统没有 Unix 可执行位,替换后的权限位检查不适用")
+	}
 	newBinary := []byte("#!/bin/sh\necho new version\n")
 	srv, rel := fakeRelease(t, newBinary, "")
 	defer srv.Close()
@@ -155,6 +159,9 @@ func TestPrepareRejectsMissingAsset(t *testing.T) {
 
 // 目录不可写时要早报错(而不是下完 16MB 才失败)
 func TestPrepareRejectsReadOnlyDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 上 os.Chmod 只映射只读属性且对目录无效,无法模拟只读目录")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root 无视目录权限,跳过")
 	}

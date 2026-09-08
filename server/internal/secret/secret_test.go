@@ -3,6 +3,7 @@ package secret
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -116,7 +117,11 @@ func TestKeyFromEnv不落盘(t *testing.T) {
 
 // 退回 .dbkey 时权限必须是 0600 —— 同机器其它用户不能读。
 // (默认路径现在是写进 .env,那条的权限由 TestInit没密钥时写进配置文件 盯着)
+// Windows 的 os.Chmod 对权限位不生效(永远是 666),跳过。
 func TestKeyFile权限(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 无 Unix 权限位概念")
+	}
 	dir := t.TempDir()
 	t.Setenv(KeyEnv, "")
 	os.Unsetenv(KeyEnv)
@@ -153,6 +158,9 @@ func reinit(t *testing.T, dataDir, envPath string) error {
 
 // 没密钥就生成一把并写进配置文件 —— 这是新装机器的默认路径
 func TestInit没密钥时写进配置文件(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 无 Unix 权限位概念")
+	}
 	dir := t.TempDir()
 	env := filepath.Join(dir, ".env")
 	t.Setenv(KeyEnv, "")

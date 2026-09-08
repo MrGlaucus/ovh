@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/updater"
 )
 
@@ -80,7 +81,7 @@ func semverGreater(latest, current string) bool {
 }
 
 // CheckUpdate GET /api/version/check-update
-// 收到请求 → 直连 GitHub 拉 gokele/ovh 最新 release,跟本地 Version 比一下。
+// 收到请求 → 直连 GitHub 拉上游仓库(MrGlaucus/ovh)最新 release,跟本地 Version 比一下。
 // 后端不缓存、不定时跑、不存任何状态,纯粹被动响应:每次访问触发一次拉取。
 // 频率控制全交给前端 React Query 的 staleTime(同一会话 1h 内不重复请求)。
 // dev 版本(未注入 ldflags)也返回 latest 信息,但 hasUpdate 始终 false,避免开发时刷屏。
@@ -89,7 +90,7 @@ func CheckUpdate(state *app.State) gin.HandlerFunc {
 		// 与真正执行更新的 updater 用同一个来源:否则设了 OVH_UPDATE_API(私有镜像)之后,
 		// 这里显示"有 v1.2.3",更新器却去 GitHub 抓另一个版本,用户看到的和装上的对不上
 		url := updater.LatestReleaseURL()
-		client := &http.Client{Timeout: 15 * time.Second}
+		client := proxy.HTTPClient(15 * time.Second)
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("User-Agent", updateUserAgent)
