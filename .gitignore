@@ -79,9 +79,6 @@ web/.next/
 web/.tanstack/
 *.tsbuildinfo
 web/*.tsbuildinfo
-# TanStack Router 自动生成
-web/src/routeTree.gen.ts
-
 # ---------- 四、本地环境噪音 ----------
 .DS_Store
 Thumbs.db
