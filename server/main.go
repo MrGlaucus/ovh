@@ -279,6 +279,7 @@ func main() {
 		// 出站代理配置与各 host 连通性(右上角指示器轮询 / 手动重检)
 		api.GET("/proxy/status", handlers.GetProxyStatus())
 		api.POST("/proxy/check", handlers.CheckProxy())
+		api.GET("/accounts/:id/proxy-status", handlers.AccountProxyStatus(state))
 		api.GET("/version", handlers.GetVersion(state))
 		api.GET("/version/check-update", handlers.CheckUpdate(state))
 		// 在线更新:下载 → 校验 → 替换自己 → 自动重启。gracefulRestart 在下面赋值,

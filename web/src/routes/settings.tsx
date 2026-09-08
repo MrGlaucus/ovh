@@ -671,6 +671,7 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
     appKey: "",
     appSecret: "",
     consumerKey: "",
+    proxyUrl: "",
     zone: acc?.zone || "IE",
   });
   const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
@@ -687,6 +688,7 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
       appKey: form.appKey.trim(),
       appSecret: form.appSecret.trim(),
       consumerKey: form.consumerKey.trim(),
+      proxyUrl: form.proxyUrl.trim(),
       zone: form.zone,
       endpoint: endpointForZone(form.zone),
     };
@@ -726,6 +728,10 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
           <Field label="CONSUMER KEY *">
             <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)}
               placeholder={isEdit ? (acc?.consumerKey || "留空 = 不修改") : "xxxxxxxxxxxxxxxx"} />
+          </Field>
+          <Field label="账户级 OVH 代理" hint="仅该账户的 OVH API 走此代理；留空=该账户明确直连。代理不可用时请求会被阻断，绝不回退直连。">
+            <Input type="password" value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)}
+              placeholder={isEdit && acc?.proxyUrl ? `${acc.proxyUrl}（留空=保持不变）` : "socks5://user:pass@host:port（留空=直连）"} />
           </Field>
           <Field
             label="OVH 子公司 (Zone)"

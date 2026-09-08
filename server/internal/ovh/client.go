@@ -66,10 +66,17 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// SDK 内部默认用 http.DefaultClient(直连);换成共享代理 Transport,
-	// 这样 OUTBOUND_PROXY 对全部 OVH API 调用生效。Timeout 给 0:维持 SDK
-	// 原有的"无总超时"行为,由 Transport 层(dial/TLS)与请求侧控制时限。
-	cli.Client = proxy.HTTPClient(0)
+	// 账户专属 Transport，绝不使用公共 OUTBOUND_PROXY 或别的账户连接池。
+	// 配了代理就固定经该代理；不可达时请求报错，绝不回退直连。
+	if acc.ProxyURL != "" {
+		client, err := proxy.AccountHTTPClient(acc.ProxyURL, 0)
+		if err != nil {
+			return nil, err
+		}
+		cli.Client = client
+	} else {
+		cli.Client = proxy.DirectHTTPClient(0)
+	}
 	f.cache[acc.ID] = cli
 	return cli, nil
 }

@@ -39,9 +39,9 @@ var supportedSchemes = map[string]bool{
 }
 
 var (
-	mu       sync.RWMutex
-	proxyURL *url.URL // nil = 未配置(直连)
-	rawAddr  string   // 原始配置值,报错时引用
+	mu        sync.RWMutex
+	proxyURL  *url.URL // nil = 未配置(直连)
+	rawAddr   string   // 原始配置值,报错时引用
 	transport *http.Transport
 
 	// 探测状态缓存
@@ -160,6 +160,60 @@ func Scheme() string {
 		return "direct"
 	}
 	return strings.ToLower(proxyURL.Scheme)
+}
+
+// ParseAccountProxy 校验账户级代理配置。账户级代理的请求使用专属 Transport，绝不共享全局连接池。
+func ParseAccountProxy(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("账户代理地址无效: %w", err)
+	}
+	if !supportedSchemes[strings.ToLower(u.Scheme)] || u.Hostname() == "" {
+		return nil, fmt.Errorf("账户代理必须是有效的 http/https/socks5/socks5h 地址")
+	}
+	return u, nil
+}
+
+// Mask 脱敏任意代理地址，供账户 API 返回值使用。
+func Mask(raw string) string {
+	u, err := ParseAccountProxy(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	scheme := u.Scheme + "://"
+	rest := u.String()[len(scheme):]
+	if at := strings.Index(rest, "@"); at >= 0 {
+		return scheme + "***@" + rest[at+1:]
+	}
+	return u.String()
+}
+
+// AccountHTTPClient 返回账户 OVH API 专用 client。非空代理不可能静默退回直连：
+// Transport.Proxy 固定返回该代理，代理不可达时请求报错并被调用方拒绝。
+func AccountHTTPClient(raw string, timeout time.Duration) (*http.Client, error) {
+	u, err := ParseAccountProxy(raw)
+	if err != nil {
+		return nil, err
+	}
+	tr := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			if isLoopback(req.URL.Hostname()) {
+				return nil, nil
+			}
+			return u, nil
+		},
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second, MaxIdleConns: 20, MaxIdleConnsPerHost: 10, IdleConnTimeout: 90 * time.Second,
+	}
+	return &http.Client{Transport: tr, Timeout: timeout}, nil
+}
+
+// DirectHTTPClient 明确直连，不读取系统 HTTP_PROXY，账户未配代理时只用它。
+func DirectHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy: nil, DialContext: (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second, MaxIdleConns: 20, MaxIdleConnsPerHost: 10, IdleConnTimeout: 90 * time.Second,
+	}, Timeout: timeout}
 }
 
 // HTTPClient 返回共享代理 Transport 的 http.Client。

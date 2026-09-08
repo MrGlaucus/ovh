@@ -11,6 +11,8 @@ export interface OVHAccount {
   appSecret: string;
   consumerKey: string;
   iam: string;
+  /** 脱敏后的账户 OVH API 专用代理；空=明确直连 */
+  proxyUrl: string;
   isDefault: boolean;
   createdAt: string;
 }
@@ -23,6 +25,7 @@ export interface AccountInput {
   appSecret: string;
   consumerKey: string;
   iam?: string;
+  proxyUrl?: string;
   setDefault?: boolean;
 }
 
