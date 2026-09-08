@@ -1,0 +1,102 @@
+name: Release
+
+# 发版流水线:三平台编译 + checksums + 创建 GitHub Release。
+#
+# 在此之前发版一直是本地 build.sh + gh release 手工做的(build.sh 还不在仓库里),
+# 每次发版都要:装前端依赖 → 编译三个平台 → 算 checksums → 建 Release 上传,
+# 忘了上传 checksums.txt 的话,所有在线更新会直接拒绝(updater 没有校验和就中止)。
+# 把这件事放进流水线,推 v* tag 即发版,产物名与老 build.sh 保持一致。
+#
+# 触发:
+#   - push v* tag:常规发版路径
+#   - workflow_dispatch:补发 / 重发时手动跑,version 留空就用仓库里的 VERSION 文件
+#
+# 产物命名必须与 server/internal/updater.AssetName() 逐字一致:
+#   ovh-server-windows-amd64.exe / ovh-server-linux-amd64 / ovh-server-linux-arm64
+# checksums.txt 用 sha256sum 标准格式("<hex>  <filename>"),
+# updater.fetchChecksum 按这个格式解析,格式错了所有在线更新都会校验失败。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号(不带 v 前缀;留空用仓库 VERSION 文件,如 0.1.12)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 三平台编译并发布 Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 确定版本号
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            VER="${TAG#v}"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+            TAG="v${VER}"
+          else
+            VER="$(cat VERSION)"
+            TAG="v${VER}"
+          fi
+          echo "VER=${VER}" >> "$GITHUB_ENV"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "发版版本: ${TAG}"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 前端构建(输出到 server/web,供 -tags ui embed)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: 三平台交叉编译
+        working-directory: server
+        run: |
+          set -e
+          LDFLAGS="-s -w -X github.com/ovh-buy/server/internal/handlers.Version=${VER}"
+          mkdir -p ../dist
+          echo "==> windows/amd64"
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags ui -trimpath -ldflags "$LDFLAGS" -o ../dist/ovh-server-windows-amd64.exe .
+          echo "==> linux/amd64"
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags ui -trimpath -ldflags "$LDFLAGS" -o ../dist/ovh-server-linux-amd64 .
+          echo "==> linux/arm64"
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags ui -trimpath -ldflags "$LDFLAGS" -o ../dist/ovh-server-linux-arm64 .
+
+      - name: 生成 checksums.txt
+        working-directory: dist
+        run: sha256sum ovh-server-* > checksums.txt
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          files: |
+            dist/ovh-server-windows-amd64.exe
+            dist/ovh-server-linux-amd64
+            dist/ovh-server-linux-arm64
+            dist/checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
