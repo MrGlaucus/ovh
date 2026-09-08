@@ -505,6 +505,8 @@ function DetailContent({
   const [retryInterval, setRetryInterval] = useState("60");
   // 默认不自动付款:自动扣钱必须是用户显式打开的
   const [autoPay, setAutoPay] = useState(false);
+  // 下单延迟:0=立即执行
+  const [delaySeconds, setDelaySeconds] = useState(0);
   const toggleDC = (code: string) =>
     setSelectedDCs((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
   const qty = Math.max(1, Number(quantity) || 1);
@@ -819,6 +821,25 @@ function DetailContent({
               抢到后自动付款（需 OVH 账户已设置默认支付方式）
             </label>
           )}
+          {selectedDCs.length > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              <label className="text-[11px] text-muted-foreground whitespace-nowrap">下单延迟</label>
+              <Input
+                type="text"
+                inputMode="numeric"
+                className="h-7 w-16 text-[11px]"
+                value={delaySeconds > 0 ? String(delaySeconds) : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "" || /^\d*$/.test(v)) {
+                    setDelaySeconds(v === "" ? 0 : Math.min(3600, Number(v)));
+                  }
+                }}
+                placeholder="0"
+              />
+              <span className="text-[10px] text-muted-foreground">秒（0=立即）</span>
+            </div>
+          )}
         </div>
         <Button variant="outline" onClick={onClose} disabled={create.isPending}>
           关闭
@@ -856,6 +877,7 @@ function DetailContent({
               retryInterval: Number(retryInterval) || 60,
               options: selectedValues,
               autoPay,
+              delaySeconds,
             });
             if (result.success > 0) {
               toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);

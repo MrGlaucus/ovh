@@ -259,6 +259,8 @@ function CreateQueueDialog({
   // 这个对话框和服务器卡片弹的那个是两条建任务入口,开关两边都要有 ——
   // 上一版只加了卡片那边,这边漏了
   const [autoPay, setAutoPay] = useState(false);
+  // 下单延迟:0=立即执行
+  const [delaySeconds, setDelaySeconds] = useState(0);
   // 用户选的 addon,按组索引。每次切 planCode 自动清空(让用户重新选)。
   const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
   // 手填的额外 addon planCode(catalog 里没分组覆盖到的、或用户想加的特殊 addon)
@@ -388,6 +390,7 @@ function CreateQueueDialog({
       retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
       options: parsedOptions,
       autoPay,
+      delaySeconds,
     });
     if (result.success > 0) {
       toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
@@ -578,6 +581,27 @@ function CreateQueueDialog({
               ? "下单成功后用 OVH 默认支付方式自动扣款（需先在 OVH 设置好）；下单即放弃 14 天撤销期"
               : "不勾则只下单：需在订单过期前自己付款；下单即放弃 14 天撤销期"}
           </p>
+
+          <div>
+            <label className="block text-[13px] font-medium mb-1.5">
+              下单延迟（秒，0=立即执行）
+            </label>
+            <Input
+              type="text"
+              inputMode="numeric"
+              value={delaySeconds > 0 ? String(delaySeconds) : ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "" || /^\d*$/.test(v)) {
+                  setDelaySeconds(v === "" ? 0 : Math.min(3600, Number(v)));
+                }
+              }}
+              placeholder="0 = 立即"
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">
+              入队后等待 N 秒才开始首次抢购
+            </p>
+          </div>
 
           {/* 可选配置:planCode 在 catalog 里 → 走 chip 选择;
                 planCode 自定义不在 catalog → 走手填。两者互斥不同时存在。 */}

@@ -81,6 +81,7 @@ export function useCreateQueueItem() {
       retryInterval?: number;
       quantity?: number;
       autoPay?: boolean;
+      delaySeconds?: number;
     }) => {
       const qty = Math.max(1, payload.quantity ?? 1);
       const dcs = payload.datacenters;
@@ -96,6 +97,7 @@ export function useCreateQueueItem() {
               retryInterval: payload.retryInterval,
               options: payload.options || [],
               autoPay: payload.autoPay ?? false,
+              delaySeconds: payload.delaySeconds ?? 0,
             });
             success++;
           } catch (e) {

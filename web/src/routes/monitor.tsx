@@ -457,7 +457,7 @@ function AddSubscriptionDialog({
   const [quantity, setQuantity] = useState(1);
   // 默认不自动付款:自动扣钱必须显式打开
   const [autoPay, setAutoPay] = useState(false);
-  // 下单延迟:0=跟随全局 AUTO_ORDER_DELAY_SECONDS
+  // 下单延迟:0=立即下单
   const [delaySeconds, setDelaySeconds] = useState(0);
   // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
   const [globalAccountId] = useActiveAccount();
@@ -704,7 +704,7 @@ function AddSubscriptionDialog({
               </p>
               <div className="mt-3">
                 <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  下单延迟（秒，0=跟随全局）
+                  下单延迟（秒，0=立即下单）
                 </label>
                 <Input
                   type="number"
@@ -717,11 +717,11 @@ function AddSubscriptionDialog({
                       setDelaySeconds(Math.max(0, Math.min(3600, Math.floor(v))));
                     }
                   }}
-                  placeholder="0 = 跟随全局"
+                  placeholder="0 = 立即下单"
                 />
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  补货后等待 N 秒再下单。0 或留空 = 跟随右上角全局延迟配置。
-                  仅对服务器监控生效，VPS 延迟见右上角
+                  补货后等待 N 秒再下单。0 或留空 = 立即执行，不延迟。
+                  每个订阅独立配置，仅对服务器监控生效
                 </p>
               </div>
               <label className="flex items-center gap-2 mt-2 cursor-pointer text-[12px]">
