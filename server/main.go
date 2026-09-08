@@ -153,10 +153,21 @@ func main() {
 	}
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// CORS 只放行同机来源。
+	//
+	// 以前是 AllowAllOrigins:true,配上「API_SECRET_KEY 未设时默认 123456」和
+	// 「GET /api/accounts 下发解密后的凭据明文」,构成一条完整的窃取链:
+	// 用户开着控制台时访问任意网页,那个页面只要
+	//   fetch('http://127.0.0.1:19998/api/accounts', {headers:{'X-API-Key':'123456'}})
+	// 就能读走全部 OVH 凭据 —— 浏览器本身就是攻击载体,「只监听本地」挡不住。
+	//
+	// 前端和后端同源部署(单二进制 embed)时根本不需要 CORS;
+	// 分开跑时只有本机的 dev server 需要。所以白名单化,
+	// 额外来源用 CORS_ALLOWED_ORIGINS 显式声明(逗号分隔)。
 	r.Use(cors.New(cors.Config{
-		AllowAllOrigins: true,
-		AllowMethods:    []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
-		AllowHeaders:    []string{"Content-Type", "Authorization", "X-API-Key", "X-Request-Time"},
+		AllowOrigins: allowedOrigins(state.Port),
+		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"},
+		AllowHeaders: []string{"Content-Type", "Authorization", "X-API-Key", "X-Request-Time"},
 		// X-Partial-Failures:部分明细拉取失败的计数(账单/退款/邮件等走响应头下发),
 		// 跨源部署时不列进 ExposeHeaders 浏览器就读不到,前端的"部分失败"提示会恒不显示
 		ExposeHeaders:    []string{"X-Cache-Warning", "X-Partial-Failures", "X-Cache-Age-Seconds"},
@@ -619,4 +630,27 @@ func isTrue(v string) bool {
 		return true
 	}
 	return false
+}
+
+// allowedOrigins CORS 白名单:本机的前端来源 + 用户显式声明的。
+//
+// 默认只有 localhost / 127.0.0.1 的后端端口和 Vite dev 端口。
+// 反向代理或跨机访问的场景用 CORS_ALLOWED_ORIGINS 加(逗号分隔完整来源,
+// 如 https://ovh.example.com)。
+func allowedOrigins(port string) []string {
+	if port == "" {
+		port = "19998"
+	}
+	out := []string{}
+	for _, host := range []string{"localhost", "127.0.0.1"} {
+		for _, p := range []string{port, "19997"} { // 19997 = Vite dev server
+			out = append(out, "http://"+host+":"+p)
+		}
+	}
+	for _, o := range strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, o)
+		}
+	}
+	return out
 }

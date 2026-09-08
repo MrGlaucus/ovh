@@ -21,6 +21,12 @@ import (
 var (
 	runningMu sync.Mutex
 	running   bool
+	// generation 循环代际号,每次 Start 递增。
+	// 只翻 running 布尔的话,"停止后立刻启动"会让旧循环活下来:
+	// 它下一个检查点看到 running 又是 true,不退出 → 两个循环并存 →
+	// 同一次补货下两次单。VPS 侧界面就一个 停止/启动 按钮,点两下即可复现,
+	// 而 VPS 循环退出延迟很大(每订阅一次 10 秒超时的 HTTP + 下单往返)。
+	generation int64
 
 	// TG 健康检查节流。loop 每 5 分钟 verify 一次,失败自停。
 	tgCheckMu   sync.Mutex
@@ -272,7 +278,14 @@ func checkVPSDCAvailabilityOS(state *app.State, planCode, ovhSubsidiary, osFilte
 }
 
 // SaveSubscriptions 把订阅 + check_interval 写回 SQLite
+// saveSubsMu 保存串行化,同 monitor.saveMu。
+// VPS 这边尤其确凿:后台监控循环每轮都调 SaveSubscriptions,
+// 而 handler 有 5 处也在调,后台和用户点击必然并发。
+var saveSubsMu sync.Mutex
+
 func SaveSubscriptions(state *app.State) error {
+	saveSubsMu.Lock()
+	defer saveSubsMu.Unlock()
 	state.VPSSubsMu.Lock()
 	subs := make([]types.VPSSubscription, len(state.VPSSubscriptions))
 	copy(subs, state.VPSSubscriptions)
@@ -374,12 +387,25 @@ func SendSummaryNotification(state *app.State, planCode, ovhSubsidiary string, d
 	return result
 }
 
+// MonitorLoop 兼容入口:按当前代际号跑。
 func MonitorLoop(state *app.State) {
+	runningMu.Lock()
+	gen := generation
+	runningMu.Unlock()
+	monitorLoopGen(state, gen)
+}
+
+// stillMine 这个循环是不是还该继续跑:running 为真,且代际号还是自己那一代
+func stillMine(gen int64) bool {
+	runningMu.Lock()
+	defer runningMu.Unlock()
+	return running && generation == gen
+}
+
+func monitorLoopGen(state *app.State, gen int64) {
 	state.Logger.Info("VPS监控循环已启动", "vps_monitor")
 	for {
-		runningMu.Lock()
-		isRunning := running
-		runningMu.Unlock()
+		isRunning := stillMine(gen)
 		if !isRunning {
 			break
 		}
@@ -398,9 +424,7 @@ func MonitorLoop(state *app.State) {
 		if len(subs) > 0 {
 			state.Logger.Info(fmt.Sprintf("开始检查 %d 个VPS订阅...", len(subs)), "vps_monitor")
 			for idx := range subs {
-				runningMu.Lock()
-				isRunning = running
-				runningMu.Unlock()
+				isRunning = stillMine(gen)
 				if !isRunning {
 					break
 				}
@@ -563,15 +587,11 @@ func MonitorLoop(state *app.State) {
 			state.Logger.Info("当前无VPS订阅，跳过检查", "vps_monitor")
 		}
 
-		runningMu.Lock()
-		isRunning = running
-		runningMu.Unlock()
+		isRunning = stillMine(gen)
 		if isRunning {
 			state.Logger.Info(fmt.Sprintf("等待 %d 秒后进行下次VPS检查...", interval), "vps_monitor")
 			for i := 0; i < interval; i++ {
-				runningMu.Lock()
-				isRunning = running
-				runningMu.Unlock()
+				isRunning = stillMine(gen)
 				if !isRunning {
 					break
 				}
@@ -590,12 +610,19 @@ func Start(state *app.State) bool {
 		return false
 	}
 	running = true
+	// 代际号:Start/Stop 只翻布尔的话,"停止后立刻启动"会让旧循环活下来 ——
+	// 它下一个检查点看到 running 又是 true,不退出,于是两个循环并存,
+	// 同一次补货被下两次单(VPS 侧界面就一个 停止/启动 按钮,点两下即可复现,
+	// 而 VPS 循环退出延迟很大:每订阅一次 10 秒超时的 HTTP + 下单的五六次往返)。
+	// 每个循环记住自己出生时的代际号,不是当前代就退出。
+	generation++
+	gen := generation
 	runningMu.Unlock()
 	// 重置 TG 检查时间戳,保证启动后第一轮一定 verify
 	tgCheckMu.Lock()
 	lastTGCheck = time.Time{}
 	tgCheckMu.Unlock()
-	go MonitorLoop(state)
+	go monitorLoopGen(state, gen)
 	state.Logger.Info(fmt.Sprintf("VPS监控已启动 (检查间隔: %d秒)", state.VPSCheckInterval), "vps_monitor")
 	return true
 }

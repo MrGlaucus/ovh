@@ -78,6 +78,20 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_pay", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// VPS 订阅的自动下单配置。这四个字段在 types.VPSSubscription 里早就有了,
+	// 但表里一直没列、行结构也没映射 —— 写入被静默丢弃,读回来全是零值。
+	// 后果是 VPS 自动下单重启即失效(界面开关还亮着),而且删任意账户时
+	// reloadAfterAccountDelete 会用零值回灌内存,当场清零。
+	for _, c := range [][2]string{
+		{"auto_order", "INTEGER NOT NULL DEFAULT 0"},
+		{"quantity", "INTEGER NOT NULL DEFAULT 0"},
+		{"auto_pay", "INTEGER NOT NULL DEFAULT 0"},
+		{"os", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := db.addColumnIfMissing("vps_subscriptions", c[0], c[1]); err != nil {
+			return err
+		}
+	}
 	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}

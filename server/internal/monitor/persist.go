@@ -130,6 +130,12 @@ func (m *Monitor) LoadFromDB() {
 
 // SaveToDB 把订阅 + known_servers 写回 SQLite
 func (m *Monitor) SaveToDB() {
+	// 保存串行化:和 app.State.Save* 同一个问题 —— "拍快照 → 全表覆盖",
+	// 两个并发保存里晚拍快照的可能先落库,新数据被旧快照整表覆盖。
+	// 实测 60 条订阅并发保存,库里只剩 9~17 条。
+	// 六个 HTTP 调用点(增/删/改/批量添加)会并发进来。
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	m.subsMu.Lock()
 	subs := make([]types.Subscription, 0, len(m.subscriptions))
 	for _, s := range m.subscriptions {
