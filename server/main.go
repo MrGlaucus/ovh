@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -117,18 +116,6 @@ func main() {
 		state.Port = "19998"
 	}
 
-	// 自动下单延迟:监控跳变 / Telegram 触发的下单,入队后先等 N 秒才开始抢购。
-	// 解析失败或负数一律按 0(不延迟)并大声说 —— 延迟静默失效比不延迟更危险,
-	// 用户会以为"还有缓冲时间"其实单已经下了。
-	state.AutoOrderDelaySeconds = 0
-	if raw := strings.TrimSpace(os.Getenv("AUTO_ORDER_DELAY_SECONDS")); raw != "" {
-		if n, err := strconv.Atoi(raw); err != nil || n < 0 {
-			console.Error("AUTO_ORDER_DELAY_SECONDS 解析失败,已按 0(不延迟)处理: " + raw)
-		} else {
-			state.AutoOrderDelaySeconds = n
-			console.Info(fmt.Sprintf("自动下单延迟已启用: %d 秒(仅监控跳变与 Telegram 触发,手动下单不受影响)", n))
-		}
-	}
 	state.LoadAll()
 
 	// 密钥对不上时凭据会全部解成空串。只静默显示"空账户"的话,用户看到的现象是
@@ -292,8 +279,6 @@ func main() {
 		// 出站代理配置与各 host 连通性(右上角指示器轮询 / 手动重检)
 		api.GET("/proxy/status", handlers.GetProxyStatus())
 		api.POST("/proxy/check", handlers.CheckProxy())
-		// 自动下单延迟(右上角指示器,只读,重启生效)
-		api.GET("/delay-config", handlers.GetDelayConfig(state))
 		api.GET("/version", handlers.GetVersion(state))
 		api.GET("/version/check-update", handlers.CheckUpdate(state))
 		// 在线更新:下载 → 校验 → 替换自己 → 自动重启。gracefulRestart 在下面赋值,

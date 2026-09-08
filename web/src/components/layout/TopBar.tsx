@@ -2,7 +2,6 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import { MobileMenu } from "./MobileMenu";
 import { ProxyStatus } from "./ProxyStatus";
-import { DelayStatus } from "./DelayStatus";
 
 /**
  * 顶部 56px 细 bar：只显示面包屑。⌘K 命令面板入口已移除，
@@ -52,7 +51,6 @@ export function TopBar() {
       </div>
       <div className="ml-auto flex items-center gap-2 flex-shrink-0">
         <ProxyStatus />
-        <DelayStatus />
       </div>
     </header>
   );

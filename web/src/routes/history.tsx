@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, ExternalLink, AlertCircle, Hourglass } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, ExternalLink, AlertCircle, Hourglass, Timer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -226,6 +226,7 @@ function HistoryPage() {
                   <th className="px-4 py-3">配置</th>
                   <th className="px-4 py-3">价格</th>
                   <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3" title="下单时配置的延迟秒数;立即=入队即抢">延迟</th>
                   <th className="px-4 py-3">时间</th>
                   <th className="px-4 py-3" title="付款窗口:下单不会自动扣款,倒计时结束前未付款订单作废">
                 付款剩余
@@ -295,6 +296,16 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
           </Chip>
         ) : (
           <Chip tone="danger">失败</Chip>
+        )}
+      </td>
+      <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
+        {item.delaySeconds && item.delaySeconds > 0 ? (
+          <Chip tone="info" title="入队后先等这么久才开始首次抢购">
+            <Timer className="w-3 h-3" />
+            延迟 {item.delaySeconds}s
+          </Chip>
+        ) : (
+          <Chip tone="default">立即</Chip>
         )}
       </td>
       <td className="px-4 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
@@ -367,6 +378,16 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
           </Chip>
           ) : (
             <Chip tone="danger">失败</Chip>
+          )}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {item.delaySeconds && item.delaySeconds > 0 ? (
+            <Chip tone="info" className="text-[10px]" title="入队后先等这么久才开始首次抢购">
+              <Timer className="w-3 h-3" />
+              延迟 {item.delaySeconds}s
+            </Chip>
+          ) : (
+            <Chip tone="default" className="text-[10px]">立即</Chip>
           )}
         </div>
         <div className={`text-[11px] text-muted-foreground break-all ${isExpired ? "line-through" : ""}`}>

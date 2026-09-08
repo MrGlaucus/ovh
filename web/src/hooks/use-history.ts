@@ -27,6 +27,8 @@ export interface PurchaseHistory {
    *  没有它,"下单成功"到底付没付永远不知道。空 = 还没查到 */
   orderStatus?: string;
   orderStatusAt?: string;
+  /** 下单时配置的延迟秒数(订阅级/自动下单带入),0=立即下单 */
+  delaySeconds?: number;
   price?: {
     withTax?: number;
     withoutTax?: number;

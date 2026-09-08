@@ -359,12 +359,6 @@ func autoOrderOnRestock(state *app.State, sub types.VPSSubscription, dcs []map[s
 		}
 		autoOrderDcs(state, sub, dcs)
 	}
-	if state.AutoOrderDelaySeconds > 0 {
-		state.Logger.Info(fmt.Sprintf("[VPS下单] %s 已预约 %d 秒后自动下单(%d 个补货机房)",
-			sub.PlanCode, state.AutoOrderDelaySeconds, len(dcs)), "vps_purchase")
-		time.AfterFunc(time.Duration(state.AutoOrderDelaySeconds)*time.Second, run)
-		return
-	}
 	run()
 }
 

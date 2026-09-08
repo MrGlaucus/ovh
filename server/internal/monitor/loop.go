@@ -240,7 +240,7 @@ func (m *Monitor) Stop() bool {
 // batchOrder 监控触发的批量下单:逐个调本地 quick-order 入队。
 // accountID:auto_order 账户;空时 batchOrder 不应该被调到(check.go 的 guard 已挡住),
 // 这里再做一次防御性检查。
-func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{}, targets []notification, quantity int, accountID string, autoPay bool) {
+func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{}, targets []notification, quantity int, accountID string, autoPay bool, delaySeconds int) {
 	if accountID == "" {
 		m.state.Logger.Warn("[monitor->order] 跳过自动下单: 订阅未指定 auto_order 账户", "monitor")
 		return
@@ -291,7 +291,8 @@ func (m *Monitor) batchOrder(planCode string, configInfo map[string]interface{},
 			"fromMonitor":        true,
 			"skipDuplicateCheck": true,
 			// 订阅上显式开了才带过去;默认 false,不替用户扣钱
-			"autoPay": autoPay,
+			"autoPay":       autoPay,
+			"delay_seconds": delaySeconds,
 		}
 		body, _ := json.Marshal(payload)
 		req, _ := http.NewRequest(http.MethodPost,

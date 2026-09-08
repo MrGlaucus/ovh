@@ -118,11 +118,6 @@ type State struct {
 	APIKey string
 	Port   string
 
-	// AutoOrderDelaySeconds 自动触发下单(监控跳变 / Telegram)的延迟秒数。
-	// 由 main 从 AUTO_ORDER_DELAY_SECONDS 解析写入;0 = 不延迟。
-	// 给用户留出"看到通知→进队列取消"的窗口,或避开上架瞬间的限流。
-	AutoOrderDelaySeconds int
-
 	// 多账户:内存里持有全部 OVH 账户副本(启动从 SQLite 加载),
 	// OVH Factory 通过 FindAccount 闭包按 id 查询
 	AccountsMu sync.RWMutex

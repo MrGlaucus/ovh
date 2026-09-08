@@ -107,6 +107,8 @@ func (db *DB) migrate() error {
 		{"order_status_at", "TEXT NOT NULL DEFAULT ''"},
 		{"timing", "TEXT"},
 		{"total_ms", "INTEGER NOT NULL DEFAULT 0"},
+		// delay_seconds:下单时配置的延迟秒数,历史页回溯"这单等了多久才开抢"
+		{"delay_seconds", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := db.addColumnIfMissing("history", c[0], c[1]); err != nil {
 			return err
@@ -116,6 +118,10 @@ func (db *DB) migrate() error {
 		return err
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// delay_seconds:每个订阅可独立覆盖的延迟秒数,0=跟随全局 AUTO_ORDER_DELAY_SECONDS
+	if err := db.addColumnIfMissing("monitor_subscriptions", "delay_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {

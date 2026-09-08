@@ -33,6 +33,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			FromMonitor        bool     `json:"fromMonitor"`
 			SkipDuplicateCheck bool     `json:"skipDuplicateCheck"`
 			AutoPay            bool     `json:"autoPay"`
+			DelaySeconds       int      `json:"delay_seconds"` // 订阅级延迟,0=跟随全局
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" || body.Datacenter == "" {
@@ -192,11 +193,10 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 
 		now := types.NowISO()
-		// 监控触发的下单才应用全局延迟(AUTO_ORDER_DELAY_SECONDS):
-		// 给用户留出"看到通知→进队列取消"的窗口。手动/外部调用立即执行。
+		// 监控触发的下单:订阅级延迟,0=立即执行。
 		delaySec := 0
-		if body.FromMonitor {
-			delaySec = state.AutoOrderDelaySeconds
+		if body.FromMonitor && body.DelaySeconds > 0 {
+			delaySec = body.DelaySeconds
 		}
 		item := types.QueueItem{
 			ID:         uuid.NewString(),

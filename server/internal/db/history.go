@@ -28,6 +28,7 @@ type historyRow struct {
 	OrderStatusAt  string         `db:"order_status_at"`
 	TimingJSON     sql.NullString `db:"timing"`
 	TotalMs        int64          `db:"total_ms"`
+	DelaySeconds   int            `db:"delay_seconds"`
 }
 
 func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
@@ -75,6 +76,7 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		OrderStatusAt:  r.OrderStatusAt,
 		Timing:         timing,
 		TotalMs:        r.TotalMs,
+		DelaySeconds:   r.DelaySeconds,
 	}
 }
 
@@ -103,6 +105,7 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		OrderStatus:    h.OrderStatus,
 		OrderStatusAt:  h.OrderStatusAt,
 		TotalMs:        h.TotalMs,
+		DelaySeconds:   h.DelaySeconds,
 	}
 	if len(h.Timing) > 0 {
 		if tj, err := json.Marshal(h.Timing); err == nil {
@@ -154,11 +157,11 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 			INSERT INTO history
 			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
 			 error_message, purchase_time, attempt_count, expiration_time, retraction_time, price,
-			 order_status, order_status_at, timing, total_ms)
+			 order_status, order_status_at, timing, total_ms, delay_seconds)
 			VALUES
 			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 			 :error_message, :purchase_time, :attempt_count, :expiration_time, :retraction_time, :price,
-			 :order_status, :order_status_at, :timing, :total_ms)
+			 :order_status, :order_status_at, :timing, :total_ms, :delay_seconds)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert history %s: %w", h.ID, err)

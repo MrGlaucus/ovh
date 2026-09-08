@@ -9,6 +9,7 @@ import {
   Clock,
   Plus,
   Loader2,
+  Timer,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -705,8 +706,8 @@ function QueueRow({
   const chip = (() => {
     if (inDelayWindow)
       return (
-        <Chip tone="warning">
-          <StatusDot tone="warning" pulse size="xs" />延迟中
+        <Chip tone="warning" title={`入队后先等 ${item.delaySeconds} 秒才开始首次抢购`}>
+          <StatusDot tone="warning" pulse size="xs" />延迟中 {item.delaySeconds}s
         </Chip>
       );
     if (item.status === "running")
@@ -754,6 +755,13 @@ function QueueRow({
             {item.autoPay && (
               <Chip tone="warning" title="下单成功后会用 OVH 默认支付方式自动扣款">
                 自动付款
+              </Chip>
+            )}
+            {/* 延迟配置常驻可见:倒计时走完、任务开始跑之后,用户仍能看到这条任务当初配置了多久延迟 */}
+            {!!item.delaySeconds && item.delaySeconds > 0 && !inDelayWindow && (
+              <Chip tone="info" title="入队后先等这么久才开始首次抢购">
+                <Timer className="w-3 h-3" />
+                下单延迟 {item.delaySeconds}s
               </Chip>
             )}
             <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />

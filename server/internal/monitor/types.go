@@ -101,6 +101,7 @@ type Subscription struct {
 	Quantity           int               `json:"quantity,omitempty"`
 	AutoOrderAccountID string            `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	AutoPay            bool              `json:"autoPay,omitempty"`            // 下单后自动付款(显式开关,默认关)
+	DelaySeconds       int               `json:"delaySeconds,omitempty"`       // 补货后延迟 N 秒下单,0=跟随全局
 
 	// —— 本轮可用性查询的诊断信息 ——
 	// 只存内存、不落库(每轮检查都会重算,持久化没有意义)。
@@ -132,6 +133,7 @@ type subCheckConfig struct {
 	Quantity           int
 	AutoOrderAccountID string
 	AutoPay            bool
+	DelaySeconds       int
 }
 
 func (s *Subscription) checkConfig() subCheckConfig {
@@ -148,6 +150,7 @@ func (s *Subscription) checkConfig() subCheckConfig {
 		Quantity:           s.Quantity,
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
+		DelaySeconds:       s.DelaySeconds,
 	}
 }
 
@@ -243,6 +246,7 @@ func (s *Subscription) snapshot() *Subscription {
 		Quantity:           s.Quantity,
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
+		DelaySeconds:       s.DelaySeconds,
 
 		LastCheckAt:         s.LastCheckAt,
 		LastCheckAccountID:  s.LastCheckAccountID,

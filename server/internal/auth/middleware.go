@@ -27,12 +27,10 @@ func DefaultWhitelist() map[string]struct{} {
 		"/api/version/check-update":   {}, // 更新检查也免鉴权,登录前可提示
 		"/api/internal/monitor/price": {},
 		"/api/telegram/webhook":       {},
-		// 两个右上角指示器的只读端点。首次运行会被 AuthGate / OvhCredsGate
+		// 右上角代理指示器的只读端点。首次运行会被 AuthGate / OvhCredsGate
 		// 全屏遮罩拦住(那时还没有 key),而用户恰恰需要在那两层遮罩上
-		// 确认代理连通性。内容不敏感:代理地址已脱敏(user:pass → ***),
-		// 延迟秒数只是公开行为配置。
+		// 确认代理连通性。代理地址已脱敏(user:pass → ***)。
 		"/api/proxy/status":  {},
-		"/api/delay-config":  {},
 	}
 }
 

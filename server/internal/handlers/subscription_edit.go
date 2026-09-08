@@ -43,12 +43,13 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			Quantity           *int      `json:"quantity"`
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 			AutoPay            *bool     `json:"autoPay"`
+			DelaySeconds       *int      `json:"delaySeconds"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
 			return
 		}
-
+		
 		// 先取当前值作为默认,再用 body 里给了的字段覆盖
 		cur := mon.SubscriptionConfig(planCode)
 		datacenters := cur.Datacenters
@@ -58,7 +59,8 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		quantity := cur.Quantity
 		accountID := cur.AutoOrderAccountID
 		autoPay := cur.AutoPay
-
+		delaySeconds := cur.DelaySeconds
+		
 		if body.Datacenters != nil {
 			datacenters = *body.Datacenters
 		}
@@ -76,6 +78,12 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		}
 		if body.AutoPay != nil {
 			autoPay = *body.AutoPay
+		}
+		if body.DelaySeconds != nil {
+			delaySeconds = *body.DelaySeconds
+			if delaySeconds < 0 {
+				delaySeconds = 0
+			}
 		}
 		if body.AutoOrderAccountID != nil {
 			accountID = *body.AutoOrderAccountID
@@ -99,7 +107,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 
 		// AddSubscription 对已存在的 planCode 是就地改配置,不会重置 LastStatus / History
 		mon.AddSubscription(planCode, datacenters, notifyAvailable, notifyUnavailable,
-			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay)
+			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay, delaySeconds)
 		mon.SaveToDB()
 		state.Logger.Info("更新服务器订阅配置: "+planCode, "monitor")
 

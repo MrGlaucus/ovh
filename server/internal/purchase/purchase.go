@@ -833,6 +833,7 @@ func recordSuccess(state *app.State, item *types.QueueItem, orderID, orderURL, e
 		OrderURL:     orderURL,
 		PurchaseTime: now,
 		AttemptCount: item.RetryCount,
+		DelaySeconds: item.DelaySeconds,
 	}
 	if expirationTime != "" {
 		entry.ExpirationTime = expirationTime
@@ -861,6 +862,7 @@ func recordFailure(state *app.State, item *types.QueueItem, errMsg string) {
 			state.History[i].PurchaseTime = now
 			state.History[i].AttemptCount = item.RetryCount
 			state.History[i].Options = item.Options
+			state.History[i].DelaySeconds = item.DelaySeconds
 			state.Logger.Info("更新抢购历史(失败) 任务ID: "+item.ID, "purchase")
 			go state.SaveHistory()
 			return
@@ -878,6 +880,7 @@ func recordFailure(state *app.State, item *types.QueueItem, errMsg string) {
 		ErrorMessage: &em,
 		PurchaseTime: now,
 		AttemptCount: item.RetryCount,
+		DelaySeconds: item.DelaySeconds,
 	}
 	state.History = append(state.History, entry)
 	state.Logger.Info("创建抢购历史(失败) 任务ID: "+item.ID, "purchase")

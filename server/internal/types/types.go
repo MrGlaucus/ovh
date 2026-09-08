@@ -142,6 +142,9 @@ type PurchaseHistoryEntry struct {
 	OrderStatus string `json:"orderStatus,omitempty"`
 	// OrderStatusAt 上次刷新状态的时间,给节流和"这是多久以前的状态"用
 	OrderStatusAt string `json:"orderStatusAt,omitempty"`
+	// DelaySeconds 下单时配置的延迟秒数(订阅级/自动下单带入),0=立即下单。
+	// 落库让历史页能回溯"这一单当时等了多久才开抢"。
+	DelaySeconds int `json:"delaySeconds,omitempty"`
 }
 
 // PhaseTiming 抢购链路上一个阶段的墙钟耗时
@@ -206,6 +209,9 @@ type Subscription struct {
 	AutoOrderAccountID string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	// AutoPay 下单成功后用默认支付方式自动付款(显式开关,默认关)
 	AutoPay bool `json:"autoPay,omitempty"`
+	// DelaySeconds 补货后延迟多少秒才下单。0=跟随全局 AUTO_ORDER_DELAY_SECONDS。
+	// 每个订阅可独立覆盖,适配不同型号的抢购策略。
+	DelaySeconds int `json:"delaySeconds,omitempty"`
 }
 
 // VPSSubscription VPS 监控订阅

@@ -147,13 +147,7 @@ OUTBOUND_PROXY=                  # 所有外网请求走这个代理: http / htt
                                  # 本机自调(127.0.0.1)强制直连不走代理
                                  # 右上角「代理」指示器逐 host 展示连通性(60s 自动重检)
 
-# --- 自动下单延迟（可不填，0=不延迟）---
-AUTO_ORDER_DELAY_SECONDS=60      # 监控补货跳变 / Telegram 触发的下单,入队后先等 N 秒才开始抢购
-                                 # 留出"看到通知→进队列取消"的窗口,或避开上架瞬间的限流
-                                 # 只作用自动触发的下单,网页手动创建的任务立即执行
-                                 # 重启不重新计时(按任务创建时间续算),队列页显示倒计时
-```
-
+# ---
 OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab 录入,落 SQLite `ovh_accounts` 表(每个账户一行,独立 endpoint / AppKey / Secret / ConsumerKey / Zone),**加密存储**。`.gitignore` 默认拒绝所有 `.env` 入库。
 
 通知地址在设置页的「通知通道」里配,不走 env。Telegram 和自定义 Webhook 至少配一个 —— 只要还有一条能用,监控就继续跑。
@@ -189,7 +183,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 | **在线更新** | ✅ | 点一下自替换 + 自动重启,强制校验 SHA256,新版起不来自动回滚 |
 | **控制台接入方式可选** | ✅ | HTML5 KVM / **Java KVM(.jnlp)** / SOL(URL) / SOL(SSH),由用户选 |
 | **出站代理** | ✅ | `OUTBOUND_PROXY` 配置,OVH / Telegram / GitHub / Webhook 等所有外网请求统一走 http/https/socks5 代理,回环强制直连,右上角指示器逐 host 展示连通性 |
-| **自动下单延迟** | ✅ | `AUTO_ORDER_DELAY_SECONDS` 配置,监控跳变 / Telegram / VPS 触发的下单先等 N 秒再抢,手动下单不受影响,队列页显示倒计时 |
+| **自动下单延迟** | ✅ | 每个监控订阅独立设置,0=立即执行,添加/编辑订阅页面可配,队列页显示倒计时 |
 | 配置绑定狙击 | ❌ | 已下线 |
 
 
@@ -241,12 +235,11 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 - 不配置 = 直连,无默认行为;配了但 URL 非法会大声告警并按直连跑(防止"以为走了代理其实没走")
 
 ### 自动下单延迟
-- **生效范围**:监控补货跳变、Telegram 触发、VPS 补货触发的**自动**下单,入队后先等 N 秒才开始抢购;网页上手动创建的任务立即执行
-- **用途**:留出"看到通知→进队列取消"的窗口,或避开上架瞬间的限流
-- **不阻塞**:队列层"到期判定",延迟期间不查库存、不占并发槽;VPS 链路用异步 timer,不阻塞监控循环
+- **订阅级独立配置**:每个监控订阅在添加/编辑页面可设独立延迟秒数,0=立即执行,不同型号可设不同策略
+- **生效范围**:仅监控补货跳变触发的自动下单;TG 一键下单、网页手动创建、VPS 补货均立即执行
+- **不阻塞**:队列层"到期判定",延迟期间不查库存、不占并发槽
 - **重启安全**:延迟随任务落库(`queue.delay_seconds`),重启按任务创建时间续算剩余等待,不会从头等
-- **倒计时可见**:延迟中的任务在队列页显示「延迟中」徽章 + 剩余秒数,可随时取消;右上角「延迟 Ns」chip 常驻提示当前配置
-- 不配置(0)= 立即下单,无默认行为;配了但解析失败/负数会大声告警并按 0 处理("延迟静默失效比不延迟更危险")
+- **倒计时可见**:延迟中的任务在队列页显示「延迟中」徽章 + 剩余秒数,可随时取消
 
 ## 持久化
 
@@ -282,7 +275,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 
 ## 安全 / 鉴权
 
-- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update` / `/api/proxy/status` / `/api/delay-config`)都要求 `X-API-Key` 请求头。后两个只读端点进白名单,是因为首次运行被 AuthGate / OvhCredsGate 全屏遮罩拦着,右上角的代理/延迟指示器登录前就得可见(代理地址已脱敏)
+- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update` / `/api/proxy/status`)都要求 `X-API-Key` 请求头。`/api/proxy/status` 进白名单,是因为首次运行被 AuthGate / OvhCredsGate 全屏遮罩拦着,右上角的代理指示器登录前就得可见(代理地址已脱敏)
 - 两层全屏 gate:AuthGate(API 密钥) + OvhCredsGate(至少一个 OVH 账户)
 - API Key 存浏览器 localStorage,失效自动清除并要求重新输入
 - OVH 凭据落 SQLite `ovh_accounts` 表,前端通过 OvhCredsGate / 设置页"OVH 账户" tab 录入

@@ -153,7 +153,4 @@ export const qk = {
 
   // 出站代理状态(右上角指示器)
   proxyStatus: () => ["proxy", "status"] as const,
-
-  // 自动下单延迟配置(右上角指示器)
-  delayConfig: () => ["delay-config"] as const,
 } as const;

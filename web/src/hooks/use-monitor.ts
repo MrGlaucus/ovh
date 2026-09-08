@@ -15,6 +15,8 @@ export interface MonitorSubscription {
   autoOrderAccountId?: string;
   /** 下单成功后自动付款(显式开关,默认关) */
   autoPay?: boolean;
+  /** 补货后延迟 N 秒下单,0=跟随全局 AUTO_ORDER_DELAY_SECONDS */
+  delaySeconds?: number;
   lastStatus: Record<string, string>;
   createdAt: string;
 }

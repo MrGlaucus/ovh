@@ -457,6 +457,8 @@ function AddSubscriptionDialog({
   const [quantity, setQuantity] = useState(1);
   // 默认不自动付款:自动扣钱必须显式打开
   const [autoPay, setAutoPay] = useState(false);
+  // 下单延迟:0=跟随全局 AUTO_ORDER_DELAY_SECONDS
+  const [delaySeconds, setDelaySeconds] = useState(0);
   // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
   const [globalAccountId] = useActiveAccount();
   const accountsQ = useAccounts();
@@ -477,6 +479,7 @@ function AddSubscriptionDialog({
     setAutoOrder(false);
     setQuantity(1);
     setAutoPay(false);
+    setDelaySeconds(0);
   };
 
   // 每次打开都按当前 editing 重灌一次表单。依赖里带上 open,
@@ -491,6 +494,7 @@ function AddSubscriptionDialog({
       setAutoOrder(!!editing.autoOrder);
       setQuantity(editing.quantity && editing.quantity > 0 ? editing.quantity : 1);
       setAutoPay(!!editing.autoPay);
+      setDelaySeconds(editing.delaySeconds || 0);
     } else {
       reset();
     }
@@ -527,6 +531,7 @@ function AddSubscriptionDialog({
       quantity: autoOrder ? quantity : undefined,
       autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
       autoPay: autoOrder ? autoPay : false,
+      delaySeconds: autoOrder ? delaySeconds : undefined,
     };
     const done = {
       onSuccess: () => {
@@ -697,6 +702,28 @@ function AddSubscriptionDialog({
               <p className="text-[11px] text-muted-foreground mt-1.5">
                 总下单量 = 检测出的配置数 × 可用数据中心数 × 数量
               </p>
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                  下单延迟（秒，0=跟随全局）
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={3600}
+                  value={delaySeconds}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v)) {
+                      setDelaySeconds(Math.max(0, Math.min(3600, Math.floor(v))));
+                    }
+                  }}
+                  placeholder="0 = 跟随全局"
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  补货后等待 N 秒再下单。0 或留空 = 跟随右上角全局延迟配置。
+                  仅对服务器监控生效，VPS 延迟见右上角
+                </p>
+              </div>
               <label className="flex items-center gap-2 mt-2 cursor-pointer text-[12px]">
                 <Checkbox checked={autoPay} onCheckedChange={(v) => setAutoPay(!!v)} />
                 下单成功后自动付款
