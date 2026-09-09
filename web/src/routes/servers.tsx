@@ -850,7 +850,8 @@ function DetailContent({
           onClick={() =>
             addMon.mutate({
               planCode: server.planCode,
-              datacenters: dialogDCs.map((dc) => dc.code),
+              // 抢购弹窗未选择机房时，空数组沿用监控语义：监控全部数据中心。
+              datacenters: selectedDCs,
               serverName: server.name,
             })
           }

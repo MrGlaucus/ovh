@@ -12,6 +12,7 @@ import {
   Pencil,
   User,
   HelpCircle,
+  MapPin,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -47,6 +48,7 @@ import {
   useSetMonitorInterval,
 } from "@/hooks/use-monitor";
 import { useNotifyGate } from "@/hooks/use-notify-channels";
+import { OVH_DATACENTERS } from "@/lib/datacenters";
 import { toast } from "sonner";
 
 /** 服务器监控订阅 */
@@ -458,7 +460,7 @@ function AddSubscriptionDialog({
   // 门禁看的是「所有通道」,不是只看 Telegram —— 只配 webhook 的用户也该能订阅
   const [notifyBlocked, notifyReason, notifyChecking] = useNotifyGate();
   const [planCode, setPlanCode] = useState("");
-  const [datacenters, setDatacenters] = useState("");
+  const [datacenters, setDatacenters] = useState<string[]>([]);
   const [notifyAvailable, setNotifyAvailable] = useState(true);
   const [notifyUnavailable, setNotifyUnavailable] = useState(false);
   const [autoOrder, setAutoOrder] = useState(false);
@@ -481,7 +483,7 @@ function AddSubscriptionDialog({
 
   const reset = () => {
     setPlanCode("");
-    setDatacenters("");
+    setDatacenters([]);
     setNotifyAvailable(true);
     setNotifyUnavailable(false);
     setAutoOrder(false);
@@ -496,7 +498,7 @@ function AddSubscriptionDialog({
     if (!open) return;
     if (editing) {
       setPlanCode(editing.planCode);
-      setDatacenters((editing.datacenters || []).join(", "));
+      setDatacenters(editing.datacenters || []);
       setNotifyAvailable(editing.notifyAvailable);
       setNotifyUnavailable(editing.notifyUnavailable);
       setAutoOrder(!!editing.autoOrder);
@@ -516,10 +518,7 @@ function AddSubscriptionDialog({
       toast.error("请输入服务器型号");
       return;
     }
-    const dcs = datacenters
-      .split(",")
-      .map((d) => d.trim())
-      .filter(Boolean);
+    const dcs = datacenters;
 
     if (autoOrder && !autoOrderAccountId) {
       // 读失败和"真的没账户"要给不同的话:前者该重试,后者该去加账户
@@ -610,14 +609,24 @@ function AddSubscriptionDialog({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-              数据中心（可选，多个用逗号分隔）
-            </label>
-            <Input
-              value={datacenters}
-              onChange={(e) => setDatacenters(e.target.value)}
-              placeholder="例如: gra,rbx,sbg 或留空监控所有"
-            />
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                数据中心（可选）
+              </label>
+              <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" onClick={() => setDatacenters(datacenters.length === OVH_DATACENTERS.length ? [] : OVH_DATACENTERS.map((dc) => dc.code))}>
+                {datacenters.length > 0 ? "清空" : "全部选择"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mb-2">留空监控所有数据中心；已选 {datacenters.length} 个。</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {OVH_DATACENTERS.map((dc) => {
+                const selected = datacenters.includes(dc.code);
+                return <button key={dc.code} type="button" onClick={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} className={"text-left border rounded-lg px-2.5 py-2 transition-colors " + (selected ? "border-foreground bg-foreground text-background" : "border-border hover:bg-secondary/50")}>
+                  <span className="flex items-center gap-1.5 text-[12px] font-bold font-mono"><MapPin className="w-3 h-3" />{dc.code.toUpperCase()}</span>
+                  <span className={"block mt-0.5 text-[10px] truncate " + (selected ? "text-background/70" : "text-muted-foreground")}>{dc.region} · {dc.name}</span>
+                </button>;
+              })}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

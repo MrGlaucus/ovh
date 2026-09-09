@@ -166,7 +166,7 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
             {isDirect ? <p>当前账户直连；不执行代理出口 IP 检测或阻断。</p> : <>
               <p>预期出口 IP：<span className="font-mono text-foreground">{proxyStatus.data?.expectedOutboundIp || active?.expectedOutboundIp || "未配置"}</span></p>
               <p className="mt-1">实际出口 IP：<span className={cn("font-mono", proxyStatus.data?.outboundIpStatus === "verified" ? "text-success" : "text-destructive")}>{proxyStatus.data?.actualOutboundIp || "未确认"}</span></p>
-              <p className="mt-1">{proxyStatus.data?.outboundIpCheckedAt ? `最近检测：${new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleTimeString()}；每 30 秒自动复检` : "尚未检测；每 30 秒自动复检"}</p>
+              <p className="mt-1">{proxyStatus.data?.outboundIpCheckedAt ? `上次检查：${new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleString()}；每 30 秒自动复检` : "尚未检查；每 30 秒自动复检"}</p>
               <p className="mt-1">此处只覆盖携带「{active?.name || "当前"}」账户 AppKey/AppSecret/ConsumerKey 签名的 OVH API 请求；IP 不一致或查询失败时不会发送这些请求。</p>
               {(proxyStatus.data?.outboundIpError || proxyStatus.isError) && <p className="mt-1 text-destructive">出口 IP：{proxyStatus.data?.outboundIpError || "检测失败，30 秒后自动重试"}</p>}
               {proxyStatus.data?.ovhAuthStatus === "failed" && <p className="mt-1 text-destructive">OVH 凭据：{proxyStatus.data.ovhAuthError || "验证失败"}</p>}
