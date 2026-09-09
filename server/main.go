@@ -23,6 +23,7 @@ import (
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
+	"github.com/ovh-buy/server/internal/notify"
 	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/secret"
@@ -30,6 +31,16 @@ import (
 	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/updater"
 )
+
+func notifyOutboundIPChanges(state *app.State, changes []app.OutboundIPChange) {
+	for _, change := range changes {
+		if change.Status == "verified" {
+			notify.Broadcast(state, fmt.Sprintf("[账户代理恢复] %s 出口 IP 已确认一致\n预期: %s\n实际: %s\n已恢复携带账户鉴权的 OVH API 请求。", change.AccountName, change.ExpectedIP, change.ActualIP), nil)
+			continue
+		}
+		notify.Broadcast(state, fmt.Sprintf("[账户代理告警] %s 出口 IP 校验失败，已阻断携带账户鉴权的 OVH API 请求。\n预期: %s\n实际: %s\n原因: %s\n系统将每 30 秒自动重试。", change.AccountName, change.ExpectedIP, change.ActualIP, change.Reason), nil)
+	}
+}
 
 func main() {
 	// envPath 就是 godotenv 读的那个文件。密钥自动生成时会追加到这里,
@@ -280,6 +291,7 @@ func main() {
 		api.GET("/proxy/status", handlers.GetProxyStatus())
 		api.POST("/proxy/check", handlers.CheckProxy())
 		api.GET("/accounts/:id/proxy-status", handlers.AccountProxyStatus(state))
+		api.POST("/accounts/proxy-check", handlers.CheckAccountProxy(state))
 		api.GET("/version", handlers.GetVersion(state))
 		api.GET("/version/check-update", handlers.CheckUpdate(state))
 		// 在线更新:下载 → 校验 → 替换自己 → 自动重启。gracefulRestart 在下面赋值,
@@ -524,6 +536,16 @@ func main() {
 
 	// 后台线程
 	go purchase.ProcessQueueLoop(state)
+	// 账户出口 IP 是带签名 OVH 请求的硬前置条件。启动即检查，随后每 30 秒刷新；
+	// 不一致或查询服务暂时失败时保持阻断，匹配后自动恢复。
+	go func() {
+		notifyOutboundIPChanges(state, state.RefreshOutboundIPChecks(true))
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			notifyOutboundIPChanges(state, state.RefreshOutboundIPChecks(true))
+		}
+	}()
 	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
 	go purchase.OrderStatusLoop(state)
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,

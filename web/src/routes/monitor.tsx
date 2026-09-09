@@ -307,17 +307,20 @@ function SubRow({
                     {sub.quantity && sub.quantity > 1 ? ` ×${sub.quantity}` : ""}
                     {sub.autoPay ? " · 自动付款" : ""}
                   </Chip>
+                  <Chip tone={sub.delaySeconds && sub.delaySeconds > 0 ? "warning" : "success"} title="补货后等待的秒数；0 表示立即开始下单">
+                    有货后延迟 {sub.delaySeconds && sub.delaySeconds > 0 ? `${sub.delaySeconds}s` : "立即"}
+                  </Chip>
                   <span className="text-[11px] text-muted-foreground">→</span>
                   <AccountChip accountId={sub.autoOrderAccountId} />
                 </>
               ) : sub.autoOrder ? (
-                <Chip tone="warning">已勾自动下单但未选账户(只通知)</Chip>
+                <>
+                  <Chip tone="warning">已勾自动下单但未选账户(只通知)</Chip>
+                  <Chip tone={sub.delaySeconds && sub.delaySeconds > 0 ? "warning" : "success"} title="补货后等待的秒数；0 表示立即开始下单">
+                    有货后延迟 {sub.delaySeconds && sub.delaySeconds > 0 ? `${sub.delaySeconds}s` : "立即"}
+                  </Chip>
+                </>
               ) : null}
-              {sub.autoOrder && (
-                <Chip tone={sub.delaySeconds && sub.delaySeconds > 0 ? "info" : "default"} title="补货后等待的秒数；0 表示立即开始下单">
-                  下单延迟 {sub.delaySeconds && sub.delaySeconds > 0 ? `${sub.delaySeconds}s` : "立即"}
-                </Chip>
-              )}
             </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -709,7 +712,7 @@ function AddSubscriptionDialog({
               </p>
               <div className="mt-3">
                 <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                  下单延迟（秒，0=立即下单）
+                  有货后延迟下单（秒，0=立即）
                 </label>
                 <Input
                   type="number"

@@ -31,6 +31,7 @@ import {
   useDeleteAccount,
   useSetDefaultAccount,
   useVerifyAccount,
+  useCheckAccountProxy,
   accountChipColor,
   type OVHAccount,
 } from "@/hooks/use-accounts";
@@ -661,6 +662,7 @@ function AccountCard({ acc, onEdit }: { acc: OVHAccount; onEdit: () => void }) {
 function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void }) {
   const create = useCreateAccount();
   const update = useUpdateAccount();
+  const checkProxy = useCheckAccountProxy();
   const isEdit = !!acc;
   // 编辑时三个凭据一律留空。后端不再下发明文（只给掩码），
   // 留空 = 保持原值（UpdateAccount 本来就是这个语义）。
@@ -672,13 +674,26 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
     appSecret: "",
     consumerKey: "",
     proxyUrl: "",
+    expectedOutboundIp: acc?.expectedOutboundIp || "",
     zone: acc?.zone || "IE",
   });
   const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
-  // 新建时三个凭据必填；编辑时可以全留空（只改名字/区域）
+  const [connectionMode, setConnectionMode] = useState<"direct" | "proxy">(acc?.proxyUrl ? "proxy" : "direct");
+  const hasProxy = connectionMode === "proxy";
   const canSubmit = isEdit
-    ? !!form.name.trim()
-    : form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
+    ? !!(form.name.trim() && (!hasProxy || form.expectedOutboundIp.trim()))
+    : !!(form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim() && (!hasProxy || form.expectedOutboundIp.trim()));
+
+  const canCheckProxy = hasProxy && !!form.expectedOutboundIp.trim();
+
+  const checkCurrentProxy = () => {
+    if (!canCheckProxy) return;
+    checkProxy.mutate({
+      accountId: acc?.id,
+      proxyUrl: form.proxyUrl.trim(),
+      expectedOutboundIp: form.expectedOutboundIp.trim(),
+    });
+  };
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -689,6 +704,8 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
       appSecret: form.appSecret.trim(),
       consumerKey: form.consumerKey.trim(),
       proxyUrl: form.proxyUrl.trim(),
+      expectedOutboundIp: form.expectedOutboundIp.trim(),
+      useDirect: connectionMode === "direct",
       zone: form.zone,
       endpoint: endpointForZone(form.zone),
     };
@@ -729,10 +746,31 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
             <Input type="password" value={form.consumerKey} onChange={(e) => set("consumerKey", e.target.value)}
               placeholder={isEdit ? (acc?.consumerKey || "留空 = 不修改") : "xxxxxxxxxxxxxxxx"} />
           </Field>
-          <Field label="账户级 OVH 代理" hint="仅该账户的 OVH API 走此代理；留空=该账户明确直连。代理不可用时请求会被阻断，绝不回退直连。">
-            <Input type="password" value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)}
-              placeholder={isEdit && acc?.proxyUrl ? `${acc.proxyUrl}（留空=保持不变）` : "socks5://user:pass@host:port（留空=直连）"} />
+          <Field label="账户网络模式" hint="直连账户不检查出口 IP；代理账户必须校验固定出口 IPv4 后才允许访问带鉴权的 OVH API。">
+            <Select value={connectionMode} onValueChange={(v: "direct" | "proxy") => setConnectionMode(v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="direct">直连（不校验出口 IP）</SelectItem>
+                <SelectItem value="proxy">使用账户级代理（校验固定出口 IP）</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
+          {hasProxy && <Field label="账户级 OVH 代理" hint="仅此账户的带鉴权 OVH API 走此代理；代理不可用时请求会被阻断，绝不回退直连。">
+            <Input type="text" value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)}
+              placeholder={isEdit && acc?.proxyUrl ? `${acc.proxyUrl}（留空=保持已保存代理）` : "socks5://user:pass@host:port"} />
+          </Field>}
+          {hasProxy && <Field label="预期出口 IPv4 *" hint="系统通过此账户代理访问 Cloudflare Trace 查询实际出口 IP；只有完全一致时才允许携带该账户鉴权信息访问 OVH。">
+            <div className="flex gap-2">
+              <Input value={form.expectedOutboundIp} onChange={(e) => set("expectedOutboundIp", e.target.value)} placeholder="例如 203.0.113.10" inputMode="numeric" />
+              <Button type="button" variant="outline" className="shrink-0" onClick={checkCurrentProxy} disabled={!canCheckProxy || checkProxy.isPending}>
+                {checkProxy.isPending ? "检测中…" : "检测出口 IP"}
+              </Button>
+            </div>
+            {checkProxy.data && <div className={cn("mt-1.5 text-[11px]", checkProxy.data.healthy ? "text-success" : "text-destructive")}>
+              {checkProxy.data.healthy ? `出口 IP 已匹配：${checkProxy.data.actualOutboundIp}` : `检测失败：${checkProxy.data.outboundIpError || "出口 IP 不一致"}`}
+              {checkProxy.data.actualOutboundIp && checkProxy.data.actualOutboundIp !== form.expectedOutboundIp && <Button type="button" variant="ghost" className="ml-1 h-auto px-1 text-[11px]" onClick={() => set("expectedOutboundIp", checkProxy.data!.actualOutboundIp)}>使用当前 IP</Button>}
+            </div>}
+          </Field>}
           <Field
             label="OVH 子公司 (Zone)"
             hint={`Endpoint ${endpointForZone(form.zone)} · IAM go-ovh-${form.zone.toLowerCase()} 由子公司自动派生`}

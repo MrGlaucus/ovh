@@ -7,12 +7,10 @@ import { useProxyCheck, useProxyStatus, type ProxyTargetResult } from "@/hooks/u
 import { cn } from "@/lib/utils";
 
 /**
- * 右上角出站代理指示器(所有页面共用 TopBar)。
+ * 右上角公共出站代理指示器(所有页面共用 TopBar)。
  *
- * 常态是一个紧凑 chip:绿点=全部 host 经代理可达,黄点=部分可达,红点=全挂,
- * 灰点=未配置(直连)。点开面板能看到 6 个外部 host 逐一探测的结果,
- * 失败行直接显示网络错误文本 —— 用户配代理后的第一件事就是来这儿确认
- * "这些 host 是不是真的都在走代理"。
+ * 仅覆盖不绑定 OVH 账户身份的访问：Telegram、GitHub、Webhook，以及 OVH
+ * 公开接口（auth/time、可用性探测）。携带账户签名的 OVH API 请求只看侧栏账户代理。
  */
 export function ProxyStatus() {
   const { data, isPending } = useProxyStatus();
@@ -51,7 +49,7 @@ export function ProxyStatus() {
       <PopoverTrigger asChild>
         <button
           className="flex items-center gap-1.5 px-2 py-1 rounded-full border border-border text-[11px] text-muted-foreground hover:bg-muted transition-colors"
-          title="出站代理状态:点击查看各 host 连通性"
+          title="公共出站代理状态：点击查看非账户鉴权访问的连通性"
         >
           {isPending && !data ? (
             <Loader2 className="w-3 h-3 animate-spin" />
@@ -66,7 +64,7 @@ export function ProxyStatus() {
       <PopoverContent align="end" className="w-[340px] p-0 z-[120]">
         <div className="px-4 pt-3 pb-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[13px] font-semibold">代理状态</span>
+            <span className="text-[13px] font-semibold">公共代理状态</span>
             {data && (
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 {data.mode}
@@ -78,10 +76,16 @@ export function ProxyStatus() {
               data.proxy
             ) : (
               <span className="text-warning">
-                未配置 OUTBOUND_PROXY,以下为直连基线
+                未配置 OUTBOUND_PROXY，以下公共请求为直连
               </span>
             )}
           </div>
+        </div>
+
+        <div className="border-t border-border px-4 py-2 text-[11px] leading-snug text-muted-foreground">
+          <p>公共访问：Telegram、GitHub Releases、自定义 Webhook。</p>
+          <p className="mt-1">OVH 公开访问：`auth/time` 与库存可用性探测，不携带账户 API 鉴权。</p>
+          <p className="mt-1">账户签名的 OVH API 请求请查看左侧当前账户下方的「账号代理」详情；该处会校验账户预期出口 IP。</p>
         </div>
 
         <div className="border-t border-border px-2 py-1.5 space-y-0.5 max-h-[280px] overflow-y-auto">
@@ -113,7 +117,7 @@ export function ProxyStatus() {
         </div>
 
         <div className="border-t border-border px-4 py-2 text-[10px] leading-snug text-muted-foreground">
-          拿到任何 HTTP 响应即视为连通,404 说明请求已到达目标(Telegram 无 token 时正常)。本机自调(127.0.0.1)强制直连,不在此列。
+          拿到任何 HTTP 响应即视为连通，404 说明请求已到达目标（Telegram 无 token 时正常）。本机自调(127.0.0.1)强制直连，不在此列。
         </div>
       </PopoverContent>
     </Popover>

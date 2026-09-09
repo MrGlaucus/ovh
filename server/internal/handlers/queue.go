@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -173,9 +174,19 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 		state.QueueMu.Lock()
 		for i := range state.Queue {
 			if state.Queue[i].ID == id {
-				state.Queue[i].Status = body.Status
+				status := body.Status
+				// 暂停有货后的延迟任务再恢复时，保留原到期时间：未到点继续等待，
+				// 已到点则下一轮直接做二次库存确认，不重新开始完整延迟。
+				if status == "running" && state.Queue[i].OrderNotBefore > 0 {
+					if float64(time.Now().Unix()) < state.Queue[i].OrderNotBefore {
+						status = "delaying"
+					} else {
+						state.Queue[i].DelayReady = true
+					}
+				}
+				state.Queue[i].Status = status
 				state.Queue[i].UpdatedAt = types.NowISO()
-				state.Logger.Info("Updated "+state.Queue[i].PlanCode+" status to "+body.Status, "")
+				state.Logger.Info("Updated "+state.Queue[i].PlanCode+" status to "+status, "")
 				break
 			}
 		}

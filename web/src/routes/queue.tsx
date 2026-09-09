@@ -172,7 +172,7 @@ function QueuePage() {
               onToggle={() =>
                 toggle.mutate({
                   id: q.id,
-                  action: q.status === "running" ? "pause" : "resume",
+                  action: q.status === "running" || q.status === "delaying" ? "pause" : "resume",
                 })
               }
               onDelete={() => remove.mutate(q.id)}
@@ -584,7 +584,7 @@ function CreateQueueDialog({
 
           <div>
             <label className="block text-[13px] font-medium mb-1.5">
-              下单延迟（秒，0=立即执行）
+              有货后延迟下单（秒，0=立即执行）
             </label>
             <Input
               type="text"
@@ -599,7 +599,7 @@ function CreateQueueDialog({
               placeholder="0 = 立即"
             />
             <p className="text-[11px] text-muted-foreground mt-1">
-              入队后等待 N 秒才开始首次抢购
+              检测到目标机房有货后等待 N 秒；到期会重新确认库存再下单
             </p>
           </div>
 
@@ -709,10 +709,8 @@ function QueueRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
-  // 延迟窗口内的任务每秒 tick 一次,驱动倒计时。暂停时倒计时照走——
-  // 后端按 CreatedAt 续算剩余延迟,暂停只是不检查,不会冻结等待时间。
-  const delaying =
-    item.status === "running" && !!item.delaySeconds && item.delaySeconds > 0 && item.retryCount === 0;
+  // 只在已发现有货后的等待状态驱动倒计时；到期后后端会重新确认库存再下单。
+  const delaying = item.status === "delaying" && !!item.orderNotBefore;
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (!delaying) return;
@@ -720,18 +718,21 @@ function QueueRow({
     return () => clearInterval(t);
   }, [delaying]);
   const delayLeft = delaying
-    ? Math.max(
-        0,
-        item.delaySeconds! - Math.floor((Date.now() - new Date(item.createdAt).getTime()) / 1000),
-      )
+    ? Math.max(0, Math.ceil(item.orderNotBefore! - Date.now() / 1000))
     : 0;
   const inDelayWindow = delaying && delayLeft > 0;
 
   const chip = (() => {
     if (inDelayWindow)
       return (
-        <Chip tone="warning" title={`入队后先等 ${item.delaySeconds} 秒才开始首次抢购`}>
-          <StatusDot tone="warning" pulse size="xs" />延迟中 {item.delaySeconds}s
+        <Chip tone="warning" title={`已发现有货，等待结束后会重新确认库存再下单`}>
+          <StatusDot tone="warning" pulse size="xs" />有货后延迟中 {delayLeft}s
+        </Chip>
+      );
+    if (item.status === "delaying")
+      return (
+        <Chip tone="warning">
+          <StatusDot tone="warning" pulse size="xs" />重新确认库存中
         </Chip>
       );
     if (item.status === "running")
@@ -783,9 +784,9 @@ function QueueRow({
             )}
             {/* 延迟配置常驻可见:倒计时走完、任务开始跑之后,用户仍能看到这条任务当初配置了多久延迟 */}
             {!!item.delaySeconds && item.delaySeconds > 0 && !inDelayWindow && (
-              <Chip tone="info" title="入队后先等这么久才开始首次抢购">
+              <Chip tone="info" title="发现有货后等待这么久；到期会重新确认库存再下单">
                 <Timer className="w-3 h-3" />
-                下单延迟 {item.delaySeconds}s
+                有货后延迟 {item.delaySeconds}s
               </Chip>
             )}
             <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />
@@ -833,8 +834,8 @@ function QueueRow({
         <div className="flex items-center gap-2 flex-shrink-0">
           {chip}
           {item.status !== "completed" && item.status !== "failed" && (
-            <Button variant="ghost" size="icon" onClick={onToggle} aria-label={item.status === "running" ? "暂停" : "恢复"}>
-              {item.status === "running" ? <PauseCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
+            <Button variant="ghost" size="icon" onClick={onToggle} aria-label={item.status === "running" || item.status === "delaying" ? "暂停" : "恢复"}>
+              {item.status === "running" || item.status === "delaying" ? <PauseCircle className="w-4 h-4" /> : <PlayCircle className="w-4 h-4" />}
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={onDelete} aria-label="删除">

@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+data/
+server/data/
+web/node_modules/
+web/dist/
+server/web/
+*.db
+*.db-wal
+*.db-shm

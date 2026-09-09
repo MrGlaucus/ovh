@@ -34,7 +34,9 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border border-border bg-background p-6 rounded-2xl",
+        // 手机端必须先限制实际宽高并允许内容滚动：长表单不能被视觉视口裁掉。
+        // sm 以上维持原来的桌面尺寸与留白。
+        "fixed left-[50%] top-[50%] z-50 grid w-[calc(100%-2rem)] max-h-[calc(100dvh-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border border-border bg-background p-4 rounded-2xl sm:w-full sm:max-w-lg sm:max-h-[90vh] sm:p-6",
         "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
         "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
         className

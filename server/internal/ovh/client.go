@@ -2,11 +2,13 @@ package ovh
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/ovh/go-ovh/ovh"
 
 	"github.com/ovh-buy/server/internal/config"
+	"github.com/ovh-buy/server/internal/outboundip"
 	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
@@ -28,6 +30,7 @@ type Factory struct {
 
 	mu    sync.Mutex
 	cache map[string]*ovh.Client // accountID → client
+	gate  *outboundip.Gate
 }
 
 // NewFactory 构造工厂。lookup 由 State 闭包注入。
@@ -36,6 +39,7 @@ func NewFactory(cfg *config.Store, lookup AccountLookup) *Factory {
 		lookup:   lookup,
 		fallback: cfg,
 		cache:    map[string]*ovh.Client{},
+		gate:     outboundip.NewGate(),
 	}
 }
 
@@ -68,17 +72,36 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 	}
 	// 账户专属 Transport，绝不使用公共 OUTBOUND_PROXY 或别的账户连接池。
 	// 配了代理就固定经该代理；不可达时请求报错，绝不回退直连。
+	var clientTransport = proxy.DirectHTTPClient(0).Transport
 	if acc.ProxyURL != "" {
 		client, err := proxy.AccountHTTPClient(acc.ProxyURL, 0)
 		if err != nil {
 			return nil, err
 		}
-		cli.Client = client
-	} else {
-		cli.Client = proxy.DirectHTTPClient(0)
+		clientTransport = client.Transport
 	}
+	// 每个签名请求都会在真正出网前通过出口 IP 闸门；失败时 RoundTrip 直接返回，
+	// 不会向 OVH 发送任何请求。
+	cli.Client = &http.Client{Transport: outboundip.GuardedTransport{Base: clientTransport, Gate: f.gate, Account: acc}}
 	f.cache[acc.ID] = cli
 	return cli, nil
+}
+
+// CheckOutboundIP 主动执行一次出口 IP 校验，供后台守护和账户状态 API 使用。
+func (f *Factory) CheckOutboundIP(accountID string, force bool) (outboundip.Status, error) {
+	acc, ok := f.lookup(accountID)
+	if !ok {
+		return outboundip.Status{}, fmt.Errorf("ovh account %s not found", accountID)
+	}
+	return f.gate.Ensure(acc, force), nil
+}
+
+func (f *Factory) OutboundIPStatus(accountID string) (outboundip.Status, error) {
+	acc, ok := f.lookup(accountID)
+	if !ok {
+		return outboundip.Status{}, fmt.Errorf("ovh account %s not found", accountID)
+	}
+	return f.gate.Status(acc), nil
 }
 
 // Invalidate 清掉指定账户的缓存 client(更新 / 删除账户后调,避免拿到旧凭据)
@@ -86,6 +109,7 @@ func (f *Factory) Invalidate(accountID string) {
 	f.mu.Lock()
 	delete(f.cache, accountID)
 	f.mu.Unlock()
+	f.gate.Invalidate(accountID)
 }
 
 // InvalidateAll 清全部缓存(比如重置 OVH 配置时)
@@ -111,14 +135,6 @@ func (f *Factory) Client() (*ovh.Client, error) {
 	if f.fallback == nil {
 		return nil, fmt.Errorf("no default OVH account configured")
 	}
-	c := f.fallback.Get()
-	if c.AppKey == "" || c.AppSecret == "" || c.ConsumerKey == "" {
-		return nil, fmt.Errorf("missing OVH API credentials")
-	}
-	cli, err := ovh.NewClient(c.Endpoint, c.AppKey, c.AppSecret, c.ConsumerKey)
-	if err != nil {
-		return nil, err
-	}
-	cli.Client = proxy.HTTPClient(0)
-	return cli, nil
+	// 老配置没有账户出口 IP 绑定，保守拒绝其带签名请求，要求迁移到账户配置。
+	return nil, fmt.Errorf("legacy OVH config has no verified account outbound IP")
 }

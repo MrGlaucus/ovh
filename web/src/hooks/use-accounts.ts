@@ -13,6 +13,11 @@ export interface OVHAccount {
   iam: string;
   /** 脱敏后的账户 OVH API 专用代理；空=明确直连 */
   proxyUrl: string;
+  expectedOutboundIp: string;
+  actualOutboundIp: string;
+  outboundIpStatus: "pending" | "verified" | "mismatch" | "failed" | "";
+  outboundIpCheckedAt: string;
+  outboundIpError: string;
   isDefault: boolean;
   createdAt: string;
 }
@@ -26,6 +31,8 @@ export interface AccountInput {
   consumerKey: string;
   iam?: string;
   proxyUrl?: string;
+  expectedOutboundIp?: string;
+  useDirect?: boolean;
   setDefault?: boolean;
 }
 
@@ -42,6 +49,23 @@ const ACCOUNTS_KEY = ["accounts", "list"] as const;
 export interface AccountVerifyResult {
   valid: boolean;
   subsidiaryWarning?: string;
+}
+
+export interface AccountProxyCheckInput {
+  accountId?: string;
+  proxyUrl: string;
+  expectedOutboundIp: string;
+}
+
+export interface AccountProxyCheckResult {
+  healthy: boolean;
+  proxy: string;
+  latencyMs?: number;
+  expectedOutboundIp: string;
+  actualOutboundIp: string;
+  outboundIpStatus: string;
+  outboundIpError: string;
+  outboundIpCheckedAt: string;
 }
 
 /** 全部账户列表(默认账户排首位) */
@@ -106,6 +130,26 @@ export function useUpdateAccount() {
       }
     },
     onError: (e: any) => toast.error(e?.response?.data?.error || "更新失败"),
+  });
+}
+
+/** 使用当前表单代理与预期 IP 检测出口；不保存表单内容，也不发送 OVH 鉴权请求。 */
+export function useCheckAccountProxy() {
+  return useMutation({
+    mutationFn: async (input: AccountProxyCheckInput) => {
+      try {
+        return (await api.post<AccountProxyCheckResult>("/accounts/proxy-check", input)).data;
+      } catch (e: any) {
+        const data = e?.response?.data as Partial<AccountProxyCheckResult> | undefined;
+        if (data?.outboundIpStatus) return data as AccountProxyCheckResult;
+        throw e;
+      }
+    },
+    onSuccess: (data) => {
+      if (data.healthy) toast.success(`账号代理可用${data.latencyMs != null ? ` · ${data.latencyMs}ms` : ""}`);
+      else toast.error(data.outboundIpError || "账号代理检测失败");
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.error || "账号代理检测失败"),
   });
 }
 

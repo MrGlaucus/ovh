@@ -95,9 +95,15 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("queue", "failure_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	// delay_seconds:自动触发下单的延迟窗口(入队后等 N 秒才首次检查)
-	if err := db.addColumnIfMissing("queue", "delay_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
+	// 延迟语义：发现有货后等待，到期重新确认库存才下单；两个状态字段需持久化以支持重启续等。
+	for _, c := range [][2]string{
+		{"delay_seconds", "INTEGER NOT NULL DEFAULT 0"},
+		{"order_not_before", "REAL NOT NULL DEFAULT 0"},
+		{"delay_ready", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := db.addColumnIfMissing("queue", c[0], c[1]); err != nil {
+			return err
+		}
 	}
 	// order_status / order_status_at:OVH 侧订单支付状态(GET /me/order/{id}/status)。
 	// timing / total_ms:抢购各阶段耗时,以前只在内存,重启即丢。
@@ -117,8 +123,17 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("history", "retraction_time", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := db.addColumnIfMissing("ovh_accounts", "proxy_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	for _, c := range [][2]string{
+		{"proxy_url", "TEXT NOT NULL DEFAULT ''"},
+		{"expected_outbound_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"actual_outbound_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"outbound_ip_status", "TEXT NOT NULL DEFAULT 'pending'"},
+		{"outbound_ip_checked_at", "TEXT NOT NULL DEFAULT ''"},
+		{"outbound_ip_error", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := db.addColumnIfMissing("ovh_accounts", c[0], c[1]); err != nil {
+			return err
+		}
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err

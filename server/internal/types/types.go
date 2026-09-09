@@ -67,9 +67,15 @@ type OVHAccount struct {
 	ConsumerKey string `json:"consumerKey"`
 	IAM         string `json:"iam"` // go-ovh-<zone-lower>
 	// ProxyURL 是此账户 OVH API 专用代理。空值表示该账户显式直连；非空时请求绝不回退直连。
-	ProxyURL  string `json:"proxyUrl"`
-	IsDefault bool   `json:"isDefault"` // 默认账户（未指定时 fallback 用它）
-	CreatedAt string `json:"createdAt"`
+	ProxyURL string `json:"proxyUrl"`
+	// ExpectedOutboundIP 是该账户带签名 OVH 请求允许使用的唯一 IPv4 出口地址。
+	ExpectedOutboundIP  string `json:"expectedOutboundIp"`
+	ActualOutboundIP    string `json:"actualOutboundIp"`
+	OutboundIPStatus    string `json:"outboundIpStatus"` // pending / verified / mismatch / failed
+	OutboundIPCheckedAt string `json:"outboundIpCheckedAt"`
+	OutboundIPError     string `json:"outboundIpError"`
+	IsDefault           bool   `json:"isDefault"` // 默认账户（未指定时 fallback 用它）
+	CreatedAt           string `json:"createdAt"`
 }
 
 // QueueItem 抢购队列项
@@ -99,10 +105,13 @@ type QueueItem struct {
 	// 默认 false:自动扣钱必须是用户显式打开的开关,不能是隐含行为。
 	AutoPay            bool   `json:"autoPay,omitempty"`
 	ConfigSniperTaskID string `json:"configSniperTaskId,omitempty"`
-	// DelaySeconds 入队后延迟多少秒才开始第一次检查(自动触发的下单用)。
-	// 落库,重启后按 CreatedAt 续算剩余延迟,不会从头等。0 = 不延迟。
-	// 只作用于首次检查(LastCheckTime==0),之后按 RetryInterval 正常轮询。
+	// DelaySeconds 发现目标库存可下单后等待多少秒；0 = 不延迟。
+	// 任务在等待期结束时会重新确认库存，再进入创建购物车与结算。
 	DelaySeconds int `json:"delaySeconds,omitempty"`
+	// OrderNotBefore 是发现有货后允许实际下单的 Unix 时间；落库以支持重启续等。
+	OrderNotBefore float64 `json:"orderNotBefore,omitempty"`
+	// DelayReady 表示延迟已到期，下一次库存确认成功后直接下单而不重复延迟。
+	DelayReady bool `json:"delayReady,omitempty"`
 }
 
 // PriceInfo 价格信息
@@ -211,8 +220,8 @@ type Subscription struct {
 	AutoOrderAccountID string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	// AutoPay 下单成功后用默认支付方式自动付款(显式开关,默认关)
 	AutoPay bool `json:"autoPay,omitempty"`
-	// DelaySeconds 补货后延迟多少秒才下单。0=跟随全局 AUTO_ORDER_DELAY_SECONDS。
-	// 每个订阅可独立覆盖,适配不同型号的抢购策略。
+	// DelaySeconds 补货后延迟多少秒才下单。0=立即下单。
+	// 每个订阅可独立配置，适配不同型号的抢购策略。
 	DelaySeconds int `json:"delaySeconds,omitempty"`
 }
 

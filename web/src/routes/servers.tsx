@@ -823,7 +823,7 @@ function DetailContent({
           )}
           {selectedDCs.length > 0 && (
             <div className="mt-2 flex items-center gap-2">
-              <label className="text-[11px] text-muted-foreground whitespace-nowrap">下单延迟</label>
+              <label className="text-[11px] text-muted-foreground whitespace-nowrap">有货后延迟</label>
               <Input
                 type="text"
                 inputMode="numeric"

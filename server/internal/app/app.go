@@ -122,6 +122,8 @@ type State struct {
 	// OVH Factory 通过 FindAccount 闭包按 id 查询
 	AccountsMu sync.RWMutex
 	Accounts   []types.OVHAccount
+	// outboundIPCheckMu 保证后台、保存流程与手动检查不会并发比较/覆盖账户出口状态。
+	outboundIPCheckMu sync.Mutex
 
 	QueueMu sync.Mutex
 	Queue   []types.QueueItem
@@ -140,9 +142,9 @@ type State struct {
 	// 保存串行化锁。Save* 是"快照 + 全表覆盖",两个并发保存里
 	// 晚拍快照的可能先落库,把新数据覆盖掉 —— 必须让"拍快照到写完"整段串行。
 	// 和上面那些数据锁分开:数据锁保护内存读写(要短),这些保护落库顺序(会持有到 IO 结束)。
-	saveQueueMu      sync.Mutex
-	saveHistoryMu    sync.Mutex
-	saveServersMu    sync.Mutex
+	saveQueueMu   sync.Mutex
+	saveHistoryMu sync.Mutex
+	saveServersMu sync.Mutex
 
 	// 启动时哪张表没读出来。
 	//
@@ -153,8 +155,8 @@ type State struct {
 	//
 	// 所以:读失败的表一律禁止再写。宁可这次运行不落库,也不能拿空内存去覆盖磁盘上
 	// 那份还完好的数据。用户重启一次(或修好 schema)就能恢复。
-	loadFailedMu sync.RWMutex
-	loadFailed   map[string]string
+	loadFailedMu     sync.RWMutex
+	loadFailed       map[string]string
 	VPSSubscriptions []types.VPSSubscription
 	VPSCheckInterval int
 
@@ -232,6 +234,55 @@ func (s *State) ServerCacheKey(accountID string) string {
 		return DefaultServerBucket
 	}
 	return strings.ToLower(acc.Endpoint) + "|" + strings.ToUpper(acc.Zone)
+}
+
+// OutboundIPChange represents a proxy account crossing the allowed/blocked boundary.
+type OutboundIPChange struct {
+	AccountName string
+	ExpectedIP  string
+	ActualIP    string
+	Status      string
+	Reason      string
+}
+
+// RefreshOutboundIPChecks 校验所有代理账户的出口 IPv4。结果同时写入内存和 SQLite，
+// 并只返回一致性状态发生变化的事件，调用方据此发送一次通知。
+func (s *State) RefreshOutboundIPChecks(force bool) []OutboundIPChange {
+	s.outboundIPCheckMu.Lock()
+	defer s.outboundIPCheckMu.Unlock()
+	changes := []OutboundIPChange{}
+	s.AccountsMu.RLock()
+	accounts := append([]types.OVHAccount(nil), s.Accounts...)
+	s.AccountsMu.RUnlock()
+	for _, acc := range accounts {
+		status, err := s.OVH.CheckOutboundIP(acc.ID, force)
+		if err != nil || status.State == "direct" {
+			continue
+		}
+		checkedAt := ""
+		if !status.CheckedAt.IsZero() {
+			checkedAt = status.CheckedAt.Format(time.RFC3339Nano)
+		}
+		if err := s.DB.UpdateAccountOutboundIPStatus(acc.ID, status.ActualIP, status.State, checkedAt, status.Error); err != nil {
+			s.Logger.Warn("保存账户出口 IP 状态失败: "+err.Error(), "outbound_ip")
+		}
+		s.AccountsMu.Lock()
+		for i := range s.Accounts {
+			if s.Accounts[i].ID == acc.ID {
+				previousStatus := s.Accounts[i].OutboundIPStatus
+				if previousStatus == "pending" || (previousStatus == "verified") != (status.State == "verified") {
+					changes = append(changes, OutboundIPChange{AccountName: s.Accounts[i].Name, ExpectedIP: s.Accounts[i].ExpectedOutboundIP, ActualIP: status.ActualIP, Status: status.State, Reason: status.Reason()})
+				}
+				s.Accounts[i].ActualOutboundIP = status.ActualIP
+				s.Accounts[i].OutboundIPStatus = status.State
+				s.Accounts[i].OutboundIPCheckedAt = checkedAt
+				s.Accounts[i].OutboundIPError = status.Error
+				break
+			}
+		}
+		s.AccountsMu.Unlock()
+	}
+	return changes
 }
 
 // ReloadAccounts 从 SQLite 重新加载账户到内存,并把整个 OVH client 缓存清掉,

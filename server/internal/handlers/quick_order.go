@@ -33,7 +33,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			FromMonitor        bool     `json:"fromMonitor"`
 			SkipDuplicateCheck bool     `json:"skipDuplicateCheck"`
 			AutoPay            bool     `json:"autoPay"`
-			DelaySeconds       int      `json:"delay_seconds"` // 订阅级延迟,0=跟随全局
+			DelaySeconds       int      `json:"delay_seconds"` // 订阅级有货后延迟,0=立即下单
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" || body.Datacenter == "" {
@@ -193,10 +193,16 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 		}
 
 		now := types.NowISO()
-		// 监控触发的下单:订阅级延迟,0=立即执行。
+		// 监控已确认补货；有延迟时直接进入等待状态，到期后再二次确认库存。
 		delaySec := 0
 		if body.FromMonitor && body.DelaySeconds > 0 {
 			delaySec = body.DelaySeconds
+		}
+		status := "running"
+		orderNotBefore := float64(0)
+		if delaySec > 0 {
+			status = "delaying"
+			orderNotBefore = float64(time.Now().Add(time.Duration(delaySec) * time.Second).Unix())
 		}
 		item := types.QueueItem{
 			ID:         uuid.NewString(),
@@ -204,7 +210,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			PlanCode:   body.PlanCode,
 			Datacenter: body.Datacenter,
 			Options:    options,
-			Status:     "running",
+			Status:     status,
 			RetryCount: 0,
 			AutoPay:    body.AutoPay,
 			// MaxRetries 封顶的是**真正提交并失败的次数**(FailureCount),无货轮次不计。
@@ -212,14 +218,15 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			// 一旦库存持续可见而下单侧连续吃 429/5xx,任务用尽轮次置 failed 后
 			// 就再也没人补这一枪 —— 自动下单会静默停摆到库存先消失再回来。
 			// 20 次真实失败已经足够说明不是偶发抖动;确定性错误另有 Fatal 闸门当场终止。
-			MaxRetries:    20,
-			RetryInterval: 2,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-			LastCheckTime: 0,
-			QuickOrder:    true,
-			Priority:      100,
-			DelaySeconds:  delaySec,
+			MaxRetries:     20,
+			RetryInterval:  2,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+			LastCheckTime:  0,
+			QuickOrder:     true,
+			Priority:       100,
+			DelaySeconds:   delaySec,
+			OrderNotBefore: orderNotBefore,
 		}
 		state.QueueMu.Lock()
 		state.Queue = append([]types.QueueItem{item}, state.Queue...)

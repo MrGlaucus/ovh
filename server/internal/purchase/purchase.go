@@ -34,6 +34,10 @@ type Outcome struct {
 	// 无货的轮次是 false —— 抢购的常态就是绝大多数轮次都无货,
 	// 把它们计进失败次数会让任务在还没真正尝试过几次时就被判死。
 	Attempted bool
+	// DelayPending:已确认有货，但配置了有货后延迟；调度器应进入不占 worker 的等待状态。
+	DelayPending bool
+	// ResetDelay:延迟到期后的二次库存确认发现已无货；下次重新发现有货时再开始等待。
+	ResetDelay bool
 }
 
 // 多账户:用 item.AccountID 取对应 OVH client 和 subsidiary。
@@ -147,7 +151,12 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	if !foundAvailable {
 		recordTiming(timingKey, tl, "unavailable")
 		state.Logger.Info(fmt.Sprintf("服务器 %s 在数据中心 %s 当前无货 (%s)", item.PlanCode, item.Datacenter, tl.String()), "purchase")
-		return Outcome{}
+		return Outcome{ResetDelay: item.DelayReady}
+	}
+	// 普通抢购队列先确认库存，再进入不占 worker 的延迟状态。监控自动下单已在
+	// 补货时入队，直接由调度器设置 DelayReady，避免在这里重复计时。
+	if item.DelaySeconds > 0 && !item.DelayReady {
+		return Outcome{DelayPending: true}
 	}
 
 	// 决定本次下单使用的硬件 options：

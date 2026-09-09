@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS ovh_accounts (
   consumer_key TEXT NOT NULL,
   iam          TEXT NOT NULL,
   proxy_url    TEXT NOT NULL DEFAULT '', -- 加密存储的账户级 OVH API 专用代理
+  expected_outbound_ip  TEXT NOT NULL DEFAULT '',
+  actual_outbound_ip    TEXT NOT NULL DEFAULT '',
+  outbound_ip_status    TEXT NOT NULL DEFAULT 'pending',
+  outbound_ip_checked_at TEXT NOT NULL DEFAULT '',
+  outbound_ip_error     TEXT NOT NULL DEFAULT '',
   is_default   INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
@@ -54,7 +59,9 @@ CREATE TABLE IF NOT EXISTS queue (
   priority               INTEGER NOT NULL DEFAULT 0,
   from_telegram          INTEGER NOT NULL DEFAULT 0,
   config_sniper_task_id  TEXT    NOT NULL DEFAULT '',
-  delay_seconds          INTEGER NOT NULL DEFAULT 0 -- 入队后延迟 N 秒才首次检查(自动下单)
+  delay_seconds          INTEGER NOT NULL DEFAULT 0, -- 发现有货后等待 N 秒再下单
+  order_not_before       REAL    NOT NULL DEFAULT 0, -- 延迟到期前不进入下单阶段
+  delay_ready            INTEGER NOT NULL DEFAULT 0  -- 已到期，下一次库存确认成功后直接下单
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status     ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_plan_code  ON queue(plan_code);

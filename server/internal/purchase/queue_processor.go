@@ -102,17 +102,15 @@ func ProcessQueueLoop(state *app.State) {
 				state.DeletedTaskIDsMu.Unlock()
 				continue
 			}
-			if it.Status != "running" {
+			if it.Status == "delaying" {
+				// 已检测到有货，等待期内不查库存、不占 worker；到点后重新确认库存。
+				if float64(current) >= it.OrderNotBefore {
+					ready = append(ready, it)
+				}
 				continue
 			}
-			// 延迟窗口:入队后 DelaySeconds 秒内静默等待 ——
-			// 不查库存、不计数、不写 history,只跳过。到期后自动进入正常轮询。
-			// CreatedAt 落库,重启后按创建时刻续算剩余延迟,不会从头等。
-			if it.DelaySeconds > 0 && it.LastCheckTime == 0 {
-				if created, ok := types.ParseTS(it.CreatedAt); ok &&
-					time.Since(created) < time.Duration(it.DelaySeconds)*time.Second {
-					continue
-				}
+			if it.Status != "running" {
+				continue
 			}
 			if it.LastCheckTime == 0 || float64(current)-it.LastCheckTime >= float64(it.RetryInterval) {
 				ready = append(ready, it)
@@ -146,6 +144,10 @@ func ProcessQueueLoop(state *app.State) {
 					return
 				}
 				isFirstAttempt := current.LastCheckTime == 0
+				if current.Status == "delaying" {
+					current.Status = "running"
+					current.DelayReady = true
+				}
 				current.LastCheckTime = float64(time.Now().Unix())
 				current.RetryCount++
 				current.UpdatedAt = types.NowISO()
@@ -160,6 +162,34 @@ func ProcessQueueLoop(state *app.State) {
 				}
 
 				outcome := PurchaseServer(state, &snapshot)
+				if outcome.DelayPending {
+					state.QueueMu.Lock()
+					for i := range state.Queue {
+						if state.Queue[i].ID == it.ID {
+							state.Queue[i].Status = "delaying"
+							state.Queue[i].OrderNotBefore = float64(time.Now().Add(time.Duration(snapshot.DelaySeconds) * time.Second).Unix())
+							state.Queue[i].DelayReady = false
+							state.Queue[i].UpdatedAt = types.NowISO()
+							break
+						}
+					}
+					state.QueueMu.Unlock()
+					state.Logger.Info(fmt.Sprintf("%s@%s 已检测到有货，等待 %d 秒后重新确认并下单", snapshot.PlanCode, snapshot.Datacenter, snapshot.DelaySeconds), "queue")
+					return
+				}
+				if outcome.ResetDelay {
+					state.QueueMu.Lock()
+					for i := range state.Queue {
+						if state.Queue[i].ID == it.ID {
+							state.Queue[i].Status = "running"
+							state.Queue[i].OrderNotBefore = 0
+							state.Queue[i].DelayReady = false
+							state.Queue[i].UpdatedAt = types.NowISO()
+							break
+						}
+					}
+					state.QueueMu.Unlock()
+				}
 				if outcome.Success {
 					state.QueueMu.Lock()
 					for i := range state.Queue {

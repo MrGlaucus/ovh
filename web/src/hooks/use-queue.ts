@@ -3,7 +3,7 @@ import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
-export type QueueStatus = "pending" | "running" | "paused" | "completed" | "failed";
+export type QueueStatus = "pending" | "running" | "delaying" | "paused" | "completed" | "failed";
 
 export interface QueueItem {
   id: string;
@@ -20,8 +20,10 @@ export interface QueueItem {
   retryCount: number;
   /** 真正提交给 OVH 并失败的次数（无货的轮次不计）。后端按它封顶重试。 */
   failureCount?: number;
-  /** 入队后延迟多少秒才开始首次检查（自动触发的下单用，0 = 不延迟） */
+  /** 发现有货后等待多少秒再下单（0 = 立即） */
   delaySeconds?: number;
+  /** 已发现有货后的延迟到期时间（Unix 秒）；到期会重新确认库存。 */
+  orderNotBefore?: number;
   /** 后端 types.QueueItem 还会传回这几个字段（多为 omitempty），前端目前不渲染但保留类型对齐 */
   maxRetries?: number;
   lastCheckTime?: number;

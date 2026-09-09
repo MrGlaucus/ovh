@@ -14,6 +14,9 @@
 *.env
 !.env.example
 !*.env.example
+# Compose 实例会包含 API / 数据库加密密钥，只提交样板。
+docker-compose.yml
+!docker-compose.example.yml
 
 # SQLite 数据库:ovh_accounts 表明文存 AppKey / AppSecret / ConsumerKey,
 # kv 表存 Telegram Token / Chat ID / webhook secret

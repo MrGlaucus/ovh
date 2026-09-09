@@ -115,6 +115,16 @@
     letter-spacing: -0.003em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* iOS Safari 会在输入字号小于 16px 时自动缩放整个视觉视口。
+     仅在手机上提高表单控件字号，桌面密度保持不变。 */
+  @media (max-width: 767px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
   }
 
   /* 滚动条：Notion 风极细 */

@@ -89,7 +89,23 @@ Windows 把产物名改成 `ovh-server.exe` 即可;交叉编译加 `GOOS=linux G
 
 > Release 页提供 Windows amd64 / Linux amd64 / Linux arm64 三个预编译产物,不想自己编译可以直接下。
 
-### 方式 B:开发(前后端分开跑)
+### 方式 B:Docker Compose
+
+仓库提供 [docker-compose.example.yml](docker-compose.example.yml)，镜像会在构建阶段打包前端并生成带 UI 的单一二进制。数据卷持久化 SQLite、缓存和日志；容器启动后应用以非 root 用户运行。
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+# 编辑 docker-compose.yml：至少替换 API_SECRET_KEY 和 OVH_DB_KEY
+# OVH_DB_KEY 必须固定并单独备份，已有 data 卷不能换成新值。
+docker compose up -d --build
+docker compose logs -f ovh-console
+```
+
+浏览器打开 `http://localhost:19998`。数据保存在 Docker volume `ovh-console-data`；备份或迁移时必须同时保留该卷和 `OVH_DB_KEY`。`.env` 的 `OUTBOUND_PROXY` 在 Compose 中改为环境变量，用于 Telegram / GitHub / Webhook 等公共请求；OVH API 的代理请在「设置 → OVH 账户」中按账户配置。
+
+> 若宿主机代理监听在 `127.0.0.1`，容器不能直接访问它。Linux 可把代理监听到 Docker bridge 可达地址；Docker Desktop 可用 `host.docker.internal`。不要把宿主机代理地址误填到账号代理里而不验证连通性。
+
+### 方式 C:开发(前后端分开跑)
 
 ```bash
 # 后端

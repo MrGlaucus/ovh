@@ -2,14 +2,17 @@ package handlers
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/monitor"
+	"github.com/ovh-buy/server/internal/outboundip"
 	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
@@ -19,15 +22,17 @@ import (
 
 // accountInput POST/PUT body
 type accountInput struct {
-	Name        string `json:"name"`
-	Endpoint    string `json:"endpoint"` // 可空,会按 zone 推断
-	Zone        string `json:"zone"`
-	AppKey      string `json:"appKey"`
-	AppSecret   string `json:"appSecret"`
-	ConsumerKey string `json:"consumerKey"`
-	IAM         string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
-	ProxyURL    string `json:"proxyUrl"`
-	SetDefault  bool   `json:"setDefault"`
+	Name               string `json:"name"`
+	Endpoint           string `json:"endpoint"` // 可空,会按 zone 推断
+	Zone               string `json:"zone"`
+	AppKey             string `json:"appKey"`
+	AppSecret          string `json:"appSecret"`
+	ConsumerKey        string `json:"consumerKey"`
+	IAM                string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
+	ProxyURL           string `json:"proxyUrl"`
+	ExpectedOutboundIP string `json:"expectedOutboundIp"`
+	UseDirect          bool   `json:"useDirect"`
+	SetDefault         bool   `json:"setDefault"`
 }
 
 // endpointForZone 根据 zone 推 endpoint。
@@ -49,6 +54,11 @@ func (in *accountInput) normalize() {
 	in.ConsumerKey = strings.TrimSpace(in.ConsumerKey)
 	in.IAM = strings.TrimSpace(in.IAM)
 	in.ProxyURL = strings.TrimSpace(in.ProxyURL)
+	in.ExpectedOutboundIP = strings.TrimSpace(in.ExpectedOutboundIP)
+	if in.UseDirect {
+		in.ProxyURL = ""
+		in.ExpectedOutboundIP = ""
+	}
 	if in.Zone == "" {
 		// 没填 zone 时按 endpoint 推同大区的默认子公司,而不是一律回落 "IE"。
 		// 回落 IE 对「只填了 endpoint=ovh-us / ovh-ca」的请求是致命的:
@@ -89,6 +99,11 @@ func validateZoneEndpoint(zone, endpoint string) string {
 	return ""
 }
 
+func isStrictIPv4(raw string) bool {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	return ip != nil && ip.To4() != nil && ip.String() == strings.TrimSpace(raw)
+}
+
 func (in *accountInput) validate() string {
 	if in.Name == "" {
 		return "缺少 name"
@@ -103,6 +118,9 @@ func (in *accountInput) validate() string {
 		if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
 			return err.Error()
 		}
+	}
+	if in.ProxyURL != "" && !isStrictIPv4(in.ExpectedOutboundIP) {
+		return "配置账户代理时，预期出口 IP 必须是单个有效 IPv4 地址"
 	}
 	return ""
 }
@@ -204,17 +222,31 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 		}
 
 		acc := types.OVHAccount{
-			ID:          uuid.NewString(),
-			Name:        in.Name,
-			Endpoint:    in.Endpoint,
-			Zone:        in.Zone,
-			AppKey:      in.AppKey,
-			AppSecret:   in.AppSecret,
-			ConsumerKey: in.ConsumerKey,
-			IAM:         in.IAM,
-			ProxyURL:    in.ProxyURL,
-			IsDefault:   isDefault,
-			CreatedAt:   types.NowISO(),
+			ID:                 uuid.NewString(),
+			Name:               in.Name,
+			Endpoint:           in.Endpoint,
+			Zone:               in.Zone,
+			AppKey:             in.AppKey,
+			AppSecret:          in.AppSecret,
+			ConsumerKey:        in.ConsumerKey,
+			IAM:                in.IAM,
+			ProxyURL:           in.ProxyURL,
+			ExpectedOutboundIP: in.ExpectedOutboundIP,
+			OutboundIPStatus:   "pending",
+			IsDefault:          isDefault,
+			CreatedAt:          types.NowISO(),
+		}
+		// 代理账户先走无鉴权的 Cloudflare trace 校验；失配/失败绝不写入账户，
+		// 也绝不进入下面的 OVH 凭据验证。
+		status := outboundip.Verify(acc)
+		if !status.Allowed() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "代理出口 IP 校验失败: " + status.Reason()})
+			return
+		}
+		acc.ActualOutboundIP = status.ActualIP
+		acc.OutboundIPStatus = status.State
+		if !status.CheckedAt.IsZero() {
+			acc.OutboundIPCheckedAt = status.CheckedAt.Format(time.RFC3339Nano)
 		}
 		if err := state.DB.UpsertAccount(acc); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -222,7 +254,7 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 		}
 		_ = state.ReloadAccounts()
 
-		// 用新凭据验证
+		// 出口 IP 已确认后再用新凭据验证
 		valid, subsidiaryWarning := verifyAccountCreds(state, acc.ID)
 		state.Logger.Info("创建账户: "+acc.Name+" ("+acc.Zone+"/"+ovh.SubsidiaryRegion(acc.Zone)+" 区) valid="+boolStr(valid), "accounts")
 
@@ -257,6 +289,7 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		zoneProvided := strings.TrimSpace(in.Zone) != ""
 		endpointProvided := strings.TrimSpace(in.Endpoint) != ""
 		iamProvided := strings.TrimSpace(in.IAM) != ""
+		expectedIPProvided := strings.TrimSpace(in.ExpectedOutboundIP) != ""
 		in.normalize()
 		// 允许部分更新:空字段保留原值
 		acc := existing
@@ -285,13 +318,36 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		if in.ConsumerKey != "" {
 			acc.ConsumerKey = in.ConsumerKey
 		}
+		proxyChanged := false
+		if in.UseDirect {
+			proxyChanged = acc.ProxyURL != "" || acc.ExpectedOutboundIP != ""
+			acc.ProxyURL = ""
+			acc.ExpectedOutboundIP = ""
+		}
 		// 前端编辑时回传掩码则保持原值；新地址必须在保存前校验，避免把坏代理写入账户。
-		if in.ProxyURL != "" && !strings.Contains(in.ProxyURL, "•••") && !strings.Contains(in.ProxyURL, "***") {
+		if !in.UseDirect && in.ProxyURL != "" && !strings.Contains(in.ProxyURL, "•••") && !strings.Contains(in.ProxyURL, "***") {
 			if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			proxyChanged = in.ProxyURL != acc.ProxyURL
 			acc.ProxyURL = in.ProxyURL
+		}
+		if expectedIPProvided {
+			if !isStrictIPv4(in.ExpectedOutboundIP) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "预期出口 IP 必须是单个有效 IPv4 地址"})
+				return
+			}
+			if in.ExpectedOutboundIP != acc.ExpectedOutboundIP {
+				acc.ExpectedOutboundIP = in.ExpectedOutboundIP
+				proxyChanged = true
+			}
+		}
+		if proxyChanged {
+			acc.ActualOutboundIP = ""
+			acc.OutboundIPStatus = "pending"
+			acc.OutboundIPCheckedAt = ""
+			acc.OutboundIPError = ""
 		}
 
 		// 解不开的密文绝不能被空串覆盖回去。
@@ -324,6 +380,18 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 			return
 		}
 
+		// 每次保存代理账户都先重新确认出口 IP；不匹配时保留原账户配置，不写库。
+		status := outboundip.Verify(acc)
+		if !status.Allowed() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "代理出口 IP 校验失败: " + status.Reason()})
+			return
+		}
+		acc.ActualOutboundIP = status.ActualIP
+		acc.OutboundIPStatus = status.State
+		acc.OutboundIPError = ""
+		if !status.CheckedAt.IsZero() {
+			acc.OutboundIPCheckedAt = status.CheckedAt.Format(time.RFC3339Nano)
+		}
 		if err := state.DB.UpsertAccount(acc); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

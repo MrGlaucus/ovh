@@ -28,6 +28,8 @@ type queueRow struct {
 	ConfigSniperTaskID string  `db:"config_sniper_task_id"`
 	AutoPay            int     `db:"auto_pay"`
 	DelaySeconds       int     `db:"delay_seconds"`
+	OrderNotBefore     float64 `db:"order_not_before"`
+	DelayReady         int     `db:"delay_ready"`
 }
 
 func rowToQueueItem(r queueRow) types.QueueItem {
@@ -58,6 +60,8 @@ func rowToQueueItem(r queueRow) types.QueueItem {
 		ConfigSniperTaskID: r.ConfigSniperTaskID,
 		AutoPay:            r.AutoPay == 1,
 		DelaySeconds:       r.DelaySeconds,
+		OrderNotBefore:     r.OrderNotBefore,
+		DelayReady:         r.DelayReady == 1,
 	}
 }
 
@@ -95,6 +99,8 @@ func queueItemToRow(q types.QueueItem) (queueRow, error) {
 		ConfigSniperTaskID: q.ConfigSniperTaskID,
 		AutoPay:            bi(q.AutoPay),
 		DelaySeconds:       q.DelaySeconds,
+		OrderNotBefore:     q.OrderNotBefore,
+		DelayReady:         bi(q.DelayReady),
 	}, nil
 }
 

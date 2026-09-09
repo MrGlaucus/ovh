@@ -1,0 +1,41 @@
+# 使用方法：
+#   cp docker-compose.example.yml docker-compose.yml
+#   编辑 docker-compose.yml 中的 API_SECRET_KEY 与 OVH_DB_KEY
+#   docker compose up -d --build
+#
+# OVH_DB_KEY 必须是固定且已备份的值；它用于解密 data/sniper.db 内的账户凭据。
+# 不要在运行中的已有数据库上随意更换它，否则已保存凭据会无法解密。
+services:
+  ovh-console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "docker"
+    image: ovh-console:local
+    container_name: ovh-console
+    restart: unless-stopped
+    ports:
+      # 仅本机访问可改为 "127.0.0.1:19998:19998"
+      - "19998:19998"
+    environment:
+      API_SECRET_KEY: "请替换为随机长密钥"
+      OVH_DB_KEY: "请替换为固定且已备份的数据库加密密钥"
+      ENABLE_API_KEY_AUTH: "true"
+      GIN_MODE: "release"
+      LISTEN_HOST: "0.0.0.0"
+      PORT: "19998"
+      DATA_DIR: "/data"
+      CACHE_DIR: "/data/cache"
+      LOGS_DIR: "/data/logs"
+      # 公共服务代理，仅供 Telegram / GitHub / Webhook 等非账号请求使用。
+      # OVH API 使用每个账户在「设置 → OVH 账户」里配置的专属代理。
+      # OUTBOUND_PROXY: "socks5://host.docker.internal:1080"
+      # 反向代理部署时明确声明受信任的代理地址或 CIDR。
+      # TRUSTED_PROXIES: "172.16.0.0/12"
+    volumes:
+      - ovh-data:/data
+
+volumes:
+  ovh-data:
+    name: ovh-console-data
