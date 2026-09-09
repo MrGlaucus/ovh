@@ -136,6 +136,9 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		authorized := telegram.IsAuthorizedActor(state, actorChatID(data), actorUserID(data))
 		if !authorized {
 			state.Logger.Warn("拒绝未授权的 Telegram 请求(未写入幂等表)", "telegram")
+			if cb, ok := data["callback_query"].(map[string]interface{}); ok {
+				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "无权限", true)
+			}
 			c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
 			return
 		}
@@ -148,6 +151,9 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				state.Logger.Warn("update_id 幂等写入失败: "+err.Error(), "telegram")
 			} else if !claimed {
 				state.Logger.Info(fmt.Sprintf("忽略重复投递的 update_id=%d", updateID), "telegram")
+				if cb, ok := data["callback_query"].(map[string]interface{}); ok {
+					telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该操作已处理", false)
+				}
 				c.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
 				return
 			}
@@ -279,7 +285,12 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 
 // handleTelegramCallback 处理「一键下单」按钮回调。
 func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Context, cb map[string]interface{}) {
-	if refuseInLegacyMode(state, c) {
+	if legacy, _ := c.Get("tgLegacyMode"); legacy == true {
+		// callback 必须应答，否则 Telegram 只会一直显示 loading，用户无法得知
+		// 当前 webhook 未启用 secret_token，所有会创建订单的动作都按 fail-closed 拒绝。
+		state.Logger.Error("兼容模式(webhook secret 未注册)下拒绝执行 Telegram 下单动作", "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "Webhook 安全校验未启用，请在设置页重新注册 Webhook", true)
+		c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "legacy_mode_order_refused"})
 		return
 	}
 	cbData, _ := cb["data"].(string)
@@ -311,6 +322,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 
 	callbackObj, ok := decodeCallbackData(state, cbData)
 	if !ok {
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮数据异常，请等待新的通知", true)
 		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Invalid callback data format"})
 		return
 	}

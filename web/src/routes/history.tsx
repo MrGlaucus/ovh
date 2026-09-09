@@ -24,6 +24,7 @@ import {
 import {
   useHistory,
   useClearHistory,
+  useRemoveHistoryItem,
   useRefreshOrderStatus,
   type PurchaseHistory,
 } from "@/hooks/use-history";
@@ -105,18 +106,25 @@ function formatCountdown(remainingMs: number): string {
   return `${minutes}分`;
 }
 
+/** 旧版 Docker 写入的时间没有时区；容器时钟为 UTC，因此按 UTC 补齐以避免页面少 8 小时。 */
+function parseStoredTime(value: string): Date {
+  return new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`);
+}
+
 function getExpirationMs(item: PurchaseHistory): number {
   if (item.expirationTime) return new Date(item.expirationTime).getTime();
-  return new Date(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
+  return parseStoredTime(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
 }
 
 function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
+  const remove = useRemoveHistoryItem();
   const refreshStatus = useRefreshOrderStatus();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [deleteItem, setDeleteItem] = useState<PurchaseHistory | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   // 每分钟刷新一次 now，让所有行的倒计时同步推进
@@ -235,17 +243,30 @@ function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filtered.map((item) => <HistoryRow key={item.id} item={item} now={now} />)}
+                {filtered.map((item) => <HistoryRow key={item.id} item={item} now={now} onDelete={() => setDeleteItem(item)} />)}
               </tbody>
             </table>
           </Card>
 
           {/* 手机:卡片堆叠,每条订单一张卡 */}
           <div className="md:hidden space-y-2">
-            {filtered.map((item) => <HistoryCard key={item.id} item={item} now={now} />)}
+            {filtered.map((item) => <HistoryCard key={item.id} item={item} now={now} onDelete={() => setDeleteItem(item)} />)}
           </div>
         </>
       )}
+
+      <Dialog open={!!deleteItem} onOpenChange={(open) => !open && setDeleteItem(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除这条抢购历史？</DialogTitle>
+            <DialogDescription>将删除 {deleteItem?.planCode} · {deleteItem?.datacenter.toUpperCase()} 的历史记录，此操作不可撤销。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteItem(null)}>取消</Button>
+            <Button variant="destructive" disabled={remove.isPending} onClick={() => deleteItem && remove.mutate(deleteItem.id, { onSuccess: () => setDeleteItem(null) })}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={confirmClear} onOpenChange={setConfirmClear}>
         <DialogContent>
@@ -265,7 +286,7 @@ function HistoryPage() {
   );
 }
 
-function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
+function HistoryRow({ item, now, onDelete }: { item: PurchaseHistory; now: number; onDelete: () => void }) {
   const st = orderStatusView(item);
   // 倒计时是"付款窗口":付了、取消了、交付了都不再显示
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
@@ -309,7 +330,7 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
         )}
       </td>
       <td className="px-4 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
-        {new Date(item.purchaseTime).toLocaleString("zh-CN", {
+        {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", {
           month: "2-digit",
           day: "2-digit",
           hour: "2-digit",
@@ -350,13 +371,17 @@ function HistoryRow({ item, now }: { item: PurchaseHistory; now: number }) {
             错误
           </button>
         ) : "—"}
+        <button type="button" onClick={onDelete} className="ml-3 inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
+          <Trash2 className="w-3 h-3" />
+          删除
+        </button>
       </td>
     </tr>
   );
 }
 
 /** 手机端的订单卡片渲染。跟 HistoryRow 字段一一对应,但堆叠成卡片。 */
-function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
+function HistoryCard({ item, now, onDelete }: { item: PurchaseHistory; now: number; onDelete: () => void }) {
   const st = orderStatusView(item);
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
@@ -395,7 +420,7 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
         </div>
         <div className="flex items-center justify-between gap-2 text-[11px]">
           <span className="text-muted-foreground font-mono">
-            {new Date(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+            {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </span>
           {item.price?.withTax != null ? <HistoryPrice item={item} strike={isExpired} /> : null}
         </div>
@@ -426,6 +451,10 @@ function HistoryCard({ item, now }: { item: PurchaseHistory; now: number }) {
               错误详情
             </button>
           ) : null}
+          <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
+            <Trash2 className="w-3 h-3" />
+            删除
+          </button>
         </div>
       </CardContent>
     </Card>

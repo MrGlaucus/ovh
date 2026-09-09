@@ -42,12 +42,15 @@ export function useSettings() {
 export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (payload: SettingsConfig) => (await api.post("/settings", payload)).data,
-    onSuccess: () => {
+    mutationFn: async (payload: SettingsConfig) =>
+      (await api.post<{ status: string; warning?: string }>("/settings", payload)).data,
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: qk.settings.config() });
+      qc.invalidateQueries({ queryKey: qk.settings.telegramWebhookInfo() });
       // TG 配置可能变了,让监控对话框下次打开重新 verify
       qc.invalidateQueries({ queryKey: ["telegram", "verify"] });
-      toast.success("设置已保存");
+      if (result.warning) toast.warning(result.warning);
+      else toast.success("设置已保存");
     },
     onError: (e: any) => toast.error(e.response?.data?.error || "保存失败"),
   });

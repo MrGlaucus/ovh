@@ -252,6 +252,7 @@ func main() {
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))
 		api.DELETE("/purchase-history", handlers.ClearPurchaseHistory(state))
+		api.DELETE("/purchase-history/:id", handlers.RemovePurchaseHistoryItem(state))
 		// 订单支付状态:下单成功≠已付款,得去 OVH 问
 		api.POST("/purchase-history/refresh-status", handlers.RefreshOrderStatuses(state))
 

@@ -62,6 +62,19 @@ export function useRefreshOrderStatus() {
   });
 }
 
+/** 删除单条抢购历史 */
+export function useRemoveHistoryItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => (await api.delete(`/purchase-history/${id}`)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.history() });
+      toast.success("已删除抢购历史记录");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || "删除失败"),
+  });
+}
+
 /** 清空抢购历史 */
 export function useClearHistory() {
   const qc = useQueryClient();

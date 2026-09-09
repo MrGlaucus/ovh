@@ -218,27 +218,31 @@ func AllowRate(id string) bool {
 //
 // 没配 Token、没注册过 webhook、或者已经是强校验模式时，这个函数什么都不做。
 func AutoUpgradeWebhookSecret(state *app.State) {
-	cfg := state.Config.Get()
-	if strings.TrimSpace(cfg.TgToken) == "" {
-		return
+	// Docker 启动时网络或公共代理可能尚未就绪；一次失败会让下单按钮永久停在
+	// 兼容模式，因此以短间隔重试几次。未注册 webhook 的情况则立即停止等待人工配置。
+	for attempt := 0; attempt < 3; attempt++ {
+		cfg := state.Config.Get()
+		if strings.TrimSpace(cfg.TgToken) == "" || cfg.TgWebhookSecretRegistered {
+			return
+		}
+		ok, info, errMsg := GetWebhookInfo(state)
+		if !ok {
+			state.Logger.Warn("读取 webhook 信息失败，稍后重试: "+errMsg, "telegram")
+		} else if current, _ := info["url"].(string); strings.TrimSpace(current) == "" {
+			// 从没注册过 webhook：用户之后在设置页点「注册」时自然会带上 secret。
+			return
+		} else {
+			state.Logger.Info("检测到 webhook 未启用 secret_token，正在用同一 URL 重新注册以启用强校验", "telegram")
+			if done, msg, _ := SetWebhook(state, current); done {
+				state.Logger.Info("✅ webhook secret_token 已启用: "+msg, "telegram")
+				return
+			} else {
+				state.Logger.Warn("webhook secret_token 自动启用失败，稍后重试: "+msg, "telegram")
+			}
+		}
+		if attempt < 2 {
+			time.Sleep(30 * time.Second)
+		}
 	}
-	if cfg.TgWebhookSecretRegistered {
-		return
-	}
-	ok, info, errMsg := GetWebhookInfo(state)
-	if !ok {
-		state.Logger.Debug("跳过 webhook secret 自愈（无法读取 webhook 信息）: "+errMsg, "telegram")
-		return
-	}
-	current, _ := info["url"].(string)
-	if strings.TrimSpace(current) == "" {
-		// 从没注册过 webhook：用户之后在设置页点「注册」时自然会带上 secret
-		return
-	}
-	state.Logger.Info("检测到 webhook 未启用 secret_token，正在用同一 URL 重新注册以启用强校验", "telegram")
-	if done, msg, _ := SetWebhook(state, current); done {
-		state.Logger.Info("✅ webhook secret_token 已启用: "+msg, "telegram")
-	} else {
-		state.Logger.Warn("webhook secret_token 自动启用失败（保持兼容模式）: "+msg, "telegram")
-	}
+	state.Logger.Warn("webhook secret_token 自动启用连续失败，请到设置页重新注册 Webhook", "telegram")
 }

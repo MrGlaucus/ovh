@@ -12,8 +12,10 @@ type Config struct {
 	Endpoint    string `json:"endpoint"`
 	TgToken     string `json:"tgToken"`
 	TgChatID    string `json:"tgChatId"`
-	IAM         string `json:"iam"`
-	Zone        string `json:"zone"`
+	// WebhookURL 是 Telegram 回调到本服务的公网地址；保存后自动注册并启用 secret_token。
+	WebhookURL string `json:"webhookUrl,omitempty"`
+	IAM        string `json:"iam"`
+	Zone       string `json:"zone"`
 
 	// TgWebhookSecret Telegram setWebhook 的 secret_token。Telegram 会在每次回调里带
 	// X-Telegram-Bot-Api-Secret-Token 头，用它证明请求真的来自 Telegram。
@@ -263,31 +265,27 @@ type CacheInfo struct {
 	AutoRefreshEnabled bool     `json:"autoRefreshEnabled"`
 }
 
-// NowISO 返回 ISO8601 时间（与 datetime.now().isoformat() 一致）
+// NowISO 返回带 UTC 时区标识的 RFC3339 时间。持久化时间必须自描述时区，
+// 否则 Docker 的 UTC 时间会被浏览器按用户本地时区解释，导致历史记录错八小时。
 func NowISO() string {
-	return time.Now().Format(NowISOLayout)
+	return time.Now().UTC().Format(NowISOLayout)
 }
 
-// NowISOLayout 是 NowISO 的布局。**注意它没有时区偏移** —— 这不是 RFC3339。
-// 用 time.Parse(time.RFC3339, ...) 去解它一定失败,而失败通常被 `err == nil &&`
-// 这类写法静默吞掉,于是整段逻辑变成永不生效的死代码。
-// 实际踩到的:订单状态刷新的两处节流(2 分钟最小间隔 / 30 天上限)全废,
-// 每轮都对所有未终态订单打 OVH;队列按创建时间排序也退化成了不排序。
-// 解析自家时间戳一律走 ParseTS。
-const NowISOLayout = "2006-01-02T15:04:05.000000"
+// NowISOLayout 是 NowISO 的 RFC3339 布局；解析自家时间戳一律走 ParseTS。
+const NowISOLayout = "2006-01-02T15:04:05.000000Z07:00"
 
 // ParseTS 解析本项目自己写出来的时间戳。
 //
-// 历史上存过两种格式:NowISO(无时区,本地时间)和 time.RFC3339Nano,
-// 库里两种都有,所以解析必须两种都认。第二个返回值为 false 表示确实解不出来,
+// 历史上存过两种格式:无时区 NowISO 和带时区的 RFC3339；库里两种都有，
+// 所以解析必须两种都认。第二个返回值为 false 表示确实解不出来，
 // 调用方要显式决定"解不出来时怎么办",不要再写成静默跳过。
 func ParseTS(s string) (time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return time.Time{}, false
 	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, NowISOLayout, "2006-01-02T15:04:05"} {
-		// NowISO 没带时区,按本地时区解 —— 它本来就是 time.Now() 的本地时间
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, NowISOLayout, "2006-01-02T15:04:05.000000", "2006-01-02T15:04:05"} {
+		// 无时区旧格式沿用进程本地时区解释；新格式自带 UTC/偏移信息。
 		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
 			return t, true
 		}

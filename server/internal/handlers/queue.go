@@ -214,6 +214,38 @@ func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// RemovePurchaseHistoryItem DELETE /api/purchase-history/:id
+func RemovePurchaseHistoryItem(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		state.HistoryMu.Lock()
+		kept := make([]types.PurchaseHistoryEntry, 0, len(state.History))
+		found := false
+		for _, entry := range state.History {
+			if entry.ID == id {
+				found = true
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if found {
+			state.History = kept
+		}
+		state.HistoryMu.Unlock()
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"status": "error", "error": "抢购历史记录不存在"})
+			return
+		}
+		if err := state.SaveHistory(); err != nil {
+			state.Logger.Error("删除抢购历史后保存失败: "+err.Error(), "history")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "记录已从当前列表移除，但没能写入数据库：" + err.Error()})
+			return
+		}
+		state.Logger.Info("已删除抢购历史记录: "+id, "history")
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
+	}
+}
+
 // ClearPurchaseHistory DELETE /api/purchase-history
 func ClearPurchaseHistory(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
