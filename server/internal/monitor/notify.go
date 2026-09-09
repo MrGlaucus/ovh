@@ -340,14 +340,8 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	for idx, dcInfo := range availableDCs {
 		dc, _ := dcInfo["dc"].(string)
 		msgUUID := uuid.NewString()
-		m.AddMessageUUID(msgUUID, planCode, dc, options, configInfo)
-		// AddMessageUUID 在 subscriptions.go(不在本次改动范围),它只写不带账户的行,
-		// 这里紧接着补写 account_id。失败只退回"默认账户"的老行为,不影响按钮可用。
-		if btnAccountID != "" && m.state.DB != nil {
-			if err := m.state.DB.SetTelegramButtonAccount(msgUUID, btnAccountID); err != nil {
-				m.state.Logger.Warn("一键下单按钮账户归属落库失败（回调将退回默认账户）: "+err.Error(), "telegram")
-			}
-		}
+		// 账户与按钮同一次写入数据库；选择账户的交互必须依赖这条绑定信息。
+		m.AddMessageUUIDForAccount(msgUUID, btnAccountID, planCode, dc, options, configInfo)
 		m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v, account=%s",
 			msgUUID, planCode, dc, options, btnAccountID), "monitor")
 

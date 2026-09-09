@@ -256,25 +256,28 @@ func AnswerCallback(state *app.State, callbackQueryID, text string, showAlert bo
 
 // EditMessageReplyMarkup 替换已有 Telegram 消息的内联按钮。
 // 账户选择只改按钮，保留原有的有货通知正文，用户全程无需输入文字。
-func EditMessageReplyMarkup(state *app.State, chatID interface{}, messageID int64, replyMarkup map[string]interface{}) bool {
+func EditMessageReplyMarkup(state *app.State, chatID interface{}, messageID int64, replyMarkup map[string]interface{}) error {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
-		return false
+		return fmt.Errorf("未配置 Telegram Bot Token")
 	}
 	payload := map[string]interface{}{"chat_id": chatID, "message_id": messageID, "reply_markup": replyMarkup}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+cfg.TgToken+"/editMessageReplyMarkup", bytes.NewReader(body))
 	if err != nil {
-		return false
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
 	if err != nil {
-		state.Logger.Warn("更新 Telegram 按钮失败: "+scrub(err.Error()), "telegram")
-		return false
+		return fmt.Errorf("请求 Telegram API: %w", err)
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // SendReplyWithMarkup 回复指定消息并附带内联按钮。

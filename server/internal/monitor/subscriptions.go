@@ -229,8 +229,14 @@ func (m *Monitor) cleanupExpiredCaches() {
 	}
 }
 
-// AddMessageUUID 缓存按钮对应的配置
+// AddMessageUUID 缓存按钮对应的配置。
 func (m *Monitor) AddMessageUUID(id, planCode, datacenter string, options []string, configInfo map[string]interface{}) {
+	m.AddMessageUUIDForAccount(id, "", planCode, datacenter, options, configInfo)
+}
+
+// AddMessageUUIDForAccount 创建账户绑定的一次性按钮。账户必须与按钮同一次落库，
+// 不能先插空账户再 UPDATE，否则 UPDATE 失败时 TG 无法进入账户选择页。
+func (m *Monitor) AddMessageUUIDForAccount(id, accountID, planCode, datacenter string, options []string, configInfo map[string]interface{}) {
 	now := float64(time.Now().Unix())
 	m.cacheLock.Lock()
 	m.messageUUIDCache[id] = &CachedMessage{
@@ -245,7 +251,7 @@ func (m *Monitor) AddMessageUUID(id, planCode, datacenter string, options []stri
 	// 同时落库：内存缓存进程重启就没了，按钮一点击就 400；
 	// 落库后按钮跨重启可用，并且 used_at 让它只能被消费一次。
 	if m.state.DB != nil {
-		if err := m.state.DB.UpsertTelegramButton(id, planCode, datacenter, options, configInfo, now); err != nil {
+		if err := m.state.DB.UpsertTelegramButtonForAccount(id, accountID, planCode, datacenter, options, configInfo, now); err != nil {
 			m.state.Logger.Warn("一键下单按钮落库失败（仍可用内存缓存）: "+err.Error(), "telegram")
 		}
 	}

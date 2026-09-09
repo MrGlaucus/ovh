@@ -220,17 +220,23 @@ func actorUserID(data map[string]interface{}) interface{} {
 }
 
 // showTelegramAccountChoices 将同一机房的按钮切换为可下单账户列表；此操作不消费订单按钮。
-func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[string]interface{}, buttonID string) bool {
+func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[string]interface{}, buttonID string) error {
 	if state.DB == nil {
-		return false
+		return fmt.Errorf("数据库不可用")
 	}
 	row, exists, err := state.DB.GetTelegramButton(buttonID)
-	if err != nil || !exists || row.UsedAt > 0 || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
-		return false
+	if err != nil {
+		return fmt.Errorf("读取按钮失败: %w", err)
+	}
+	if !exists || row.UsedAt > 0 || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
+		return fmt.Errorf("按钮已失效")
+	}
+	if row.AccountID == "" {
+		return fmt.Errorf("按钮缺少账户归属")
 	}
 	accounts := mon.CompatibleOrderAccounts(row.AccountID)
 	if len(accounts) < 2 {
-		return false
+		return fmt.Errorf("没有两个同区域可用账户")
 	}
 	message, _ := cb["message"].(map[string]interface{})
 	chatID := getNested(message, "chat", "id")
@@ -263,9 +269,12 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 		keyboard = append(keyboard, line)
 	}
 	if len(keyboard) == 0 {
-		return false
+		return fmt.Errorf("创建账户选择按钮失败")
 	}
-	return telegram.EditMessageReplyMarkup(state, chatID, int64(messageID), map[string]interface{}{"inline_keyboard": keyboard})
+	if err := telegram.EditMessageReplyMarkup(state, chatID, int64(messageID), map[string]interface{}{"inline_keyboard": keyboard}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // handleTelegramCallback 处理「一键下单」按钮回调。
@@ -340,12 +349,14 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		return
 	}
 	if action == "choose" {
-		if !showTelegramAccountChoices(state, mon, cb, buttonID) {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效或没有可用账户", true)
+		// 先应答停止 Telegram 的 loading；消息编辑失败也会给用户可见提示。
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载账户", false)
+		if err := showTelegramAccountChoices(state, mon, cb, buttonID); err != nil {
+			state.Logger.Warn("打开 Telegram 账户选择失败: "+err.Error(), "telegram")
+			telegram.SendReply(state, chatID, "❌ 无法打开账户选择："+err.Error()+"。请等待下一条有货通知后重试。", int64(messageID))
 			c.JSON(http.StatusGone, gin.H{"ok": false, "error": "account_selection_unavailable"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "请选择下单账户", false)
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
