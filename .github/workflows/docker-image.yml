@@ -1,6 +1,7 @@
 name: Docker Image
 
 # 与 Release 一样由 v* tag 触发，构建并推送多架构镜像到 Docker Hub。
+# Docker Hub 会在首次成功推送时创建 docker.io/<DOCKER_HUB_USERNAME>/ovh。
 on:
   push:
     tags:
@@ -11,6 +12,10 @@ on:
         description: "版本号（不带 v 前缀；留空时从 VERSION 读取）"
         required: false
         default: ""
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/ovh
 
 permissions:
   contents: read
@@ -44,15 +49,14 @@ jobs:
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
         with:
-          # 用户名与镜像名兼容配置为 Actions Variables 或 Secrets，认证令牌必须为 Secret。
-          username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.DOCKERHUB_IMAGE || secrets.DOCKERHUB_IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ steps.version.outputs.value }}
             type=raw,value=v${{ steps.version.outputs.value }}
