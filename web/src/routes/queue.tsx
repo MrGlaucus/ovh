@@ -74,6 +74,10 @@ const DEFAULT_RETRY_INTERVAL = 60;
 
 function QueuePage() {
   const queue = useQueueList();
+  // 队列仅保存 planCode；展示名从当前账户目录实时映射，目录未命中时回退原始标识。
+  const servers = useServers();
+  const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
+  const optionLabels = useMemo(() => new Map((servers.data || []).flatMap((server) => [...server.defaultOptions, ...server.availableOptions].map((option) => [option.value, option.label] as const))), [servers.data]);
   // 每条链路上一轮的耗时,用来回答"我到底卡在哪一步"
   const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
@@ -168,6 +172,8 @@ function QueuePage() {
             <QueueRow
               key={q.id}
               item={q}
+              displayName={serverNames.get(q.planCode)}
+              optionLabels={optionLabels}
               timing={timings.data?.[`${q.planCode}@${q.datacenter}`]}
               onToggle={() =>
                 toggle.mutate({
@@ -700,18 +706,21 @@ function CreateQueueDialog({
 
 function QueueRow({
   item,
+  displayName,
+  optionLabels,
   timing,
   onToggle,
   onDelete,
 }: {
   item: QueueItem;
+  displayName?: string;
+  optionLabels: Map<string, string>;
   timing?: PurchaseTiming;
   onToggle: () => void;
   onDelete: () => void;
 }) {
   // 只在已发现有货后的等待状态驱动倒计时；到期后后端会重新确认库存再下单。
   const delaying = item.status === "delaying" && !!item.orderNotBefore;
-  const [showOptions, setShowOptions] = useState(false);
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (!delaying) return;
@@ -772,14 +781,14 @@ function QueueRow({
       <CardContent className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span className="font-mono font-semibold text-sm">{item.planCode}</span>
+            <span className="font-semibold text-sm">{displayName || item.planCode}</span>
+            {displayName && <span className="font-mono text-[11px] text-muted-foreground">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
-            {item.options && item.options.length > 0 && (
-              <button type="button" onClick={() => setShowOptions((shown) => !shown)} title="点击查看或收起具体配置">
-                <Chip tone="default">含 {item.options.length} 个可选配置 · {showOptions ? "收起" : "查看"}</Chip>
-              </button>
-            )}
+            {item.options?.map((option) => {
+              const label = optionLabels.get(option);
+              return <Chip key={option} tone="default" title={label ? option : "已选可选配置"}>{label || option}</Chip>;
+            })}
             {item.autoPay && (
               <Chip tone="warning" title="下单成功后会用 OVH 默认支付方式自动扣款">
                 自动付款
@@ -794,12 +803,6 @@ function QueueRow({
             )}
             <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />
           </div>
-          {showOptions && item.options.length > 0 && (
-            <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-2.5 py-2 text-[11px]">
-              <span className="text-muted-foreground">已选配置：</span>
-              {item.options.map((option) => <Chip key={option} tone="default" className="font-mono">{option}</Chip>)}
-            </div>
-          )}
           <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
             <Clock className="w-3 h-3" />
             {/* failed / completed 是终态,不会再重试 —— 再显示"下次尝试"会让用户以为还在排队。

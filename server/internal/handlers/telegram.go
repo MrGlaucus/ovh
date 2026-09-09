@@ -219,6 +219,55 @@ func actorUserID(data map[string]interface{}) interface{} {
 	return nil
 }
 
+// showTelegramAccountChoices 将同一机房的按钮切换为可下单账户列表；此操作不消费订单按钮。
+func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[string]interface{}, buttonID string) bool {
+	if state.DB == nil {
+		return false
+	}
+	row, exists, err := state.DB.GetTelegramButton(buttonID)
+	if err != nil || !exists || row.UsedAt > 0 || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
+		return false
+	}
+	accounts := mon.CompatibleOrderAccounts(row.AccountID)
+	if len(accounts) < 2 {
+		return false
+	}
+	message, _ := cb["message"].(map[string]interface{})
+	chatID := getNested(message, "chat", "id")
+	messageID, _ := getNumOrFloat(message["message_id"])
+	type button struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	keyboard := make([][]button, 0, (len(accounts)+1)/2)
+	line := make([]button, 0, 2)
+	options := db.ParseTelegramButtonOptions(row.Options)
+	for _, account := range accounts {
+		childID := uuid.NewString()
+		if err := state.DB.UpsertTelegramButtonForAccount(childID, account.ID, row.PlanCode, row.Datacenter, options, nil, row.CreatedAt); err != nil {
+			state.Logger.Warn("创建 Telegram 账户选择按钮失败: "+err.Error(), "telegram")
+			continue
+		}
+		callback, _ := json.Marshal(map[string]string{"a": "add_to_queue", "u": childID})
+		zone := strings.ToUpper(strings.TrimSpace(account.Zone))
+		if zone == "" {
+			zone = ovh.DefaultSubsidiaryForEndpoint(account.Endpoint)
+		}
+		line = append(line, button{Text: account.Name + "（" + ovh.SubsidiaryRegion(zone) + "）", CallbackData: string(callback)})
+		if len(line) == 2 {
+			keyboard = append(keyboard, line)
+			line = make([]button, 0, 2)
+		}
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	if len(keyboard) == 0 {
+		return false
+	}
+	return telegram.EditMessageReplyMarkup(state, chatID, int64(messageID), map[string]interface{}{"inline_keyboard": keyboard})
+}
+
 // handleTelegramCallback 处理「一键下单」按钮回调。
 func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Context, cb map[string]interface{}) {
 	if refuseInLegacyMode(state, c) {
@@ -258,13 +307,54 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	}
 
 	action := strOr(callbackObj, "a", "action")
+	buttonID := strOr(callbackObj, "u", "uuid")
+	if action == "text" {
+		if state.DB == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
+			return
+		}
+		row, claimed, err := state.DB.ClaimTelegramButton(buttonID)
+		if err != nil || !claimed || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效，请重新发送 /buy", true)
+			c.JSON(http.StatusGone, gin.H{"ok": false, "error": "text_order_button_unavailable"})
+			return
+		}
+		var meta struct {
+			Quantity int `json:"quantity"`
+		}
+		_ = json.Unmarshal([]byte(row.ConfigInfo), &meta)
+		result := telegram.ProcessOrder(state, row.AccountID, row.PlanCode, row.Datacenter, meta.Quantity, db.ParseTelegramButtonOptions(row.Options))
+		message, _ := cb["message"].(map[string]interface{})
+		chatID := getNested(message, "chat", "id")
+		messageID, _ := getNumOrFloat(message["message_id"])
+		if !result.Success {
+			_ = state.DB.UnclaimTelegramButton(buttonID)
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "创建任务失败", true)
+			telegram.SendReply(state, chatID, "❌ 下单失败\n\n"+result.Message, int64(messageID))
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "text_order_failed"})
+			return
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已创建抢购任务", false)
+		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。", result.CreatedOrders, result.TotalOrders), int64(messageID))
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	if action == "choose" {
+		if !showTelegramAccountChoices(state, mon, cb, buttonID) {
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效或没有可用账户", true)
+			c.JSON(http.StatusGone, gin.H{"ok": false, "error": "account_selection_unavailable"})
+			return
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "请选择下单账户", false)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action != "add_to_queue" {
 		state.Logger.Warn("未知的action: "+action, "telegram")
 		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Unknown action: " + action})
 		return
 	}
 
-	buttonID := strOr(callbackObj, "u", "uuid")
 	// 没有按钮 id 就不许下单。
 	//
 	// 以前 claim / 过期 / 重放三道判定全在 if buttonID != "" 里面 ——
@@ -359,19 +449,24 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		}
 	}
 
-	// 入队账户:优先用按钮里记下的那个(monitor 发通知时写入的触发订阅账户),
-	// 它和查到这批库存的那个大区一致;按钮没记账户(老按钮/单账户)才退回默认账户。
+	// 入队账户:使用按钮里记下的显式账户；它和查到这批库存的区域一致。
+	// 仅老按钮没有账户维度时才回退默认账户；已选账户不存在则拒绝，绝不切换账户。
 	// 留空不入队 —— 会让下游 history / 账户 chip 全都对不上号。
 	//
 	// 一个账户都没有时不能"留空照样入队":这一单永远下不出去，
 	// 用户却收到一句"已添加到抢购队列"，等于把失败藏到几十次重试之后。
 	acc, hasAcc := state.FindAccount(btnAccountID)
 	if !hasAcc && btnAccountID != "" {
-		// 按钮里的账户已被删除 —— 不能直接失败(用户还有别的账户可下),
-		// 但必须落一条 Warn:退回默认账户很可能就是跨区下错单的那一刻。
-		state.Logger.Warn("按钮记录的账户已不存在，退回默认账户: "+btnAccountID, "telegram")
-		btnAccountID = ""
-		acc, hasAcc = state.FindAccount("")
+		// 账户选择是用户的显式决定；账户已删除时绝不能偷偷换到默认账户，
+		// 否则会绕开该账户的专属代理与出口 IP 约束，甚至在另一个账户产生真实订单。
+		if claimed {
+			_ = state.DB.UnclaimTelegramButton(buttonID)
+		}
+		state.Logger.Warn("Telegram 一键下单被拒绝：按钮指定的账户已不存在: "+btnAccountID, "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "所选账户已不存在", true)
+		telegram.SendReply(state, chatID, "❌ 所选下单账户已被删除，未创建抢购任务。请等待下一条有货通知后重新选择账户。", int64(messageID))
+		c.JSON(http.StatusGone, gin.H{"ok": false, "error": "selected_account_not_found"})
+		return
 	}
 	if !hasAcc {
 		if claimed {
@@ -454,6 +549,48 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// sendTextOrderAccountChoices 为文本 /buy 创建明确账户绑定的一次性按钮。
+func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID int64, order *telegram.OrderInfo) bool {
+	if state.DB == nil || order == nil {
+		return false
+	}
+	state.AccountsMu.RLock()
+	accounts := append([]types.OVHAccount(nil), state.Accounts...)
+	state.AccountsMu.RUnlock()
+	if len(accounts) == 0 {
+		return false
+	}
+	type button struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	keyboard := make([][]button, 0, (len(accounts)+1)/2)
+	line := make([]button, 0, 2)
+	for _, account := range accounts {
+		id := uuid.NewString()
+		if err := state.DB.UpsertTelegramButtonForAccount(id, account.ID, order.PlanCode, order.Datacenter, order.Options, map[string]interface{}{"quantity": order.Quantity}, float64(time.Now().Unix())); err != nil {
+			continue
+		}
+		callback, _ := json.Marshal(map[string]string{"a": "text", "u": id})
+		zone := strings.ToUpper(strings.TrimSpace(account.Zone))
+		if zone == "" {
+			zone = ovh.DefaultSubsidiaryForEndpoint(account.Endpoint)
+		}
+		line = append(line, button{Text: account.Name + "（" + ovh.SubsidiaryRegion(zone) + "）", CallbackData: string(callback)})
+		if len(line) == 2 {
+			keyboard = append(keyboard, line)
+			line = make([]button, 0, 2)
+		}
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	if len(keyboard) == 0 {
+		return false
+	}
+	return telegram.SendReplyWithMarkup(state, chatID, "请选择用于创建抢购任务的账户：", messageID, map[string]interface{}{"inline_keyboard": keyboard})
+}
+
 // handleTelegramMessage 处理文本下单消息。
 func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]interface{}) {
 	if refuseInLegacyMode(state, c) {
@@ -498,7 +635,11 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 	}
 	state.Logger.Info(fmt.Sprintf("解析下单消息: planCode=%s, datacenter=%s, quantity=%d, options=%v",
 		orderInfo.PlanCode, orderInfo.Datacenter, orderInfo.Quantity, orderInfo.Options), "telegram")
-	result := telegram.ProcessOrder(state, orderInfo.PlanCode, orderInfo.Datacenter, orderInfo.Quantity, orderInfo.Options)
+	if sendTextOrderAccountChoices(state, chatID, int64(messageID), orderInfo) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	result := telegram.OrderResult{Success: false, Message: "无法生成账户选择按钮，请确认至少配置了一个 OVH 账户后重试"}
 	var reply string
 	if result.Success {
 		dcText := "所有可用机房"

@@ -8,7 +8,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/notify"
+	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // 机房代码 → 中文显示。key 一律是「城市段」,长代码由 availabilityDCCity 归一化后再查。
@@ -209,6 +212,25 @@ func (m *Monitor) resolveNotifyAccountID(planCode string, explicit ...string) st
 
 // accountID 是可变参数而不是必填形参:写入口 check.go 不在本次改动范围内,
 // 加必填形参会直接编译不过。传了就用传的,没传就由 resolveNotifyAccountID 反查订阅。
+// CompatibleOrderAccounts 返回与本次发现库存账户同一区域的可下单账户。
+// 同一区域的 OVH 库存视图相通；跨 EU/US/CA 账户下单只会得到空库存，故不展示。
+func (m *Monitor) CompatibleOrderAccounts(referenceAccountID string) []types.OVHAccount {
+	reference, ok := m.state.FindAccount(referenceAccountID)
+	if !ok {
+		return nil
+	}
+	region := ovh.SubsidiaryRegion(catalog.SubsidiaryOfAccount(reference))
+	m.state.AccountsMu.RLock()
+	accounts := make([]types.OVHAccount, 0, len(m.state.Accounts))
+	for _, account := range m.state.Accounts {
+		if ovh.SubsidiaryRegion(catalog.SubsidiaryOfAccount(account)) == region {
+			accounts = append(accounts, account)
+		}
+	}
+	m.state.AccountsMu.RUnlock()
+	return accounts
+}
+
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
 	accountID ...string) {
@@ -309,6 +331,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	btnAccountID := m.resolveNotifyAccountID(planCode, accountID...)
+	eligibleAccounts := m.CompatibleOrderAccounts(btnAccountID)
 	if btnAccountID == "" {
 		// 不是错误:单账户用户、或订阅没勾自动下单时本来就没有账户维度。
 		// 记一行是为了在"按钮下到了错误大区"的事故里能一眼看出按钮当时是无账户的。
@@ -328,13 +351,19 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v, account=%s",
 			msgUUID, planCode, dc, options, btnAccountID), "monitor")
 
-		cb := map[string]string{"a": "add_to_queue", "u": msgUUID}
+		action := "add_to_queue"
+		buttonText := dcDisplayShortName(dc) + " 一键下单"
+		if len(eligibleAccounts) > 1 {
+			action = "choose"
+			buttonText = dcDisplayShortName(dc) + " 选择账户下单"
+		}
+		cb := map[string]string{"a": action, "u": msgUUID}
 		cbStr, _ := json.Marshal(cb)
 		if len(cbStr) > 64 {
 			m.state.Logger.Warn(fmt.Sprintf("UUID callback_data异常长: %d字节, UUID=%s", len(cbStr), msgUUID), "monitor")
 		}
 		row = append(row, btn{
-			Text:         dcDisplayShortName(dc) + " 一键下单",
+			Text:         buttonText,
 			CallbackData: string(cbStr),
 		})
 		if len(row) >= 2 || idx == len(availableDCs)-1 {

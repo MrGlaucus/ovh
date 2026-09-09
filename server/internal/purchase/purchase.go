@@ -42,6 +42,14 @@ type Outcome struct {
 
 // 多账户:用 item.AccountID 取对应 OVH client 和 subsidiary。
 func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
+	if item.AccountID == "" {
+		// 历史/导入任务可能缺失账户；绝不能让 ClientFor("") 回退默认账户，
+		// 否则任务会使用另一账户的凭据、代理和出口 IP。
+		errMsg := "抢购任务缺少账户 ID，已拒绝执行以避免使用默认账户"
+		state.Logger.Error("PurchaseServer: "+errMsg, "purchase")
+		recordFailure(state, item, errMsg)
+		return Outcome{Fatal: true, Reason: errMsg}
+	}
 	client, err := state.OVH.ClientFor(item.AccountID)
 	if err != nil {
 		// 账户不存在 / 凭据缺失 / endpoint 非法 —— 都是重试一万次也不会变的错。
