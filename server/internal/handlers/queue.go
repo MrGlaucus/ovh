@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,10 @@ import (
 	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/types"
 )
+
+// historyPaymentInFlight 防止同一张历史订单被双击或并发请求重复扣款。
+// 网络超时后不能由服务端自动重试付款，必须由用户在 OVH 面板确认后决定下一步。
+var historyPaymentInFlight sync.Map // history entry ID -> struct{}
 
 // AddQueueItem POST /api/queue
 // 多账户:body 必须带 account_id,后端用它确定下单走哪个账户
@@ -211,6 +216,91 @@ func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		n := purchase.RefreshOrderStatuses(state, true)
 		c.JSON(http.StatusOK, gin.H{"success": true, "updated": n})
+	}
+}
+
+// PayPurchaseHistoryOrder POST /api/purchase-history/:id/pay
+// 仅允许对历史中原账户的待付款订单使用该账户默认支付方式付款。
+func PayPurchaseHistoryOrder(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.Param("id")
+		var body struct {
+			OrderID string `json:"orderId"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误"})
+			return
+		}
+
+		state.HistoryMu.Lock()
+		var entry types.PurchaseHistoryEntry
+		found := false
+		for _, item := range state.History {
+			if item.ID == id {
+				entry = item
+				found = true
+				break
+			}
+		}
+		state.HistoryMu.Unlock()
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "抢购历史记录不存在"})
+			return
+		}
+		if entry.Status != "success" || entry.OrderID == "" || entry.AccountID == "" {
+			c.JSON(http.StatusConflict, gin.H{"error": "这条记录不具备付款所需的订单或账户信息"})
+			return
+		}
+		if strings.TrimSpace(body.OrderID) == "" || body.OrderID != entry.OrderID {
+			c.JSON(http.StatusConflict, gin.H{"error": "订单确认信息不匹配，请刷新页面后重试"})
+			return
+		}
+		deadline := time.Time{}
+		if entry.ExpirationTime != "" {
+			deadline, _ = types.ParseTS(entry.ExpirationTime)
+		} else if purchasedAt, ok := types.ParseTS(entry.PurchaseTime); ok {
+			deadline = purchasedAt.Add(15 * 24 * time.Hour)
+		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			c.JSON(http.StatusConflict, gin.H{"error": "订单付款期限已过，请到 OVH 管理面板确认订单状态"})
+			return
+		}
+		if _, loaded := historyPaymentInFlight.LoadOrStore(id, struct{}{}); loaded {
+			c.JSON(http.StatusConflict, gin.H{"error": "该订单正在请求付款，请勿重复提交"})
+			return
+		}
+		defer historyPaymentInFlight.Delete(id)
+
+		// 必须按历史记录里的明确账户取 Client，绝不回退默认账户，确保走该账户代理与出口 IP 闸门。
+		client, err := state.OVH.ClientFor(entry.AccountID)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "下单账户已不存在或不可用，无法付款"})
+			return
+		}
+		status, err := purchase.FetchOrderStatus(client, entry.OrderID)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "付款前查询 OVH 订单状态失败：" + err.Error()})
+			return
+		}
+		if status != "notPaid" {
+			purchase.ApplyOrderStatus(state, entry.ID, status)
+			_ = state.SaveHistory()
+			c.JSON(http.StatusConflict, gin.H{"error": "订单当前状态为 " + status + "，不能重复付款", "orderStatus": status})
+			return
+		}
+		if err := purchase.PayOrderWithPreferredPaymentMethod(client, entry.OrderID); err != nil {
+			state.Logger.Error("历史订单默认付款请求失败 "+entry.OrderID+": "+err.Error(), "purchase")
+			// 不能自动重试：超时或网络断开时，OVH 可能已经收到付款请求。
+			c.JSON(http.StatusBadGateway, gin.H{"error": "OVH 付款请求未确认完成：" + err.Error() + "。请先到 OVH 管理面板确认，勿重复点击。"})
+			return
+		}
+		status, err = purchase.FetchOrderStatus(client, entry.OrderID)
+		if err == nil {
+			purchase.ApplyOrderStatus(state, entry.ID, status)
+			_ = state.SaveHistory()
+		}
+		state.Logger.Info("已请求使用默认支付方式付款，订单 "+entry.OrderID+"（账户 "+entry.AccountID+"）", "purchase")
+		c.JSON(http.StatusOK, gin.H{"success": true, "orderStatus": status, "message": "已请求使用该账户的默认支付方式付款，请稍后刷新订单状态确认结果"})
 	}
 }
 

@@ -48,6 +48,15 @@ func FetchOrderStatus(client *ovhsdk.Client, orderID string) (string, error) {
 	return strings.TrimSpace(status), nil
 }
 
+// PayOrderWithPreferredPaymentMethod 使用该 OVH 账户已登记的默认支付方式支付一张已有订单。
+// 它不是购物车 checkout：订单创建后购物车已转换为订单，必须调用订单专用接口。
+func PayOrderWithPreferredPaymentMethod(client *ovhsdk.Client, orderID string) error {
+	if err := client.Post("/me/order/"+orderID+"/payWithRegisteredPaymentMean", nil, nil); err != nil {
+		return fmt.Errorf("请求默认支付方式付款失败: %w", err)
+	}
+	return nil
+}
+
 // RefreshOrderStatuses 把所有还没到终态的成功订单刷一遍状态。
 // force=true 忽略节流(手动刷新用),返回更新了几条。
 func RefreshOrderStatuses(state *app.State, force bool) int {
@@ -94,7 +103,7 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 			state.Logger.Warn(fmt.Sprintf("查询订单 %s 状态失败: %s", t.orderID, err.Error()), "purchase")
 			continue
 		}
-		if applyOrderStatus(state, t.entryID, status) {
+		if ApplyOrderStatus(state, t.entryID, status) {
 			updated++
 		}
 	}
@@ -104,9 +113,9 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 	return updated
 }
 
-// applyOrderStatus 写回一条历史的状态。状态变了才算"更新"(日志用),
+// ApplyOrderStatus 写回一条历史的状态。状态变了才算"更新"(日志用),
 // 但 OrderStatusAt 每次都记,节流靠它。
-func applyOrderStatus(state *app.State, entryID, status string) bool {
+func ApplyOrderStatus(state *app.State, entryID, status string) bool {
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	for i := range state.History {

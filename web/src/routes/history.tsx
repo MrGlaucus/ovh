@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, ExternalLink, AlertCircle, Hourglass, Timer } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, ExternalLink, AlertCircle, Hourglass, Timer, CreditCard } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -25,9 +25,11 @@ import {
   useHistory,
   useClearHistory,
   useRemoveHistoryItem,
+  usePayHistoryOrder,
   useRefreshOrderStatus,
   type PurchaseHistory,
 } from "@/hooks/use-history";
+import { useServers } from "@/hooks/use-servers";
 
 /**
  * 订单支付状态 → 标签。取值是 OVH 的 billing.order.OrderStatusEnum,三区一致。
@@ -120,11 +122,16 @@ function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
   const remove = useRemoveHistoryItem();
+  const pay = usePayHistoryOrder();
   const refreshStatus = useRefreshOrderStatus();
+  // 历史仅保存稳定的 planCode；显示名从当前服务器目录实时映射，未命中时回退原始标识。
+  const servers = useServers();
+  const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [deleteItem, setDeleteItem] = useState<PurchaseHistory | null>(null);
+  const [paymentItem, setPaymentItem] = useState<PurchaseHistory | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   // 每分钟刷新一次 now，让所有行的倒计时同步推进
@@ -138,10 +145,10 @@ function HistoryPage() {
     const s = search.trim().toLowerCase();
     return items.filter((i) => {
       if (statusFilter !== "all" && i.status !== statusFilter) return false;
-      if (s && !`${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
+      if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
       return true;
     });
-  }, [items, search, statusFilter]);
+  }, [items, search, serverNames, statusFilter]);
 
   return (
     <div className="space-y-6">
@@ -243,17 +250,42 @@ function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filtered.map((item) => <HistoryRow key={item.id} item={item} now={now} onDelete={() => setDeleteItem(item)} />)}
+                {filtered.map((item) => <HistoryRow key={item.id} item={item} displayName={serverNames.get(item.planCode)} now={now} onDelete={() => setDeleteItem(item)} onPay={() => setPaymentItem(item)} />)}
               </tbody>
             </table>
           </Card>
 
           {/* 手机:卡片堆叠,每条订单一张卡 */}
           <div className="md:hidden space-y-2">
-            {filtered.map((item) => <HistoryCard key={item.id} item={item} now={now} onDelete={() => setDeleteItem(item)} />)}
+            {filtered.map((item) => <HistoryCard key={item.id} item={item} displayName={serverNames.get(item.planCode)} now={now} onDelete={() => setDeleteItem(item)} onPay={() => setPaymentItem(item)} />)}
           </div>
         </>
       )}
+
+      <Dialog open={!!paymentItem} onOpenChange={(open) => !open && setPaymentItem(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>使用默认支付方式付款？</DialogTitle>
+            <DialogDescription>
+              将使用账户 {paymentItem?.accountId} 已设置的默认支付方式，支付订单 {paymentItem?.orderId}。
+              此操作会发起真实扣款，请确认金额与支付方式无误。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentItem(null)}>取消</Button>
+            <Button
+              disabled={pay.isPending || !paymentItem?.orderId}
+              onClick={() => paymentItem?.orderId && pay.mutate(
+                { id: paymentItem.id, orderId: paymentItem.orderId },
+                { onSuccess: () => setPaymentItem(null) },
+              )}
+            >
+              <CreditCard className="w-4 h-4" />
+              确认付款
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!deleteItem} onOpenChange={(open) => !open && setDeleteItem(null)}>
         <DialogContent>
@@ -286,19 +318,21 @@ function HistoryPage() {
   );
 }
 
-function HistoryRow({ item, now, onDelete }: { item: PurchaseHistory; now: number; onDelete: () => void }) {
+function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: PurchaseHistory; displayName?: string; now: number; onDelete: () => void; onPay: () => void }) {
   const st = orderStatusView(item);
   // 倒计时是"付款窗口":付了、取消了、交付了都不再显示
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
+  const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
   // 24 小时内进入告警色
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
       <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>
         <div className="flex items-center gap-2 flex-wrap">
-          {item.planCode}
+          {displayName || item.planCode}
+          {displayName && <span className="font-mono text-[11px] font-normal text-muted-foreground">{item.planCode}</span>}
           <AccountChip accountId={item.accountId} />
           <TimingChip totalMs={item.totalMs} phases={item.timing} />
         </div>
@@ -371,6 +405,12 @@ function HistoryRow({ item, now, onDelete }: { item: PurchaseHistory; now: numbe
             错误
           </button>
         ) : "—"}
+        {canPay && (
+          <button type="button" onClick={onPay} className="ml-3 inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款">
+            <CreditCard className="w-3 h-3" />
+            付款
+          </button>
+        )}
         <button type="button" onClick={onDelete} className="ml-3 inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
           <Trash2 className="w-3 h-3" />
           删除
@@ -381,18 +421,20 @@ function HistoryRow({ item, now, onDelete }: { item: PurchaseHistory; now: numbe
 }
 
 /** 手机端的订单卡片渲染。跟 HistoryRow 字段一一对应,但堆叠成卡片。 */
-function HistoryCard({ item, now, onDelete }: { item: PurchaseHistory; now: number; onDelete: () => void }) {
+function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: PurchaseHistory; displayName?: string; now: number; onDelete: () => void; onPay: () => void }) {
   const st = orderStatusView(item);
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
+  const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
   return (
     <Card className={isExpired ? "opacity-60" : ""}>
       <CardContent className="p-3 space-y-2">
         <div className="flex items-start justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <span className={`font-mono font-semibold text-[13px] ${isExpired ? "line-through" : ""}`}>{item.planCode}</span>
+            <span className={`font-semibold text-[13px] ${isExpired ? "line-through" : ""}`}>{displayName || item.planCode}</span>
+            {displayName && <span className="font-mono text-[10px] text-muted-foreground">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
             <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
             <TimingChip totalMs={item.totalMs} phases={item.timing} />
@@ -451,6 +493,12 @@ function HistoryCard({ item, now, onDelete }: { item: PurchaseHistory; now: numb
               错误详情
             </button>
           ) : null}
+          {canPay && (
+            <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款">
+              <CreditCard className="w-3 h-3" />
+              付款
+            </button>
+          )}
           <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
             <Trash2 className="w-3 h-3" />
             删除

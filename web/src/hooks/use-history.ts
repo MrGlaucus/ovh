@@ -62,6 +62,20 @@ export function useRefreshOrderStatus() {
   });
 }
 
+/** 使用历史订单原账户的默认支付方式付款。 */
+export function usePayHistoryOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, orderId }: { id: string; orderId: string }) =>
+      (await api.post<{ success: boolean; message: string; orderStatus?: string }>(`/purchase-history/${id}/pay`, { orderId })).data,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: qk.history() });
+      toast.success(result.message || "已请求使用默认支付方式付款");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || "付款请求失败"),
+  });
+}
+
 /** 删除单条抢购历史 */
 export function useRemoveHistoryItem() {
   const qc = useQueryClient();
