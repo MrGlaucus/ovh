@@ -44,14 +44,15 @@ jobs:
       - name: 登录 Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
+          # 用户名与镜像名兼容配置为 Actions Variables 或 Secrets，认证令牌必须为 Secret。
+          username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: 生成镜像标签
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ vars.DOCKERHUB_IMAGE }}
+          images: ${{ vars.DOCKERHUB_IMAGE || secrets.DOCKERHUB_IMAGE }}
           tags: |
             type=raw,value=${{ steps.version.outputs.value }}
             type=raw,value=v${{ steps.version.outputs.value }}
