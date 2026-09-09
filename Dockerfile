@@ -9,7 +9,8 @@ COPY web/ ./
 RUN npm run build
 
 # 后端构建：使用纯 Go SQLite，运行镜像不需要 gcc 或 SQLite 动态库。
-FROM golang:1.24-alpine AS server-builder
+# 必须与 server/go.mod 的 go 指令保持一致；低版本会在 go mod download 阶段失败。
+FROM golang:1.25-alpine AS server-builder
 WORKDIR /src/server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
