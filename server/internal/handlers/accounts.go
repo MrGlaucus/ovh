@@ -12,6 +12,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/monitor"
+	"github.com/ovh-buy/server/internal/notify"
 	"github.com/ovh-buy/server/internal/outboundip"
 	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/proxy"
@@ -399,6 +400,11 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		state.OVH.Invalidate(acc.ID)
 		invalidateOrderMappingCache(acc.ID) // 换了凭据/endpoint,旧缓存里的订单可能已经不属于这个账户了
 		_ = state.ReloadAccounts()
+		// 保存代理时会同步校验并直接写入 verified，后台轮询随后只能看到
+		// verified → verified；因此恢复通知必须在这里依据更新前状态补发一次。
+		if existing.OutboundIPStatus != "" && existing.OutboundIPStatus != "pending" && existing.OutboundIPStatus != "verified" && existing.OutboundIPStatus != "direct" && status.State == "verified" {
+			notify.Broadcast(state, fmt.Sprintf("[账户代理恢复] %s 出口 IP 已确认一致\n预期: %s\n实际: %s\n已恢复携带账户鉴权的 OVH API 请求。", acc.Name, acc.ExpectedOutboundIP, status.ActualIP), nil)
+		}
 
 		valid, subsidiaryWarning := verifyAccountCreds(state, acc.ID)
 		c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": valid, "subsidiaryWarning": subsidiaryWarning})
