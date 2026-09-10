@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { isOrderable } from "@/lib/availability";
 import axios from "axios";
 import { api } from "@/lib/api";
@@ -65,6 +65,31 @@ export function useAvailability(endpointOverride?: string) {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+  });
+}
+
+/**
+ * 只查询一个型号的实时库存。
+ *
+ * 不触碰全量 availability query：列表页完整刷新会拉约 9,000 条 FQN 组合，
+ * 而手动确认某台关注机型时只请求该 planCode，调用方拿结果覆盖该机型的局部视图即可。
+ */
+export function useRefreshPlanAvailability() {
+  const active = useActiveAccountEndpoint();
+  return useMutation({
+    mutationFn: async (planCode: string) => {
+      const code = planCode.trim();
+      if (!code) throw new Error("缺少服务器型号");
+      const baseUrl = active.endpoint
+        ? apiBaseUrlForEndpoint(active.endpoint)
+        : await settingsApiBaseUrl();
+      const res = await axios.get<AvailabilityItem[]>(
+        `${baseUrl}/v1/dedicated/server/datacenter/availabilities`,
+        { params: { planCode: code }, timeout: 30_000 },
+      );
+      // OVH 正常会按 planCode 过滤；仍在客户端校验，避免异常响应污染其它卡片的局部状态。
+      return res.data.filter((item) => item.planCode === code);
+    },
   });
 }
 

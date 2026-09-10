@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="OVH 控制台">
+  <!-- 简洁底色：仅承托 OVH 标志，不叠加业务图形。 -->
+  <rect width="512" height="512" rx="112" fill="#eef3ff"/>
+  <rect x="40" y="40" width="432" height="432" rx="88" fill="#ffffff"/>
+  <!-- OVH 蓝色几何标志的单色版本。 -->
+  <path d="M72 151c5 45 23 86 52 117h82l43-117h-61l-48 92-42-92H72Z" fill="#000e9c"/>
+  <path d="M282 151h60l17 33 15-33h50l16 37v80h-92l27-59-23-1-31 60h-61l22-47h-34l24-70Z" fill="#000e9c"/>
+</svg>

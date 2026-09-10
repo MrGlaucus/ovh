@@ -27,6 +27,7 @@ import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import {
   useAvailability,
+  useRefreshPlanAvailability,
   buildAvailabilityMap,
   buildVariantIndex,
   variantsForPlan,
@@ -82,9 +83,19 @@ function ServersPage() {
   const toggleFavorite = useToggleServerFavorite();
   // 单次拉取 OVH 公开可用性接口（一条请求拿到所有 planCode × 所有 DC 的状态）
   const availQ = useAvailability();
-  const availMap = useMemo(() => buildAvailabilityMap(availQ.data), [availQ.data]);
+  const refreshPlanAvailability = useRefreshPlanAvailability();
+  // 手动刷新只覆盖对应 planCode，避免重新拉取全站约 9,000 条库存组合。
+  const [refreshedPlans, setRefreshedPlans] = useState<Record<string, AvailabilityItem[]>>({});
+  const availabilityItems = useMemo(() => {
+    const replaced = new Set(Object.keys(refreshedPlans));
+    return [
+      ...(availQ.data || []).filter((item) => !replaced.has(item.planCode)),
+      ...Object.values(refreshedPlans).flat(),
+    ];
+  }, [availQ.data, refreshedPlans]);
+  const availMap = useMemo(() => buildAvailabilityMap(availabilityItems), [availabilityItems]);
   // FQN 级索引,抢购对话框按当前选配实时算 DC 可用 + option 绿红点
-  const variantIndex = useMemo(() => buildVariantIndex(availQ.data), [availQ.data]);
+  const variantIndex = useMemo(() => buildVariantIndex(availabilityItems), [availabilityItems]);
 
   // OVH 账户信息：拿 ovhSubsidiary 作为默认价格地区
   const account = useAccountInfo();
@@ -145,6 +156,15 @@ function ServersPage() {
   }, [list, search, onlyAvailable, availMap, favoritePlanCodes]);
 
   const detailServer = detailPlanCode ? list.find((s) => s.planCode === detailPlanCode) || null : null;
+  const refreshSinglePlan = (planCode: string) => {
+    refreshPlanAvailability.mutate(planCode, {
+      onSuccess: (items) => {
+        setRefreshedPlans((current) => ({ ...current, [planCode]: items }));
+        toast.success(`已刷新 ${planCode} 的库存`);
+      },
+      onError: () => toast.error(`刷新 ${planCode} 的库存失败，请稍后重试`),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -159,6 +179,8 @@ function ServersPage() {
               variant="outline"
               onClick={() => {
                 // 一键刷三件套：目录强刷（清后端缓存）、catalog（价格）refetch、可用性 refetch
+                // 全量实时数据会覆盖单机手动刷新结果，先清局部覆盖层。
+                setRefreshedPlans({});
                 q.forceRefresh();
                 catalogQ.refetch();
                 availQ.refetch();
@@ -280,6 +302,8 @@ function ServersPage() {
               favorite={favoritePlanCodes.has(srv.planCode)}
               favoritePending={toggleFavorite.isPending}
               onToggleFavorite={() => toggleFavorite.mutate({ planCode: srv.planCode, displayName: srv.name, favorite: !favoritePlanCodes.has(srv.planCode) })}
+              refreshPending={refreshPlanAvailability.isPending}
+              onRefreshStock={() => refreshSinglePlan(srv.planCode)}
               onView={() => setDetailPlanCode(srv.planCode)}
             />
           ))}
@@ -319,6 +343,8 @@ function ServerCard({
   favorite,
   favoritePending,
   onToggleFavorite,
+  refreshPending,
+  onRefreshStock,
   onView,
 }: {
   server: ServerPlan;
@@ -332,6 +358,8 @@ function ServerCard({
   favorite: boolean;
   favoritePending: boolean;
   onToggleFavorite: () => void;
+  refreshPending: boolean;
+  onRefreshStock: () => void;
   onView: () => void;
 }) {
   const addMon = useAddToMonitor();
@@ -390,6 +418,17 @@ function ServerCard({
             </div>
           </div>
           <div className="flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onRefreshStock}
+              disabled={refreshPending}
+              title="刷新此型号的实时库存"
+              aria-label="刷新此型号的实时库存"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshPending ? "animate-spin" : ""}`} />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

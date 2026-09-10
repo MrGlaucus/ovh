@@ -1,0 +1,20 @@
+{
+  "name": "OVH 控制台",
+  "short_name": "OVH 控制台",
+  "description": "OVH 服务器抢购与监控平台",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg?v=3",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
