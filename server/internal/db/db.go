@@ -62,6 +62,9 @@ func (db *DB) migrate() error {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("exec schema: %w", err)
 	}
+	if err := db.addColumnIfMissing("server_favorites", "display_name", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("queue", "account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}

@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { isOrderable } from "@/lib/availability";
 import {
   Server, RefreshCw, Search, Bell, ShoppingCart, Cpu, MemoryStick, HardDrive, Wifi,
-  Filter, MapPin, User, Globe } from "lucide-react";
+  Filter, MapPin, User, Globe, Star } from "lucide-react";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,6 +16,7 @@ import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { useServers, useAddToMonitor, type ServerPlan } from "@/hooks/use-servers";
+import { useServerFavorites, useToggleServerFavorite } from "@/hooks/use-server-favorites";
 import { useAccountInfo } from "@/hooks/use-account";
 import { useCreateQueueItem } from "@/hooks/use-queue";
 import { useCacheInfo } from "@/hooks/use-settings";
@@ -77,6 +78,8 @@ function PriceFallback({ loading, subsidiary }: { loading: boolean; subsidiary: 
 
 function ServersPage() {
   const q = useServers();
+  const favorites = useServerFavorites();
+  const toggleFavorite = useToggleServerFavorite();
   // 单次拉取 OVH 公开可用性接口（一条请求拿到所有 planCode × 所有 DC 的状态）
   const availQ = useAvailability();
   const availMap = useMemo(() => buildAvailabilityMap(availQ.data), [availQ.data]);
@@ -118,6 +121,7 @@ function ServersPage() {
   const [detailPlanCode, setDetailPlanCode] = useState<string | null>(null);
 
   const list = q.data || [];
+  const favoritePlanCodes = useMemo(() => new Set((favorites.data || []).map((favorite) => favorite.planCode)), [favorites.data]);
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     let out = list;
@@ -137,8 +141,8 @@ function ServersPage() {
         return srv.datacenters.some((dc) => isOrderable(dc.availability));
       });
     }
-    return out;
-  }, [list, search, onlyAvailable, availMap]);
+    return [...out].sort((a, b) => Number(favoritePlanCodes.has(b.planCode)) - Number(favoritePlanCodes.has(a.planCode)));
+  }, [list, search, onlyAvailable, availMap, favoritePlanCodes]);
 
   const detailServer = detailPlanCode ? list.find((s) => s.planCode === detailPlanCode) || null : null;
 
@@ -273,6 +277,9 @@ function ServersPage() {
               price={priceMap[srv.planCode]}
               priceLoading={catalogQ.isPending}
               subsidiary={subsidiary}
+              favorite={favoritePlanCodes.has(srv.planCode)}
+              favoritePending={toggleFavorite.isPending}
+              onToggleFavorite={() => toggleFavorite.mutate({ planCode: srv.planCode, displayName: srv.name, favorite: !favoritePlanCodes.has(srv.planCode) })}
               onView={() => setDetailPlanCode(srv.planCode)}
             />
           ))}
@@ -309,6 +316,9 @@ function ServerCard({
   price,
   priceLoading,
   subsidiary,
+  favorite,
+  favoritePending,
+  onToggleFavorite,
   onView,
 }: {
   server: ServerPlan;
@@ -319,6 +329,9 @@ function ServerCard({
   /** 目录还在拉 → 显示"加载中";已拉完仍无价 → 显示"该子公司无报价" */
   priceLoading: boolean;
   subsidiary: string;
+  favorite: boolean;
+  favoritePending: boolean;
+  onToggleFavorite: () => void;
   onView: () => void;
 }) {
   const addMon = useAddToMonitor();
@@ -376,14 +389,27 @@ function ServerCard({
               )}
             </div>
           </div>
-          <Chip tone={tone as any} title={stockUnknown ? "实时库存接口请求失败,未能确认这台机器的状态" : undefined}>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onToggleFavorite}
+              disabled={favoritePending}
+              title={favorite ? "取消关注" : "关注此型号"}
+              aria-label={favorite ? "取消关注" : "关注此型号"}
+            >
+              <Star className={`w-4 h-4 ${favorite ? "fill-warning text-warning" : "text-muted-foreground"}`} />
+            </Button>
+            <Chip tone={tone as any} title={stockUnknown ? "实时库存接口请求失败,未能确认这台机器的状态" : undefined}>
             <StatusDot
               tone={stockUnknown ? "warning" : okCount > 0 ? "success" : "danger"}
               pulse={!stockUnknown && okCount > 0}
               size="xs"
             />
-            {statusText}
-          </Chip>
+              {statusText}
+            </Chip>
+          </div>
         </div>
 
         {/* 规格 2x2 */}
@@ -615,7 +641,7 @@ function DetailContent({
         </div>
       </DialogHeader>
 
-      <div className="overflow-y-auto -mx-6 px-6 space-y-6 flex-1">
+      <div className="overflow-y-auto -mx-4 px-4 sm:-mx-6 sm:px-6 space-y-6 flex-1">
         {/* 价格 Hero（随下方配置实时变化） */}
         <div className="border border-border rounded-2xl p-4 bg-secondary/30 flex items-end justify-between gap-3 flex-wrap">
           <div>
@@ -801,8 +827,9 @@ function DetailContent({
         </div>
       </div>
 
-      <DialogFooter className="border-t border-border pt-4 -mx-6 px-6">
-        <div className="mr-auto text-[12px] text-muted-foreground">
+      {/* 选中机房后会显示多行下单信息；必须独占一行，不能和操作按钮共用移动端 flex 宽度。 */}
+      <div className="border-t border-border pt-3 -mx-4 px-4 sm:-mx-6 sm:px-6 text-[12px] text-muted-foreground">
+        <div>
           {selectedDCs.length > 0
             ? `将创建 ${totalTasks} 个任务（${selectedDCs.length} DC × ${qty}）${selectedValues.length > 0 ? ` · ${selectedValues.length} 项选配` : ""}`
             : "请选数据中心"}
@@ -841,7 +868,9 @@ function DetailContent({
             </div>
           )}
         </div>
-        <Button variant="outline" onClick={onClose} disabled={create.isPending}>
+      </div>
+      <DialogFooter className="-mx-4 px-4 pt-1 sm:-mx-6 sm:px-6 flex-nowrap gap-2 space-x-0">
+        <Button variant="outline" className="whitespace-nowrap" onClick={onClose} disabled={create.isPending}>
           关闭
         </Button>
         <Button

@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
 import type { ServerPlan } from "@/hooks/use-servers";
 
 /** 服务器 planCode 选择器,Combobox(Popover + cmdk Command):
- *  - 触发器看起来像 Input,带 chevron;选了之后显示 planCode + 服务器名
- *  - 弹层里有搜索框 + 过滤列表,每行 planCode + 名称 + CPU 简介
+ *  - 触发器看起来像 Input,带 chevron;选了之后以对外型号名为主、planCode 为辅助
+ *  - 弹层里有搜索框 + 过滤列表,每行型号名 + planCode + CPU 简介
  *  - 键盘导航(↑↓ + Enter),Esc 关
  *  - 也支持手动输入(选错列表时输入框 fallback 走 onChange)
  */
@@ -57,9 +57,9 @@ export function PlanCodeCombobox({
         >
           {value ? (
             <span className="flex items-baseline gap-2 min-w-0">
-              <code className="font-mono font-semibold text-foreground truncate">{value}</code>
+              <span className="font-semibold text-foreground truncate">{matched?.name || value}</span>
               {matched?.name && (
-                <span className="text-[12px] text-muted-foreground truncate">{matched.name}</span>
+                <code className="font-mono text-[11px] text-muted-foreground truncate">{value}</code>
               )}
             </span>
           ) : (
@@ -135,8 +135,8 @@ export function PlanCodeCombobox({
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2">
-                      <code className="font-mono font-semibold text-[13px] truncate">{s.planCode}</code>
-                      <span className="text-[12px] text-muted-foreground truncate">{s.name}</span>
+                      <span className="font-semibold text-[13px] truncate">{s.name || s.planCode}</span>
+                      {s.name && <code className="font-mono text-[11px] text-muted-foreground truncate">{s.planCode}</code>}
                     </div>
                     {(s.cpu || s.memory) && (
                       <div className="text-[11px] text-muted-foreground truncate mt-0.5">

@@ -18,6 +18,12 @@ export interface MonitorSubscription {
   /** 补货后延迟 N 秒下单,0=跟随全局 AUTO_ORDER_DELAY_SECONDS */
   delaySeconds?: number;
   lastStatus: Record<string, string>;
+  /** 最近一轮实际开始查询库存的时间。 */
+  lastCheckAt?: string;
+  /** 最近一轮查询实际使用的账户与区域。 */
+  lastCheckAccountId?: string;
+  lastCheckRegion?: string;
+  lastCheckError?: string;
   createdAt: string;
 }
 
@@ -48,6 +54,8 @@ export function useMonitorList() {
   return useQuery({
     queryKey: qk.monitor.list(),
     queryFn: async () => (await api.get<MonitorSubscription[]>("/monitor/subscriptions")).data,
+    // 监控默认每 5 秒一轮；10 秒刷新一次足以展示运行证据，又不会额外制造高频前端请求。
+    refetchInterval: 10_000,
   });
 }
 

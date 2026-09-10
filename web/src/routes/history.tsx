@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, ExternalLink, AlertCircle, Hourglass, Timer, CreditCard } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -233,20 +232,16 @@ function HistoryPage() {
         <>
           {/* 桌面 / 平板:横向表格 */}
           <Card className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[760px]">
+            <table className="w-full min-w-[680px] table-fixed">
               <thead>
                 <tr className="text-left text-[11px] font-medium text-muted-foreground border-b border-border">
-                  <th className="px-4 py-3">型号</th>
-                  <th className="px-4 py-3">机房</th>
-                  <th className="px-4 py-3">配置</th>
-                  <th className="px-4 py-3">价格</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3" title="下单时配置的延迟秒数;立即=入队即抢">延迟</th>
-                  <th className="px-4 py-3">时间</th>
-                  <th className="px-4 py-3" title="付款窗口:下单不会自动扣款,倒计时结束前未付款订单作废">
-                付款剩余
-              </th>
-                  <th className="px-4 py-3">操作</th>
+                  <th className="w-[31%] px-4 py-3">型号</th>
+                  <th className="w-[7%] px-3 py-3">机房</th>
+                  <th className="w-[19%] px-3 py-3">配置</th>
+                  <th className="w-[9%] px-3 py-3">价格</th>
+                  <th className="w-[15%] px-3 py-3">订单状态</th>
+                  <th className="w-[10%] px-3 py-3">时间</th>
+                  <th className="w-[9%] px-4 py-3 text-right">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -320,101 +315,48 @@ function HistoryPage() {
 
 function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: PurchaseHistory; displayName?: string; now: number; onDelete: () => void; onPay: () => void }) {
   const st = orderStatusView(item);
-  // 倒计时是"付款窗口":付了、取消了、交付了都不再显示
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
   const remainingMs = showCountdown ? getExpirationMs(item) - now : 0;
   const isExpired = showCountdown && remainingMs <= 0;
   const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
-  // 24 小时内进入告警色
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
+  const delayLabel = item.delaySeconds && item.delaySeconds > 0 ? `有货后延迟 ${item.delaySeconds}s` : "立即抢购";
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
-      <td className={`px-4 py-3 font-mono font-semibold ${isExpired ? "line-through" : ""}`}>
-        <div className="flex items-center gap-2 flex-wrap">
-          {displayName || item.planCode}
-          {displayName && <span className="font-mono text-[11px] font-normal text-muted-foreground">{item.planCode}</span>}
-          <AccountChip accountId={item.accountId} />
-          <TimingChip totalMs={item.totalMs} phases={item.timing} />
+      <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
+        <div className="min-w-0">
+          <div className="truncate font-mono font-semibold" title={displayName || item.planCode}>{displayName || item.planCode}</div>
+          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
+            {displayName && <span className="font-mono">{item.planCode}</span>}
+            <AccountChip accountId={item.accountId} />
+            <TimingChip totalMs={item.totalMs} phases={item.timing} />
+            <span title="下单延迟">· {delayLabel}</span>
+          </div>
         </div>
       </td>
-      <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
-      <td className={`px-4 py-3 text-muted-foreground max-w-[200px] truncate ${isExpired ? "line-through" : ""}`}>
+      <td className={`px-3 py-3 whitespace-nowrap ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
+      <td className={`px-3 py-3 text-muted-foreground truncate ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ") || "默认配置"}>
         {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
       </td>
-      <td className="px-4 py-3">
-        <HistoryPrice item={item} strike={isExpired} />
+      <td className="px-3 py-3"><HistoryPrice item={item} strike={isExpired} /></td>
+      <td className="px-3 py-3">
+        <div className="flex flex-col items-start gap-1">
+          {item.status === "success" ? <Chip tone={st.tone} title={st.title}>{st.label}</Chip> : <Chip tone="danger" title={item.errorMessage || "抢购失败"}>失败</Chip>}
+          {showCountdown && (
+            <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"} title="付款窗口：倒计时结束前未付款订单会作废">
+              <Hourglass className="w-3 h-3" />{formatCountdown(remainingMs)}
+            </Chip>
+          )}
+        </div>
+      </td>
+      <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
+        {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
       </td>
       <td className="px-4 py-3">
-        {item.status === "success" ? (
-          <Chip tone={st.tone} title={st.title}>
-            {st.label}
-          </Chip>
-        ) : (
-          <Chip tone="danger">失败</Chip>
-        )}
-      </td>
-      <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
-        {item.delaySeconds && item.delaySeconds > 0 ? (
-          <Chip tone="info" title="入队后先等这么久才开始首次抢购">
-            <Timer className="w-3 h-3" />
-            延迟 {item.delaySeconds}s
-          </Chip>
-        ) : (
-          <Chip tone="default">立即</Chip>
-        )}
-      </td>
-      <td className="px-4 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
-        {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", {
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        })}
-      </td>
-      <td className="px-4 py-3 whitespace-nowrap">
-        {showCountdown ? (
-          <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"}>
-            <Hourglass className="w-3 h-3" />
-            {formatCountdown(remainingMs)}
-          </Chip>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        {item.status === "success" && item.orderUrl ? (
-          <a
-            href={item.orderUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-disabled={isExpired}
-            className={`inline-flex items-center gap-1 text-foreground hover:underline text-[12px] ${
-              isExpired ? "pointer-events-none opacity-50" : ""
-            }`}
-          >
-            <ExternalLink className="w-3 h-3" />
-            订单
-          </a>
-        ) : item.status === "failed" && item.errorMessage ? (
-          <button
-            type="button"
-            onClick={() => toast.info(item.errorMessage)}
-            className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]"
-          >
-            <AlertCircle className="w-3 h-3" />
-            错误
-          </button>
-        ) : "—"}
-        {canPay && (
-          <button type="button" onClick={onPay} className="ml-3 inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款">
-            <CreditCard className="w-3 h-3" />
-            付款
-          </button>
-        )}
-        <button type="button" onClick={onDelete} className="ml-3 inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
-          <Trash2 className="w-3 h-3" />
-          删除
-        </button>
+        <div className="flex items-center justify-end gap-3 whitespace-nowrap">
+          {canPay && <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款"><CreditCard className="w-3 h-3" />付款</button>}
+          <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录"><Trash2 className="w-3 h-3" />删除</button>
+        </div>
       </td>
     </tr>
   );
@@ -430,79 +372,33 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
   return (
     <Card className={isExpired ? "opacity-60" : ""}>
-      <CardContent className="p-3 space-y-2">
-        <div className="flex items-start justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap min-w-0">
-            <span className={`font-semibold text-[13px] ${isExpired ? "line-through" : ""}`}>{displayName || item.planCode}</span>
-            {displayName && <span className="font-mono text-[10px] text-muted-foreground">{item.planCode}</span>}
-            <AccountChip accountId={item.accountId} />
-            <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
-            <TimingChip totalMs={item.totalMs} phases={item.timing} />
-          </div>
-          {item.status === "success" ? (
-            <Chip tone={st.tone} title={st.title}>
-            {st.label}
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <span className={`min-w-0 truncate font-semibold text-[13px] ${isExpired ? "line-through" : ""}`} title={displayName || item.planCode}>{displayName || item.planCode}</span>
+          {item.status === "success" ? <Chip tone={st.tone} title={st.title} className="shrink-0">{st.label}</Chip> : <Chip tone="danger" title={item.errorMessage || "抢购失败"} className="shrink-0">失败</Chip>}
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-muted-foreground">
+          {displayName && <span className="font-mono">{item.planCode}</span>}
+          <AccountChip accountId={item.accountId} />
+          <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
+          <TimingChip totalMs={item.totalMs} phases={item.timing} />
+          <Chip tone={item.delaySeconds && item.delaySeconds > 0 ? "info" : "default"} className="text-[10px]" title="下单延迟">
+            <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
           </Chip>
-          ) : (
-            <Chip tone="danger">失败</Chip>
-          )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {item.delaySeconds && item.delaySeconds > 0 ? (
-            <Chip tone="info" className="text-[10px]" title="入队后先等这么久才开始首次抢购">
-              <Timer className="w-3 h-3" />
-              延迟 {item.delaySeconds}s
-            </Chip>
-          ) : (
-            <Chip tone="default" className="text-[10px]">立即</Chip>
-          )}
-        </div>
-        <div className={`text-[11px] text-muted-foreground break-all ${isExpired ? "line-through" : ""}`}>
+        <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`}>
           {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
         </div>
         <div className="flex items-center justify-between gap-2 text-[11px]">
-          <span className="text-muted-foreground font-mono">
-            {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-          </span>
-          {item.price?.withTax != null ? <HistoryPrice item={item} strike={isExpired} /> : null}
+          <span className="text-muted-foreground font-mono">{parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+          {item.price?.withTax != null && <HistoryPrice item={item} strike={isExpired} />}
         </div>
-        <div className="flex items-center justify-between gap-2">
-          {showCountdown ? (
-            <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"}>
-              <Hourglass className="w-3 h-3" />
-              {formatCountdown(remainingMs)}
-            </Chip>
-          ) : <span />}
-          {item.status === "success" && item.orderUrl ? (
-            <a
-              href={item.orderUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`inline-flex items-center gap-1 text-foreground hover:underline text-[12px] ${isExpired ? "pointer-events-none opacity-50" : ""}`}
-            >
-              <ExternalLink className="w-3 h-3" />
-              订单
-            </a>
-          ) : item.status === "failed" && item.errorMessage ? (
-            <button
-              type="button"
-              onClick={() => toast.info(item.errorMessage)}
-              className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]"
-            >
-              <AlertCircle className="w-3 h-3" />
-              错误详情
-            </button>
-          ) : null}
-          {canPay && (
-            <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款">
-              <CreditCard className="w-3 h-3" />
-              付款
-            </button>
-          )}
-          <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录">
-            <Trash2 className="w-3 h-3" />
-            删除
-          </button>
+        <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+          {showCountdown ? <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"} title="付款窗口：倒计时结束前未付款订单会作废"><Hourglass className="w-3 h-3" />{formatCountdown(remainingMs)}</Chip> : <span />}
+          <div className="flex items-center gap-4 whitespace-nowrap">
+            {canPay && <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款"><CreditCard className="w-3 h-3" />付款</button>}
+            <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录"><Trash2 className="w-3 h-3" />删除</button>
+          </div>
         </div>
       </CardContent>
     </Card>

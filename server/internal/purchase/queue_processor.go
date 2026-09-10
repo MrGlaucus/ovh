@@ -143,6 +143,12 @@ func ProcessQueueLoop(state *app.State) {
 					state.QueueMu.Unlock()
 					return
 				}
+				// ready 列表是上一轮快照；用户可能刚在此间隙暂停了任务。
+				// 执行前必须以当前状态复核，避免批量暂停后仍启动一次 OVH 下单流程。
+				if current.Status != "running" && current.Status != "delaying" {
+					state.QueueMu.Unlock()
+					return
+				}
 				isFirstAttempt := current.LastCheckTime == 0
 				if current.Status == "delaying" {
 					current.Status = "running"

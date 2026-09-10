@@ -116,6 +116,14 @@ type QueueItem struct {
 	DelayReady bool `json:"delayReady,omitempty"`
 }
 
+// ServerFavorite 是全局关注的服务器型号，不关联账户。
+// 型号在不同账户/区域是否可购买由读取时的当前目录决定。
+type ServerFavorite struct {
+	PlanCode    string `db:"plan_code" json:"planCode"`
+	DisplayName string `db:"display_name" json:"displayName"`
+	CreatedAt   string `db:"created_at" json:"createdAt"`
+}
+
 // PriceInfo 价格信息
 type PriceInfo struct {
 	WithTax      *float64 `json:"withTax"`

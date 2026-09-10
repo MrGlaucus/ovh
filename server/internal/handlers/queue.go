@@ -165,6 +165,61 @@ func ClearQueue(state *app.State) gin.HandlerFunc {
 	}
 }
 
+// UpdateAllQueueStatuses PUT /api/queue/batch-status
+// action=pause 暂停所有可执行任务；action=resume 恢复所有暂停任务。
+func UpdateAllQueueStatuses(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			Action string `json:"action"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || (body.Action != "pause" && body.Action != "resume") {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "action 必须是 pause 或 resume"})
+			return
+		}
+
+		now := time.Now()
+		updated := 0
+		state.QueueMu.Lock()
+		for i := range state.Queue {
+			item := &state.Queue[i]
+			if body.Action == "pause" {
+				// completed / failed 是终态；其余可执行状态全部暂停。
+				if item.Status != "running" && item.Status != "pending" && item.Status != "delaying" {
+					continue
+				}
+				item.Status = "paused"
+			} else {
+				if item.Status != "paused" {
+					continue
+				}
+				// 延迟中的任务暂停后仍保留原到期时间：未到点继续等待，
+				// 已到点则下一轮先重新确认库存，不重新开始完整延迟。
+				if item.OrderNotBefore > 0 {
+					if float64(now.Unix()) < item.OrderNotBefore {
+						item.Status = "delaying"
+					} else {
+						item.Status = "running"
+						item.DelayReady = true
+					}
+				} else {
+					item.Status = "running"
+				}
+			}
+			item.UpdatedAt = types.NowISO()
+			updated++
+		}
+		state.QueueMu.Unlock()
+
+		if err := state.SaveQueue(); err != nil {
+			state.Logger.Error("批量更新队列状态后保存失败: "+err.Error(), "queue")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "队列状态已在本次运行中更新，但没能写入数据库：" + err.Error()})
+			return
+		}
+		state.Logger.Info(fmt.Sprintf("批量%s队列任务: %d 条", map[string]string{"pause": "暂停", "resume": "恢复"}[body.Action], updated), "queue")
+		c.JSON(http.StatusOK, gin.H{"status": "success", "updated": updated})
+	}
+}
+
 // UpdateQueueStatus PUT /api/queue/:id/status
 func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {

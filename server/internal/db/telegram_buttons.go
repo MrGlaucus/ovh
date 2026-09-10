@@ -177,3 +177,19 @@ func ParseTelegramButtonOptions(raw string) []string {
 	}
 	return opts
 }
+
+// ListTelegramButtonsByMenuID 返回同一条 Telegram 上架通知中仍有效的机房按钮。
+// menuID 写在内部生成的 config_info 中，子账户按钮不会携带它。
+func (db *DB) ListTelegramButtonsByMenuID(menuID string) ([]TelegramButtonRow, error) {
+	var rows []TelegramButtonRow
+	if menuID == "" {
+		return rows, nil
+	}
+	if err := db.Select(&rows, `SELECT `+telegramButtonCols+`
+		FROM telegram_order_buttons
+		WHERE used_at = 0 AND config_info LIKE ?
+		ORDER BY datacenter`, `%"telegram_menu_id":"`+menuID+`"%`); err != nil {
+		return nil, fmt.Errorf("list telegram buttons by menu: %w", err)
+	}
+	return rows, nil
+}

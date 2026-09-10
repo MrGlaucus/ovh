@@ -34,6 +34,7 @@ import {
 import {
   useQueueList,
   useToggleQueueItem,
+  useBatchUpdateQueueStatus,
   useRemoveQueueItem,
   useClearQueue,
   useCreateQueueItem,
@@ -81,6 +82,7 @@ function QueuePage() {
   // 每条链路上一轮的耗时,用来回答"我到底卡在哪一步"
   const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
+  const batchStatus = useBatchUpdateQueueStatus();
   const remove = useRemoveQueueItem();
   const clear = useClearQueue();
   const navigate = Route.useNavigate();
@@ -100,6 +102,8 @@ function QueuePage() {
   }, [createPlanCode, createOptions]);
 
   const items = queue.data || [];
+  const pausableCount = items.filter((item) => ["running", "pending", "delaying"].includes(item.status)).length;
+  const resumableCount = items.filter((item) => item.status === "paused").length;
 
   return (
     <div className="space-y-6">
@@ -108,12 +112,30 @@ function QueuePage() {
         title="抢购队列"
         description="管理自动抢购服务器的队列"
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button onClick={() => setShowCreateDialog(true)}>
               <Plus className="w-4 h-4" />
               新建抢购任务
             </Button>
-            <Button variant="outline" onClick={() => queue.refetch()} disabled={queue.isFetching}>
+            <Button
+              variant="outline"
+              onClick={() => batchStatus.mutate("pause")}
+              disabled={pausableCount === 0 || batchStatus.isPending}
+              title="暂停所有运行中、等待中和有货后延迟中的任务"
+            >
+              <PauseCircle className="w-4 h-4" />
+              一键暂停
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => batchStatus.mutate("resume")}
+              disabled={resumableCount === 0 || batchStatus.isPending}
+              title="恢复所有暂停任务；延迟中的任务会沿用原延迟到期时间"
+            >
+              <PlayCircle className="w-4 h-4" />
+              一键恢复
+            </Button>
+            <Button variant="outline" onClick={() => queue.refetch()} disabled={queue.isFetching || batchStatus.isPending}>
               <RefreshCw className={`w-4 h-4 ${queue.isFetching ? "animate-spin" : ""}`} />
               刷新
             </Button>

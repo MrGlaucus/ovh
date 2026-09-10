@@ -67,6 +67,15 @@ CREATE INDEX IF NOT EXISTS idx_queue_status     ON queue(status);
 CREATE INDEX IF NOT EXISTS idx_queue_plan_code  ON queue(plan_code);
 
 -- ===========================================
+-- server_favorites: 用户全局关注的机型（不绑定 OVH 账户）
+-- ===========================================
+CREATE TABLE IF NOT EXISTS server_favorites (
+  plan_code    TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL DEFAULT '',
+  created_at   TEXT NOT NULL
+);
+
+-- ===========================================
 -- history: 抢购历史记录
 -- ===========================================
 CREATE TABLE IF NOT EXISTS history (

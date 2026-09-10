@@ -14,7 +14,7 @@ import {
   HelpCircle,
   MapPin,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,7 @@ import { AccountChip } from "@/components/common/AccountChip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/common/Skeleton";
-import { LoadFailed, errorMessage } from "@/components/common/LoadFailed";
+import { LoadFailed, LoadFailedBanner, errorMessage } from "@/components/common/LoadFailed";
 import {
   Dialog,
   DialogContent,
@@ -48,6 +48,8 @@ import {
   useSetMonitorInterval,
 } from "@/hooks/use-monitor";
 import { useNotifyGate } from "@/hooks/use-notify-channels";
+import { useServers } from "@/hooks/use-servers";
+import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OVH_DATACENTERS } from "@/lib/datacenters";
 import { toast } from "sonner";
 
@@ -59,6 +61,12 @@ export const Route = createFileRoute("/monitor")({
 function MonitorPage() {
   const list = useMonitorList();
   const status = useMonitorStatus();
+  // 订阅只保存 planCode；目录中的对外型号名优先，旧订阅的 serverName 作为目录未命中时的回退。
+  const servers = useServers();
+  const serverNames = useMemo(
+    () => new Map((servers.data || []).map((server) => [server.planCode, server.name])),
+    [servers.data],
+  );
   const remove = useRemoveMonitorSubscription();
   const clear = useClearMonitor();
   const [confirmClear, setConfirmClear] = useState(false);
@@ -67,6 +75,13 @@ function MonitorPage() {
   // 正在编辑的订阅。null = 新增模式,两种模式共用同一个对话框
   const [editing, setEditing] = useState<MonitorSubscription | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  // 前端每秒只推进显示的相对时间；真实检查信息仍以 10 秒轮询到的后端数据为准。
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const subs = list.data || [];
 
@@ -190,6 +205,10 @@ function MonitorPage() {
             <SubRow
               key={s.planCode}
               sub={s}
+              displayName={serverNames.get(s.planCode) || s.serverName}
+              now={now}
+              checkInterval={status.data?.check_interval}
+              monitorRunning={!statusUnknown && running}
               expanded={expanded === s.planCode}
               onToggleExpand={() =>
                 setExpanded((curr) => (curr === s.planCode ? null : s.planCode))
@@ -272,27 +291,40 @@ function MonitorPage() {
 
 function SubRow({
   sub,
+  displayName,
+  now,
+  checkInterval,
+  monitorRunning,
   expanded,
   onToggleExpand,
   onEdit,
   onDelete,
 }: {
   sub: MonitorSubscription;
+  displayName?: string;
+  now: number;
+  checkInterval?: number;
+  monitorRunning: boolean;
   expanded: boolean;
   onToggleExpand: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const checkedAtMs = sub.lastCheckAt ? new Date(sub.lastCheckAt).getTime() : NaN;
+  const hasChecked = Number.isFinite(checkedAtMs);
+  const elapsedSeconds = hasChecked ? Math.max(0, Math.floor((now - checkedAtMs) / 1000)) : 0;
+  const nextInSeconds = hasChecked && checkInterval ? Math.max(0, checkInterval - elapsedSeconds) : null;
+  const freshnessLimit = Math.max((checkInterval || 5) * 3, 30);
+  const stale = hasChecked && elapsedSeconds > freshnessLimit;
+
   return (
     <Card>
       <CardContent className="p-5">
         <div className="flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="font-mono font-semibold text-sm">{sub.planCode}</span>
-              {sub.serverName && (
-                <span className="text-xs text-muted-foreground">| {sub.serverName}</span>
-              )}
+              <span className="font-semibold text-sm">{displayName || sub.planCode}</span>
+              {displayName && <span className="font-mono text-[11px] text-muted-foreground">{sub.planCode}</span>}
             </div>
             <p className="text-xs text-muted-foreground mb-1.5">
               {sub.datacenters.length > 0
@@ -323,6 +355,39 @@ function SubRow({
                   </Chip>
                 </>
               ) : null}
+            </div>
+            <div className="mt-2 flex items-center gap-1.5 flex-wrap text-[11px] text-muted-foreground">
+              {sub.lastCheckError ? (
+                <Chip tone="danger" title={sub.lastCheckError}>
+                  <AlertTriangle className="w-3 h-3" />检查异常
+                </Chip>
+              ) : hasChecked && !stale && monitorRunning ? (
+                <Chip tone="success" title="最近一轮库存查询已完成，未报告错误">
+                  <StatusDot tone="success" pulse size="xs" />监控正常
+                </Chip>
+              ) : hasChecked && stale ? (
+                <Chip tone="warning" title="最后检查时间已超过三个检查周期，请检查监控总状态或刷新页面">
+                  <StatusDot tone="warning" size="xs" />检查可能停滞
+                </Chip>
+              ) : (
+                <Chip tone="default">尚未检查</Chip>
+              )}
+              {hasChecked ? (
+                <span title={`上次检查：${formatTime(sub.lastCheckAt!)}`}>上次检查 {elapsedSeconds}s 前</span>
+              ) : (
+                <span>等待首次检查</span>
+              )}
+              {nextInSeconds !== null && monitorRunning && !sub.lastCheckError && (
+                <span>· 下次检查约 {nextInSeconds}s 后</span>
+              )}
+              {sub.lastCheckAccountId && (
+                <>
+                  <span>· 查询账户</span>
+                  <AccountChip accountId={sub.lastCheckAccountId} />
+                  {sub.lastCheckRegion && <span>({sub.lastCheckRegion})</span>}
+                </>
+              )}
+              {sub.lastCheckError && <span className="text-destructive truncate max-w-full" title={sub.lastCheckError}>· {sub.lastCheckError}</span>}
             </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -456,6 +521,7 @@ function AddSubscriptionDialog({
 }) {
   const create = useCreateMonitorSubscription();
   const update = useUpdateMonitorSubscription();
+  const servers = useServers();
   const isEdit = !!editing;
   // 门禁看的是「所有通道」,不是只看 Telegram —— 只配 webhook 的用户也该能订阅
   const [notifyBlocked, notifyReason, notifyChecking] = useNotifyGate();
@@ -480,6 +546,10 @@ function AddSubscriptionDialog({
   // 然后自动下单被静默拦掉 —— 用户看到的是一条没有理由的死路:
   // 去账户页明明有账户,回来还是"未选择"。失败必须说出失败,并给重试。
   const accountsFailed = accountsQ.isError && !activeAcc;
+  const matchedServer = useMemo(
+    () => (servers.data || []).find((server) => server.planCode === planCode.trim()),
+    [servers.data, planCode],
+  );
 
   const reset = () => {
     setPlanCode("");
@@ -593,18 +663,40 @@ function AddSubscriptionDialog({
             <label className="block text-xs font-medium text-muted-foreground mb-1.5">
               服务器型号 <span className="text-destructive">*</span>
             </label>
-            <Input
-              value={planCode}
-              onChange={(e) => setPlanCode(e.target.value)}
-              placeholder="例如: 24ska01"
-              autoFocus={!isEdit}
-              readOnly={isEdit}
-              className={isEdit ? "bg-muted text-muted-foreground cursor-not-allowed" : undefined}
-            />
-            {isEdit && (
-              <p className="text-[11px] text-muted-foreground mt-1">
-                型号不可改。要换机型请删掉这条订阅再新建
-              </p>
+            {isEdit ? (
+              <>
+                <Input
+                  value={planCode}
+                  readOnly
+                  className="bg-muted text-muted-foreground cursor-not-allowed"
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  型号不可改。要换机型请删掉这条订阅再新建
+                </p>
+              </>
+            ) : (
+              <>
+                <PlanCodeCombobox
+                  value={planCode}
+                  onChange={setPlanCode}
+                  servers={servers.data || []}
+                  placeholder="选择或搜索服务器型号"
+                />
+                {matchedServer && (
+                  <p className="text-[11px] text-muted-foreground mt-1 truncate">
+                    {matchedServer.cpu} · {matchedServer.memory} · {matchedServer.storage}
+                  </p>
+                )}
+                {servers.isError && (
+                  <div className="mt-2">
+                    <LoadFailedBanner
+                      title="机型目录读取失败，下拉列表为空（仍可手动输入型号）"
+                      error={servers.error}
+                      onRetry={() => servers.refetch()}
+                    />
+                  </div>
+                )}
+              </>
             )}
           </div>
 

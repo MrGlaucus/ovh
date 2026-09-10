@@ -128,6 +128,21 @@ export function useToggleQueueItem() {
   });
 }
 
+/** 一键暂停所有可执行任务，或恢复所有暂停任务。 */
+export function useBatchUpdateQueueStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (action: "pause" | "resume") =>
+      (await api.put<{ status: string; updated: number }>("/queue/batch-status", { action })).data,
+    onSuccess: (result, action) => {
+      qc.invalidateQueries({ queryKey: qk.queue.list() });
+      qc.invalidateQueries({ queryKey: qk.stats() });
+      toast.success(result.updated > 0 ? `已${action === "pause" ? "暂停" : "恢复"} ${result.updated} 个队列任务` : "没有需要更新的队列任务");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || "批量更新队列状态失败"),
+  });
+}
+
 /** 删除单个任务 */
 export function useRemoveQueueItem() {
   const qc = useQueryClient();

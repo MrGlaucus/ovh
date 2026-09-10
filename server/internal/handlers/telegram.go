@@ -277,10 +277,70 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 	if len(keyboard) == 0 {
 		return fmt.Errorf("创建账户选择按钮失败")
 	}
+	backCallback, _ := json.Marshal(map[string]string{"a": "back_to_datacenters", "u": buttonID})
+	keyboard = append(keyboard, []button{{Text: "‹ 返回机房选择", CallbackData: string(backCallback)}})
 	if err := telegram.EditMessageReplyMarkup(state, chatID, int64(messageID), map[string]interface{}{"inline_keyboard": keyboard}); err != nil {
 		return err
 	}
 	return nil
+}
+
+// restoreTelegramDatacenterChoices 恢复同一条补货通知中的机房选择按钮。
+func restoreTelegramDatacenterChoices(state *app.State, mon *monitor.Monitor, cb map[string]interface{}, buttonID string) error {
+	if state.DB == nil {
+		return fmt.Errorf("数据库不可用")
+	}
+	parent, exists, err := state.DB.GetTelegramButton(buttonID)
+	if err != nil {
+		return fmt.Errorf("读取原机房按钮失败: %w", err)
+	}
+	if !exists || parent.UsedAt > 0 || time.Since(time.Unix(int64(parent.CreatedAt), 0)) > telegram.ButtonTTL {
+		return fmt.Errorf("原机房按钮已失效")
+	}
+	var config map[string]interface{}
+	_ = json.Unmarshal([]byte(parent.ConfigInfo), &config)
+	menuID, _ := config["telegram_menu_id"].(string)
+	buttons := []db.TelegramButtonRow{parent}
+	if menuID != "" {
+		if rows, err := state.DB.ListTelegramButtonsByMenuID(menuID); err == nil && len(rows) > 0 {
+			buttons = rows
+		} else if err != nil {
+			return err
+		}
+	}
+
+	type button struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	keyboard := make([][]button, 0, (len(buttons)+1)/2)
+	line := make([]button, 0, 2)
+	for _, item := range buttons {
+		if item.UsedAt > 0 || time.Since(time.Unix(int64(item.CreatedAt), 0)) > telegram.ButtonTTL {
+			continue
+		}
+		action := "add_to_queue"
+		label := strings.ToUpper(item.Datacenter) + " 一键下单"
+		if accounts := mon.CompatibleOrderAccounts(item.AccountID); len(accounts) > 1 {
+			action = "choose"
+			label = strings.ToUpper(item.Datacenter) + " 选择账户下单"
+		}
+		callback, _ := json.Marshal(map[string]string{"a": action, "u": item.ID})
+		line = append(line, button{Text: label, CallbackData: string(callback)})
+		if len(line) == 2 {
+			keyboard = append(keyboard, line)
+			line = make([]button, 0, 2)
+		}
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	if len(keyboard) == 0 {
+		return fmt.Errorf("没有仍有效的机房按钮")
+	}
+	message, _ := cb["message"].(map[string]interface{})
+	messageID, _ := getNumOrFloat(message["message_id"])
+	return telegram.EditMessageReplyMarkup(state, getNested(message, "chat", "id"), int64(messageID), map[string]interface{}{"inline_keyboard": keyboard})
 }
 
 // handleTelegramCallback 处理「一键下单」按钮回调。
@@ -329,6 +389,23 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 
 	action := strOr(callbackObj, "a", "action")
 	buttonID := strOr(callbackObj, "u", "uuid")
+	if action == "favorite" {
+		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
+		isFavorite, err := state.DB.IsServerFavorite(planCode)
+		if err != nil || !isFavorite {
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "收藏已不存在，请重新发送 /buy", true)
+			c.JSON(http.StatusGone, gin.H{"ok": false, "error": "favorite_not_found"})
+			return
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "请选择下单账户", false)
+		if !sendTextOrderAccountChoices(state, chatID, int64(messageID), &telegram.OrderInfo{PlanCode: planCode, Quantity: 1}) {
+			telegram.SendReply(state, chatID, "❌ 无法生成账户选择按钮，请确认至少配置了一个 OVH 账户。", int64(messageID))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "account_selection_unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action == "text" {
 		if state.DB == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
@@ -357,6 +434,17 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		}
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已创建抢购任务", false)
 		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。", result.CreatedOrders, result.TotalOrders), int64(messageID))
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	if action == "back_to_datacenters" {
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回机房选择", false)
+		if err := restoreTelegramDatacenterChoices(state, mon, cb, buttonID); err != nil {
+			state.Logger.Warn("恢复 Telegram 机房选择失败: "+err.Error(), "telegram")
+			telegram.SendReply(state, chatID, "❌ 无法恢复机房选择："+err.Error()+"。请等待下一条有货通知后重试。", int64(messageID))
+			c.JSON(http.StatusGone, gin.H{"ok": false, "error": "datacenter_selection_unavailable"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
@@ -614,6 +702,39 @@ func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID
 	return telegram.SendReplyWithMarkup(state, chatID, "请选择用于创建抢购任务的账户：", messageID, map[string]interface{}{"inline_keyboard": keyboard})
 }
 
+// sendFavoriteOrderMenu 展示全局关注型号；选择后沿用现有的账户选择与一次性下单按钮。
+func sendFavoriteOrderMenu(state *app.State, chatID interface{}, messageID int64) bool {
+	if state.DB == nil {
+		return false
+	}
+	favorites, err := state.DB.ListServerFavorites()
+	if err != nil || len(favorites) == 0 {
+		return false
+	}
+	type button struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	keyboard := make([][]button, 0, (len(favorites)+1)/2)
+	line := make([]button, 0, 2)
+	for _, favorite := range favorites {
+		label := strings.TrimSpace(favorite.DisplayName)
+		if label == "" {
+			label = favorite.PlanCode
+		}
+		callback, _ := json.Marshal(map[string]string{"a": "favorite", "p": favorite.PlanCode})
+		line = append(line, button{Text: label, CallbackData: string(callback)})
+		if len(line) == 2 {
+			keyboard = append(keyboard, line)
+			line = make([]button, 0, 2)
+		}
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	return telegram.SendReplyWithMarkup(state, chatID, "选择关注型号：\n\n下一步请选择下单账户。未指定配置时会沿用该型号当前可下单的配置与机房；任务过多会被系统拒绝。", messageID, map[string]interface{}{"inline_keyboard": keyboard})
+}
+
 // handleTelegramMessage 处理文本下单消息。
 func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]interface{}) {
 	if refuseInLegacyMode(state, c) {
@@ -647,6 +768,16 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 	if !telegram.AllowRate(rateKey) {
 		telegram.SendReply(state, chatID, "⚠️ 操作过于频繁，请稍后再试", int64(messageID))
 		c.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
+		return
+	}
+
+	if strings.EqualFold(text, "/buy") || strings.HasPrefix(strings.ToLower(text), "/buy@") {
+		if sendFavoriteOrderMenu(state, chatID, int64(messageID)) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+			return
+		}
+		telegram.SendReply(state, chatID, "暂无关注型号。请先在网页「服务器列表」点击星标关注型号。", int64(messageID))
+		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
 

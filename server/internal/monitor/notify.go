@@ -319,6 +319,12 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	keyboard := [][]btn{}
 	row := []btn{}
 	options := []string{}
+	// 同一条通知的所有机房按钮共用 menu ID，账户选择页可据此安全地恢复原机房列表。
+	buttonConfigInfo := make(map[string]interface{}, len(configInfo)+1)
+	for key, value := range configInfo {
+		buttonConfigInfo[key] = value
+	}
+	buttonConfigInfo["telegram_menu_id"] = uuid.NewString()
 	if configInfo != nil {
 		if opts, ok := configInfo["options"].([]string); ok {
 			options = opts
@@ -341,7 +347,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		dc, _ := dcInfo["dc"].(string)
 		msgUUID := uuid.NewString()
 		// 账户与按钮同一次写入数据库；选择账户的交互必须依赖这条绑定信息。
-		m.AddMessageUUIDForAccount(msgUUID, btnAccountID, planCode, dc, options, configInfo)
+		m.AddMessageUUIDForAccount(msgUUID, btnAccountID, planCode, dc, options, buttonConfigInfo)
 		m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v, account=%s",
 			msgUUID, planCode, dc, options, btnAccountID), "monitor")
 

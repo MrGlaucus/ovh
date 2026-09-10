@@ -247,6 +247,7 @@ func main() {
 		api.POST("/queue", handlers.AddQueueItem(state))
 		api.DELETE("/queue/clear", handlers.ClearQueue(state))
 		api.DELETE("/queue/:id", handlers.RemoveQueueItem(state))
+		api.PUT("/queue/batch-status", handlers.UpdateAllQueueStatuses(state))
 		api.PUT("/queue/:id/status", handlers.UpdateQueueStatus(state))
 
 		// Purchase history
@@ -281,6 +282,9 @@ func main() {
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state))
+		api.GET("/server-favorites", handlers.GetServerFavorites(state))
+		api.POST("/server-favorites", handlers.AddServerFavorite(state))
+		api.DELETE("/server-favorites/:planCode", handlers.RemoveServerFavorite(state))
 		api.GET("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/availability/*planCode", availabilityHandler(handlers.GetAvailability(state)))
 		api.POST("/internal/monitor/price", handlers.MonitorPrice(state))
