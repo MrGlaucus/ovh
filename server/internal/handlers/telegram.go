@@ -802,8 +802,8 @@ func accountMenuLabel(account types.OVHAccount) string {
 	return account.Name + "（" + ovh.SubsidiaryRegion(zone) + " 区）"
 }
 
-// sendBuyConfigurationChoices 先汇总所有已配置账户可识别的配置；即使当前无货，也允许
-// 用户选定目标并创建抢购任务，避免补货窗口之外无法预设配置。
+// sendBuyConfigurationChoices 只汇总当前可下单的配置和机房；/buy 是即时快捷下单入口，
+// 没有库存时直接提示，而不是创建等待补货的抢购任务。
 func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID int64, planCode string) error {
 	if state.DB == nil {
 		return fmt.Errorf("数据库不可用")
@@ -823,8 +823,10 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 	for _, account := range accounts {
 		for _, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
 			dcs := make([]string, 0, len(config.Datacenters))
-			for dc := range config.Datacenters {
-				dcs = append(dcs, dc)
+			for dc, status := range config.Datacenters {
+				if catalog.IsAvailableForOrder(status) {
+					dcs = append(dcs, dc)
+				}
 			}
 			if len(dcs) == 0 {
 				continue
@@ -844,7 +846,7 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 		}
 	}
 	if len(groups) == 0 {
-		return fmt.Errorf("所有已配置账户所在区域均无法识别该型号的可选配置")
+		return fmt.Errorf("%s 在已配置账户可见的所有机房都无货", planCode)
 	}
 
 	keys := make([]string, 0, len(groups))
@@ -862,7 +864,7 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 		keyboard = append(keyboard, []telegramMenuButton{{Text: "🧩 " + group.Display, CallbackData: menuCallback("cfg", id)}})
 	}
 	keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回型号选择", CallbackData: menuCallback("bm", rootID)}})
-	return editBuyMenu(state, chatID, messageID, "选择配置：\n\n型号："+planCode+"\n\n可先预设目标配置；当前无货时也会在下一步创建对应抢购任务。", keyboard)
+	return editBuyMenu(state, chatID, messageID, "选择配置：\n\n型号："+planCode+"\n\n仅展示当前可下单的配置。", keyboard)
 }
 
 func sendBuyDatacenterChoices(state *app.State, chatID interface{}, messageID int64, configButtonID string) error {
