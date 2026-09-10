@@ -419,6 +419,8 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			"storage": storage,
 			"display": configDisplay,
 			"options": configData.Options,
+			// FQN 是 OVH 返回的原始配置身份；同型号同展示文案的不同配置不能混用通知生命周期。
+			"config_key": configKey,
 		}
 		// 询价必须走上面选中的那个账户:验价账户和下单账户不一致时,
 		// endpoint 与 ovhSubsidiary 都会错(A 账户买得到 B 账户买不到,反之亦然)。

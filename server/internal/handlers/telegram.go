@@ -322,10 +322,10 @@ func restoreTelegramDatacenterChoices(state *app.State, mon *monitor.Monitor, cb
 			continue
 		}
 		action := "add_to_queue"
-		label := strings.ToUpper(item.Datacenter) + " 一键下单"
+		label := monitor.DisplayDatacenterShortName(item.Datacenter) + " 一键下单"
 		if accounts := mon.CompatibleOrderAccounts(item.AccountID); len(accounts) > 1 {
 			action = "choose"
-			label = strings.ToUpper(item.Datacenter) + " 选择账户下单"
+			label = monitor.DisplayDatacenterShortName(item.Datacenter) + " 选择账户下单"
 		}
 		callback, _ := json.Marshal(map[string]string{"a": action, "u": item.ID})
 		line = append(line, button{Text: label, CallbackData: string(callback)})

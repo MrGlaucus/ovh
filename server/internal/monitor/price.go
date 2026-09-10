@@ -102,28 +102,36 @@ func (m *Monitor) defaultCurrencyForAccount(accountID string) string {
 // 加区账户的监控里是有歧义的,CAD 和 USD 差着三成汇率。
 // 没有独占符号的币种(MAD/TND/XOF...)直接印 ISO 代码。
 func formatMoney(currency string, v float64) string {
+	return formatMoneyWithSuffix(currency, v, "/月")
+}
+
+func formatOneTimeMoney(currency string, v float64) string {
+	return formatMoneyWithSuffix(currency, v, "（一次性）")
+}
+
+func formatMoneyWithSuffix(currency string, v float64, suffix string) string {
 	switch strings.ToUpper(currency) {
 	case "EUR":
-		return fmt.Sprintf("€%.2f/月", v)
+		return fmt.Sprintf("€%.2f%s", v, suffix)
 	case "GBP":
-		return fmt.Sprintf("£%.2f/月", v)
+		return fmt.Sprintf("£%.2f%s", v, suffix)
 	case "INR":
-		return fmt.Sprintf("₹%.2f/月", v)
+		return fmt.Sprintf("₹%.2f%s", v, suffix)
 	case "PLN":
-		return fmt.Sprintf("%.2f zł/月", v)
+		return fmt.Sprintf("%.2f zł%s", v, suffix)
 	case "USD":
-		return fmt.Sprintf("US$%.2f/月", v)
+		return fmt.Sprintf("US$%.2f%s", v, suffix)
 	case "CAD":
-		return fmt.Sprintf("CA$%.2f/月", v)
+		return fmt.Sprintf("CA$%.2f%s", v, suffix)
 	case "AUD":
-		return fmt.Sprintf("A$%.2f/月", v)
+		return fmt.Sprintf("A$%.2f%s", v, suffix)
 	case "SGD":
-		return fmt.Sprintf("S$%.2f/月", v)
+		return fmt.Sprintf("S$%.2f%s", v, suffix)
 	case "":
 		// 连账户子公司都推不出来:只给数字 + 明确提示,不冒充任何币种
-		return fmt.Sprintf("%.2f/月(币种未知)", v)
+		return fmt.Sprintf("%.2f%s（币种未知）", v, suffix)
 	default:
-		return fmt.Sprintf("%.2f %s/月", v, strings.ToUpper(currency))
+		return fmt.Sprintf("%.2f %s%s", v, strings.ToUpper(currency), suffix)
 	}
 }
 

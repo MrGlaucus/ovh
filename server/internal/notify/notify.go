@@ -42,31 +42,42 @@ type webhookPayload struct {
 	} `json:"text_content"`
 }
 
+// BroadcastResult 描述一次多通道发送的结果。Telegram 消息引用只在该通道成功时存在。
+type BroadcastResult struct {
+	Delivered int
+	Telegram  *telegram.MessageRef
+}
+
 // Broadcast 把一条消息发到所有已配置的通道。
 // 返回成功送达的通道数 —— 调用方据此判断"这条通知到底有没有发出去"。
-//
-// 注意 replyMarkup 只有 Telegram 支持(一键下单按钮),webhook 那边只能收到纯文本。
-// 这是有意的:让按钮在 TG 上继续可用,同时保证 TG 挂掉时消息本身还能到达。
 func Broadcast(state *app.State, message string, replyMarkup map[string]interface{}) int {
-	delivered := 0
-	cfg := state.Config.Get()
+	return BroadcastWithResult(state, message, replyMarkup).Delivered
+}
 
+// BroadcastWithResult 与 Broadcast 相同，但保留 Telegram 的 message_id，供补货通知生命周期跟踪。
+func BroadcastWithResult(state *app.State, message string, replyMarkup map[string]interface{}) BroadcastResult {
+	result := BroadcastResult{}
+	cfg := state.Config.Get()
 	if strings.TrimSpace(cfg.TgToken) != "" && strings.TrimSpace(cfg.TgChatID) != "" {
-		if telegram.SendMessage(state, message, replyMarkup) {
-			delivered++
+		ref, err := telegram.SendMessageWithRef(state, message, replyMarkup)
+		if err != nil {
+			state.Logger.Warn("Telegram 通知发送失败: "+err.Error(), "notify")
+		} else {
+			result.Delivered++
+			result.Telegram = &ref
 		}
 	}
 	if url := strings.TrimSpace(cfg.NotifyWebhookURL); url != "" {
 		if err := sendWebhook(url, message); err != nil {
 			state.Logger.Warn("Webhook 通知发送失败: "+err.Error(), "notify")
 		} else {
-			delivered++
+			result.Delivered++
 		}
 	}
-	if delivered == 0 {
+	if result.Delivered == 0 {
 		state.Logger.Error("这条通知一个通道都没送达,请检查 Telegram / Webhook 配置", "notify")
 	}
-	return delivered
+	return result
 }
 
 // sendWebhook POST 一条 JSON 到用户自定义地址。

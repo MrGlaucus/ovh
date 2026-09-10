@@ -3,14 +3,17 @@ package monitor
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/ovh-buy/server/internal/catalog"
+	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/notify"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -132,7 +135,9 @@ func dcDisplayCN(dc string) string {
 	return v
 }
 
-func dcDisplayShortName(dc string) string {
+// DisplayDatacenterShortName 返回 Telegram 按钮用的带国旗短机房名。
+// 账户选择页恢复原按钮时也必须调用它，保证交互前后显示一致。
+func DisplayDatacenterShortName(dc string) string {
 	city, az := availabilityDCCity(dc)
 	v, ok := dcDisplayShort[city]
 	if !ok {
@@ -142,6 +147,188 @@ func dcDisplayShortName(dc string) string {
 		return v + "-" + az
 	}
 	return v
+}
+
+// writeNotificationServerSummary 统一补货/下架通知的机型、配置和费用区块。
+// 对外型号（serverName）优先，planCode 仅作为下单识别码；Trace ID 只保留在服务端日志。
+func (m *Monitor) writeNotificationServerSummary(msg *strings.Builder, planCode string, configInfo map[string]interface{}, serverName, priceText, priceError string) {
+	if serverName != "" {
+		msg.WriteString("🖥️ " + serverName + "\n")
+	}
+	msg.WriteString("型号代码：" + planCode + "\n")
+
+	if configInfo != nil {
+		display, _ := configInfo["display"].(string)
+		if display != "" {
+			msg.WriteString("\n🧩 配置：" + display + "\n")
+		}
+
+		profile, err := catalog.ConfigPriceProfileForOptions(m.state, accountIDFromConfig(configInfo), planCode, optionsFromConfig(configInfo))
+		if err == nil {
+			switch {
+			case profile.ConfigTypeKnown && profile.IsDefaultConfig:
+				msg.WriteString("   配置类型：标准配置\n")
+			case profile.ConfigTypeKnown:
+				msg.WriteString("   配置类型：扩展硬件配置（非默认）\n")
+			}
+			if priceText != "" {
+				msg.WriteString("\n💳 费用\n")
+				msg.WriteString("   月付：" + priceText + "\n")
+				if profile.InstallationKnown {
+					msg.WriteString("   安装费：" + formatOneTimeMoney(profile.Currency, profile.InstallationTotal) + "\n")
+				}
+			}
+		} else if priceText != "" {
+			msg.WriteString("\n💳 月付：" + priceText + "\n")
+		}
+	} else if priceText != "" {
+		msg.WriteString("\n💳 月付：" + priceText + "\n")
+	}
+	if priceText == "" && priceError != "" {
+		msg.WriteString("\n⚠️ 价格暂不可用：" + priceError + "\n")
+	}
+}
+
+func (m *Monitor) saveTelegramAvailabilitySession(planCode string, configInfo map[string]interface{}, message string, ref telegram.MessageRef, dcs []map[string]interface{}) {
+	if m.state.DB == nil {
+		return
+	}
+	configKey, _ := configInfo["config_key"].(string)
+	if configKey == "" {
+		m.state.Logger.Warn("未记录 Telegram 通知关联：缺少配置 FQN", "monitor")
+		return
+	}
+	session := db.TelegramNotificationSession{
+		ID: uuid.NewString(), PlanCode: planCode, ConfigKey: configKey,
+		ChatID: ref.ChatID, MessageID: ref.MessageID, MessageText: message,
+		CreatedAt: float64(time.Now().Unix()),
+	}
+	rows := make([]db.TelegramNotificationDatacenter, 0, len(dcs))
+	for _, item := range dcs {
+		dc, _ := item["dc"].(string)
+		line, _ := item["notification_line"].(string)
+		buttonID, _ := item["notification_button_id"].(string)
+		buttonText, _ := item["notification_button_text"].(string)
+		openedAt := session.CreatedAt
+		if raw, _ := item["detected_time"].(string); raw != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+				openedAt = float64(parsed.Unix())
+			}
+		}
+		rows = append(rows, db.TelegramNotificationDatacenter{Datacenter: dc, LineText: line, ButtonID: buttonID, ButtonText: buttonText, OpenedAt: openedAt})
+	}
+	if err := m.state.DB.CreateTelegramNotificationSession(session, rows); err != nil {
+		m.state.Logger.Warn("保存 Telegram 通知关联失败: "+err.Error(), "monitor")
+	}
+}
+
+func (m *Monitor) writeNotificationTiming(msg *strings.Builder, detectedTime string, pushTime time.Time) {
+	if detectedTime == "" {
+		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
+		return
+	}
+	detected, err := time.Parse(time.RFC3339Nano, detectedTime)
+	if err != nil {
+		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
+		return
+	}
+	delay := pushTime.Sub(detected)
+	secs := int(delay.Seconds())
+	msg.WriteString("🔎 检测时间：" + detected.Format("2006-01-02 15:04:05") + "\n")
+	msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
+	switch {
+	case secs > 60:
+		msg.WriteString(fmt.Sprintf("⏱️ 推送延迟：%d分%d秒\n", secs/60, secs%60))
+	case secs > 0:
+		msg.WriteString(fmt.Sprintf("⏱️ 推送延迟：%d秒\n", secs))
+	default:
+		msg.WriteString("⏱️ 推送延迟：<1秒\n")
+	}
+}
+
+func (m *Monitor) updateTelegramUnavailable(planCode string, configInfo map[string]interface{}, dcs []map[string]interface{}) []map[string]interface{} {
+	if m.state.DB == nil {
+		return dcs
+	}
+	configKey, _ := configInfo["config_key"].(string)
+	if configKey == "" {
+		return dcs
+	}
+	m.notificationMu.Lock()
+	defer m.notificationMu.Unlock()
+	fallback := make([]map[string]interface{}, 0, len(dcs))
+	for _, item := range dcs {
+		dcName, _ := item["dc"].(string)
+		snapshot, found, err := m.state.DB.CloseTelegramNotificationDatacenter(planCode, configKey, dcName, float64(time.Now().Unix()))
+		if err != nil || !found {
+			fallback = append(fallback, item)
+			if err != nil {
+				m.state.Logger.Warn("关闭 Telegram 通知机房关联失败: "+err.Error(), "monitor")
+			}
+			continue
+		}
+		text, markup := renderTelegramNotificationUnavailable(snapshot)
+		if err := telegram.EditMessageText(m.state, snapshot.Session.ChatID, snapshot.Session.MessageID, text, markup); err != nil {
+			m.state.Logger.Warn("编辑原 Telegram 上架通知失败，改发独立下架通知: "+err.Error(), "monitor")
+			fallback = append(fallback, item)
+		}
+	}
+	return fallback
+}
+
+func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnapshot) (string, map[string]interface{}) {
+	text := html.EscapeString(snapshot.Session.MessageText)
+	allClosed := true
+	type button struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	keyboard := [][]button{}
+	line := []button{}
+	for _, dc := range snapshot.Datacenters {
+		if dc.ClosedAt == 0 {
+			allClosed = false
+			action := "add_to_queue"
+			if strings.Contains(dc.ButtonText, "选择账户下单") {
+				action = "choose"
+			}
+			callback, _ := json.Marshal(map[string]string{"a": action, "u": dc.ButtonID})
+			line = append(line, button{Text: dc.ButtonText, CallbackData: string(callback)})
+			if len(line) == 2 {
+				keyboard = append(keyboard, line)
+				line = nil
+			}
+			continue
+		}
+		escapedLine := html.EscapeString(dc.LineText)
+		duration := humanDuration(time.Duration((dc.ClosedAt - dc.OpenedAt) * float64(time.Second)))
+		replacement := "  • <s>" + strings.TrimPrefix(escapedLine, "  • ") + "</s>\n    ⚫ 已下架 · 在库时长：" + duration
+		text = strings.Replace(text, escapedLine, replacement, 1)
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	if allClosed {
+		text = strings.Replace(text, "🟢 服务器现货", "⚫ 服务器已下架", 1)
+	} else {
+		text = strings.Replace(text, "🟢 服务器现货", "🟡 部分机房已下架", 1)
+	}
+	return text, map[string]interface{}{"inline_keyboard": keyboard}
+}
+
+func humanDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	seconds := int(d.Seconds())
+	switch {
+	case seconds >= 3600:
+		return fmt.Sprintf("%d小时%d分%d秒", seconds/3600, (seconds%3600)/60, seconds%60)
+	case seconds >= 60:
+		return fmt.Sprintf("%d分%d秒", seconds/60, seconds%60)
+	default:
+		return fmt.Sprintf("%d秒", seconds)
+	}
 }
 
 // resolveNotifyAccountID 决定「这条上架通知生成的一键下单按钮该落到哪个 OVH 账户」。
@@ -236,36 +423,23 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	accountID ...string) {
 
 	var msg strings.Builder
-	msg.WriteString("🎉 服务器上架通知！\n\n")
-	if serverName != "" {
-		msg.WriteString("服务器: " + serverName + "\n")
-	}
-	msg.WriteString("型号: " + planCode + "\n")
+	msg.WriteString("🟢 服务器现货\n\n")
+	priceText := ""
 	if configInfo != nil {
-		display, _ := configInfo["display"].(string)
-		memory, _ := configInfo["memory"].(string)
-		storage, _ := configInfo["storage"].(string)
-		msg.WriteString("配置: " + display + "\n")
-		msg.WriteString("├─ 内存: " + memory + "\n")
-		msg.WriteString("└─ 存储: " + storage + "\n")
+		priceText, _ = configInfo["cached_price"].(string)
 	}
+	m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, priceErrorMessage)
 
-	priceText, _ := configInfo["cached_price"].(string)
-	if priceText != "" {
-		msg.WriteString("\n💰 价格: " + priceText + "\n")
-	} else if priceErrorMessage != "" {
-		msg.WriteString("\n⚠️ 价格提示：" + priceErrorMessage + "\n")
-	}
-
-	msg.WriteString(fmt.Sprintf("\n✅ 有货的机房 (%d个):\n", len(availableDCs)))
+	msg.WriteString(fmt.Sprintf("\n📍 可下单机房（%d 个）\n", len(availableDCs)))
 	var detectedTimes []time.Time
 	for _, dcInfo := range availableDCs {
 		dc, _ := dcInfo["dc"].(string)
-		msg.WriteString("  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")")
+		line := "  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")"
 		if dt, ok := dcInfo["duration_text"].(string); ok && dt != "" {
-			msg.WriteString(" - ⏱️ 上次无货→本次有货: " + strings.TrimPrefix(dt, "历时 "))
+			line += " - ⏱️ 上次无货→本次有货: " + strings.TrimPrefix(dt, "历时 ")
 		}
-		msg.WriteString("\n")
+		msg.WriteString(line + "\n")
+		dcInfo["notification_line"] = line
 		if dtStr, ok := dcInfo["detected_time"].(string); ok && dtStr != "" {
 			if t, err := time.Parse(time.RFC3339Nano, dtStr); err == nil {
 				detectedTimes = append(detectedTimes, t)
@@ -274,15 +448,9 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	}
 
 	pushTime := m.nowBeijing()
-	if traceID != "" || configTraceID != "" {
-		if traceID != "" && configTraceID != "" {
-			msg.WriteString("\n🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID)
-		} else if traceID != "" {
-			msg.WriteString("\n🆔 Trace ID: " + traceID)
-		} else {
-			msg.WriteString("\n🆔 Trace ID: " + configTraceID)
-		}
-	}
+	// Trace ID 仅用于服务端日志排障，不再暴露给通知接收者。
+	_ = traceID
+	_ = configTraceID
 
 	if len(detectedTimes) > 0 {
 		earliest := detectedTimes[0]
@@ -352,16 +520,18 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 			msgUUID, planCode, dc, options, btnAccountID), "monitor")
 
 		action := "add_to_queue"
-		buttonText := dcDisplayShortName(dc) + " 一键下单"
+		buttonText := DisplayDatacenterShortName(dc) + " 一键下单"
 		if len(eligibleAccounts) > 1 {
 			action = "choose"
-			buttonText = dcDisplayShortName(dc) + " 选择账户下单"
+			buttonText = DisplayDatacenterShortName(dc) + " 选择账户下单"
 		}
 		cb := map[string]string{"a": action, "u": msgUUID}
 		cbStr, _ := json.Marshal(cb)
 		if len(cbStr) > 64 {
 			m.state.Logger.Warn(fmt.Sprintf("UUID callback_data异常长: %d字节, UUID=%s", len(cbStr), msgUUID), "monitor")
 		}
+		dcInfo["notification_button_id"] = msgUUID
+		dcInfo["notification_button_text"] = buttonText
 		row = append(row, btn{
 			Text:         buttonText,
 			CallbackData: string(cbStr),
@@ -380,7 +550,11 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
-	if notify.Broadcast(m.state, msg.String(), replyMarkup) > 0 {
+	result := notify.BroadcastWithResult(m.state, msg.String(), replyMarkup)
+	if result.Telegram != nil {
+		m.saveTelegramAvailabilitySession(planCode, configInfo, msg.String(), *result.Telegram, availableDCs)
+	}
+	if result.Delivered > 0 {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
 	} else {
 		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
@@ -390,21 +564,16 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName, traceID, configTraceID string) {
 
+	// 新通知优先原地更新对应上架消息；旧版本消息或 API 编辑失败时才发送独立下架通知。
+	unavailableDCs = m.updateTelegramUnavailable(planCode, configInfo, unavailableDCs)
+	if len(unavailableDCs) == 0 {
+		return
+	}
+
 	var msg strings.Builder
-	msg.WriteString("📦 服务器下架通知\n\n")
-	if serverName != "" {
-		msg.WriteString("服务器: " + serverName + "\n")
-	}
-	msg.WriteString("型号: " + planCode + "\n")
-	if configInfo != nil {
-		display, _ := configInfo["display"].(string)
-		memory, _ := configInfo["memory"].(string)
-		storage, _ := configInfo["storage"].(string)
-		msg.WriteString("配置: " + display + "\n")
-		msg.WriteString("├─ 内存: " + memory + "\n")
-		msg.WriteString("└─ 存储: " + storage + "\n")
-	}
-	msg.WriteString(fmt.Sprintf("\n已下架机房 (%d 个):\n", len(unavailableDCs)))
+	msg.WriteString("⚪ 服务器已下架\n\n")
+	m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, "", "")
+	msg.WriteString(fmt.Sprintf("\n📍 已下架机房（%d 个）\n", len(unavailableDCs)))
 	for _, dcInfo := range unavailableDCs {
 		dc, _ := dcInfo["dc"].(string)
 		msg.WriteString("  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")")
@@ -413,16 +582,10 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 		}
 		msg.WriteString("\n")
 	}
-	if traceID != "" || configTraceID != "" {
-		if traceID != "" && configTraceID != "" {
-			msg.WriteString("\n🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID)
-		} else if traceID != "" {
-			msg.WriteString("\n🆔 Trace ID: " + traceID)
-		} else {
-			msg.WriteString("\n🆔 Trace ID: " + configTraceID)
-		}
-	}
-	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
+	// Trace ID 仅用于服务端日志排障，不再暴露给通知接收者。
+	_ = traceID
+	_ = configTraceID
+	msg.WriteString("\n⏰ 推送时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
 
 	configDesc := ""
 	if configInfo != nil {
@@ -443,130 +606,46 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 
 	var msg strings.Builder
 	pushTime := m.nowBeijing()
+	// Trace ID 只在服务端日志中使用，不再发送给通知接收者。
+	_ = traceID
+	_ = configTraceID
+
+	priceText := ""
+	if configInfo != nil {
+		priceText, _ = configInfo["cached_price"].(string)
+	}
 
 	switch changeType {
 	case "available":
-		msg.WriteString("🎉 服务器上架通知！\n\n")
-		if serverName != "" {
-			msg.WriteString("服务器: " + serverName + "\n")
-		}
-		msg.WriteString("型号: " + planCode + "\n")
-		msg.WriteString("数据中心: " + datacenter + "\n")
-		if configInfo != nil {
-			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
-			msg.WriteString("配置: " + display + "\n")
-			msg.WriteString("├─ 内存: " + memory + "\n")
-			msg.WriteString("└─ 存储: " + storage + "\n")
-		}
-		priceText, _ := configInfo["cached_price"].(string)
+		msg.WriteString("🟢 服务器现货\n\n")
 		if priceText == "" {
-			// 用 30 秒超时保护，
-			// 否则在 OVH 价格 API 卡死时整个通知会阻塞
+			// 用 30 秒超时保护，否则 OVH 价格 API 卡住会阻塞通知。
 			priceText, _ = m.getPriceWithTimeout(planCode, datacenter, configInfo, 30*time.Second)
 		}
-		if priceText != "" {
-			msg.WriteString("\n💰 价格: " + priceText + "\n")
-		}
-		msg.WriteString("状态: " + status + "\n")
+		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, "")
+		msg.WriteString("\n📍 可下单机房：" + dcDisplayCN(datacenter) + "\n")
+		msg.WriteString("状态：" + status + "\n")
 		if durationText != "" {
-			msg.WriteString("⏱️ 上次无货→本次有货: " + strings.TrimPrefix(durationText, "历时 ") + "\n")
+			msg.WriteString("上次无货至本次有货：" + strings.TrimPrefix(durationText, "历时 ") + "\n")
 		}
-		if detectedTime != "" {
-			if t, err := time.Parse(time.RFC3339Nano, detectedTime); err == nil {
-				delay := pushTime.Sub(t)
-				secs := int(delay.Seconds())
-				minutes := secs / 60
-				rem := secs % 60
-				msg.WriteString("⏰ 检测时间: " + t.Format("2006-01-02 15:04:05") + "\n")
-				msg.WriteString("📤 推送时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
-				switch {
-				case secs > 0 && minutes > 0:
-					msg.WriteString(fmt.Sprintf("⏱️ 推送延迟: %d分%d秒\n", minutes, rem))
-				case secs > 0:
-					msg.WriteString(fmt.Sprintf("⏱️ 推送延迟: %d秒\n", rem))
-				default:
-					msg.WriteString("⏱️ 推送延迟: <1秒\n")
-				}
-			}
-		} else {
-			msg.WriteString("⏰ 推送时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
-		}
-		if traceID != "" || configTraceID != "" {
-			if traceID != "" && configTraceID != "" {
-				msg.WriteString("\n🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID)
-			} else if traceID != "" {
-				msg.WriteString("\n🆔 Trace ID: " + traceID)
-			} else {
-				msg.WriteString("\n🆔 Trace ID: " + configTraceID)
-			}
-		}
-		msg.WriteString("\n\n💡 快去抢购吧！")
+		m.writeNotificationTiming(&msg, detectedTime, pushTime)
+		msg.WriteString("\n💡 点击下方按钮可直接下单。")
 	case "price_check_failed":
-		msg.WriteString("📦 服务器可用性通知\n\n")
-		if serverName != "" {
-			msg.WriteString("服务器: " + serverName + "\n")
-		}
-		msg.WriteString("型号: " + planCode + "\n")
-		msg.WriteString("数据中心: " + datacenter + "\n")
-		if configInfo != nil {
-			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
-			msg.WriteString("配置: " + display + "\n")
-			msg.WriteString("├─ 内存: " + memory + "\n")
-			msg.WriteString("└─ 存储: " + storage + "\n")
-		}
-		if priceText, ok := configInfo["cached_price"].(string); ok && priceText != "" {
-			msg.WriteString("\n💰 价格: " + priceText + "\n")
-		}
-		msg.WriteString("\n状态: 可用性显示有货\n")
-		msg.WriteString("时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
-		if traceID != "" || configTraceID != "" {
-			if traceID != "" && configTraceID != "" {
-				msg.WriteString("🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID + "\n")
-			} else if traceID != "" {
-				msg.WriteString("🆔 Trace ID: " + traceID + "\n")
-			} else {
-				msg.WriteString("🆔 Trace ID: " + configTraceID + "\n")
-			}
-		}
-		msg.WriteString("\n")
-		msg.WriteString("⚠️ 特别说明：\n")
+		msg.WriteString("🟡 检测到库存，暂不可下单\n\n")
+		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, "")
+		msg.WriteString("\n📍 机房：" + dcDisplayCN(datacenter) + "\n")
+		msg.WriteString("⚠️ 价格校验未通过，已跳过自动下单")
 		if priceCheckError != "" {
-			msg.WriteString(fmt.Sprintf("（价格校验未通过: %s，已跳过自动下单）", priceCheckError))
-		} else {
-			msg.WriteString("（价格校验未通过，已跳过自动下单）")
+			msg.WriteString("：" + priceCheckError)
 		}
+		msg.WriteString("\n⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05"))
 	default:
-		msg.WriteString("📦 服务器下架通知\n\n")
-		if serverName != "" {
-			msg.WriteString("服务器: " + serverName + "\n")
-		}
-		msg.WriteString("型号: " + planCode + "\n")
-		if configInfo != nil {
-			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
-			msg.WriteString("配置: " + display + "\n")
-			msg.WriteString("├─ 内存: " + memory + "\n")
-			msg.WriteString("└─ 存储: " + storage + "\n")
-		}
-		msg.WriteString("\n数据中心: " + datacenter + "\n")
-		msg.WriteString("状态: 已无货\n")
-		msg.WriteString("⏰ 时间: " + pushTime.Format("2006-01-02 15:04:05"))
-		if traceID != "" || configTraceID != "" {
-			if traceID != "" && configTraceID != "" {
-				msg.WriteString("\n🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID)
-			} else if traceID != "" {
-				msg.WriteString("\n🆔 Trace ID: " + traceID)
-			} else {
-				msg.WriteString("\n🆔 Trace ID: " + configTraceID)
-			}
-		}
+		msg.WriteString("⚪ 服务器已下架\n\n")
+		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, "", "")
+		msg.WriteString("\n📍 机房：" + dcDisplayCN(datacenter) + "\n")
+		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05"))
 		if durationText != "" {
-			msg.WriteString("\n⏱️ 本次上架持续: " + strings.TrimPrefix(durationText, "历时 "))
+			msg.WriteString("\n本次上架持续：" + strings.TrimPrefix(durationText, "历时 "))
 		}
 	}
 

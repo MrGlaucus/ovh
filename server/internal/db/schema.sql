@@ -195,6 +195,35 @@ CREATE TABLE IF NOT EXISTS telegram_order_buttons (
 CREATE INDEX IF NOT EXISTS idx_tg_buttons_created ON telegram_order_buttons(created_at);
 
 -- ===========================================
+-- telegram_notification_sessions: 补货通知与 Telegram 消息的持久关联。
+-- 每条上架消息一行；下架时根据机房行定位并原地编辑该消息。
+-- ===========================================
+CREATE TABLE IF NOT EXISTS telegram_notification_sessions (
+  id           TEXT PRIMARY KEY,
+  plan_code    TEXT NOT NULL,
+  config_key   TEXT NOT NULL,
+  chat_id      TEXT NOT NULL,
+  message_id   INTEGER NOT NULL,
+  message_text TEXT NOT NULL,
+  created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tg_notify_session_config ON telegram_notification_sessions(plan_code, config_key);
+
+-- 同一条聚合消息内每个机房一行；closed_at=0 表示仍在库。
+CREATE TABLE IF NOT EXISTS telegram_notification_datacenters (
+  session_id  TEXT NOT NULL,
+  datacenter  TEXT NOT NULL,
+  line_text   TEXT NOT NULL,
+  button_id   TEXT NOT NULL DEFAULT '',
+  button_text TEXT NOT NULL DEFAULT '',
+  opened_at   REAL NOT NULL,
+  closed_at   REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, datacenter),
+  FOREIGN KEY (session_id) REFERENCES telegram_notification_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tg_notify_dc_active ON telegram_notification_datacenters(datacenter, closed_at);
+
+-- ===========================================
 -- telegram_updates: webhook update_id 幂等表
 -- Telegram 在未收到 200 时会重投同一条 update,没有这张表就会重复下单。
 -- ===========================================

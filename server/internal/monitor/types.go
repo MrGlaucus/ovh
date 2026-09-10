@@ -52,7 +52,9 @@ type Monitor struct {
 	messageUUIDCache    map[string]*CachedMessage
 	messageUUIDCacheTTL time.Duration
 
-	cacheLock sync.Mutex
+	// notificationMu 串行化同一条 Telegram 上架消息的下架编辑，避免并发覆盖。
+	notificationMu sync.Mutex
+	cacheLock      sync.Mutex
 
 	// TG 健康检查时间戳:loop 每 5 分钟 verify 一次,失败就自停。
 	// 不放 subsMu 下,简单用单独的锁。

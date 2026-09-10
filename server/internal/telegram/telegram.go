@@ -88,58 +88,88 @@ func VerifyConfig(state *app.State) (bool, string) {
 	return true, ""
 }
 
+// MessageRef 是 Telegram 成功发送后返回的消息定位信息。
+// 监控用它在下架时准确编辑同一条上架通知。
+type MessageRef struct {
+	ChatID    string
+	MessageID int64
+}
+
 func SendMessage(state *app.State, message string, replyMarkup map[string]interface{}) bool {
+	_, err := SendMessageWithRef(state, message, replyMarkup)
+	return err == nil
+}
+
+// SendMessageWithRef 发送 HTML 安全的文本并返回 Telegram 消息 ID。
+// 调用方传入纯文本；本函数统一转义，避免服务器名称等动态内容被当成 HTML。
+func SendMessageWithRef(state *app.State, message string, replyMarkup map[string]interface{}) (MessageRef, error) {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
-		state.Logger.Warn("Telegram消息未发送: Bot Token未在config中设置", "")
-		return false
+		return MessageRef{}, fmt.Errorf("未配置 Telegram Bot Token")
 	}
 	if cfg.TgChatID == "" {
-		state.Logger.Warn("Telegram消息未发送: Chat ID未在config中设置", "")
-		return false
+		return MessageRef{}, fmt.Errorf("未配置 Telegram Chat ID")
 	}
-
-	state.Logger.Info(fmt.Sprintf("准备发送Telegram消息，ChatID: %s, TokenLength: %d", cfg.TgChatID, len(cfg.TgToken)), "")
 
 	url := "https://api.telegram.org/bot" + cfg.TgToken + "/sendMessage"
-	payload := map[string]interface{}{
-		"chat_id": cfg.TgChatID,
-		"text":    message,
-	}
+	payload := map[string]interface{}{"chat_id": cfg.TgChatID, "text": message}
 	if replyMarkup != nil {
 		payload["reply_markup"] = replyMarkup
 	}
-
 	body, _ := json.Marshal(payload)
-
-	// 不能截断了事:"https://api.telegram.org/bot" 就占 28 字符,
-	// 取前 45 位等于每发一条消息就把 Token 前 17 位记进日志。
-	state.Logger.Info("发送HTTP请求到Telegram API: "+scrub(url), "")
-
-	client := proxy.HTTPClient(10 * time.Second)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		state.Logger.Error("发送Telegram消息时发生未预期错误: "+scrub(err.Error()), "")
-		return false
+		return MessageRef{}, fmt.Errorf("构造 Telegram 请求失败: %s", scrub(err.Error()))
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
 	if err != nil {
-		state.Logger.Error("发送Telegram消息时发生网络错误: "+scrub(err.Error()), "")
-		return false
+		// url.Error 通常会携带完整请求 URL，其中包含 Bot Token。
+		return MessageRef{}, fmt.Errorf("请求 Telegram API 失败: %s", scrub(err.Error()))
 	}
 	defer resp.Body.Close()
-
-	state.Logger.Info(fmt.Sprintf("Telegram API响应: 状态码=%d", resp.StatusCode), "")
-
 	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusOK {
-		state.Logger.Info("Telegram响应数据: "+string(respBody), "")
-		state.Logger.Info("成功发送消息到Telegram", "")
-		return true
+	if resp.StatusCode != http.StatusOK {
+		return MessageRef{}, fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, scrub(string(respBody)))
 	}
-	state.Logger.Error(fmt.Sprintf("发送消息到Telegram失败: 状态码=%d, 响应=%s", resp.StatusCode, string(respBody)), "")
-	return false
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil || !result.OK || result.Result.MessageID == 0 {
+		return MessageRef{}, fmt.Errorf("Telegram API 未返回有效 message_id")
+	}
+	return MessageRef{ChatID: cfg.TgChatID, MessageID: result.Result.MessageID}, nil
+}
+
+// EditMessageText 原地更新 Bot 自己发送的消息正文和按钮。
+func EditMessageText(state *app.State, chatID string, messageID int64, text string, replyMarkup map[string]interface{}) error {
+	cfg := state.Config.Get()
+	if cfg.TgToken == "" {
+		return fmt.Errorf("未配置 Telegram Bot Token")
+	}
+	payload := map[string]interface{}{"chat_id": chatID, "message_id": messageID, "text": text, "parse_mode": "HTML"}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+cfg.TgToken+"/editMessageText", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
+	if err != nil {
+		return fmt.Errorf("请求 Telegram API: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // SetWebhook 调用 Telegram setWebhook

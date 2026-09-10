@@ -108,11 +108,26 @@ type planConfig struct {
 	// 监控和快速下单要用它把 availabilities 里的 FQN 段(ram-64g-ecc-2133)映射成
 	// 下单用的 addon planCode(ram-64g-ecc-2133-24sk20-us)。
 	addonFamilies map[string][]string
+	// defaultAddons 是 OVH 目录定义的每个硬件族默认选项；通知据此区分标准配置与扩展配置，
+	// 不能仅靠 options 是否为空判断（标准配置也可能需要显式加入默认 addon）。
+	defaultAddons map[string]string
+	pricings      []catalogPricing
+}
+
+type catalogPricing struct {
+	Interval     int64    `json:"interval"`
+	IntervalUnit string   `json:"intervalUnit"`
+	Mode         string   `json:"mode"`
+	Price        int64    `json:"price"`
+	Tax          int64    `json:"tax"`
+	Capacities   []string `json:"capacities"`
 }
 
 type subsidiaryCatalog struct {
-	plans     map[string]planConfig
-	fetchedAt time.Time
+	plans         map[string]planConfig
+	addonPricings map[string][]catalogPricing
+	currency      string
+	fetchedAt     time.Time
 }
 
 // catalogFailure 负缓存条目:记住"上次拉取失败"这件事,免得失败期间被反复重试。
@@ -176,26 +191,35 @@ func pickRegion(pc planConfig, apiDC string) string {
 }
 
 // parseEcoCatalog 从目录 JSON 里只挑出 region / 机房两项配置。纯函数,便于测试。
-func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
+func parseEcoCatalog(r io.Reader) (map[string]planConfig, map[string][]catalogPricing, string, error) {
 	var payload struct {
+		Locale struct {
+			CurrencyCode string `json:"currencyCode"`
+		} `json:"locale"`
 		Plans []struct {
-			PlanCode       string `json:"planCode"`
+			PlanCode       string           `json:"planCode"`
+			Pricings       []catalogPricing `json:"pricings"`
 			Configurations []struct {
 				Name   string   `json:"name"`
 				Values []string `json:"values"`
 			} `json:"configurations"`
 			AddonFamilies []struct {
-				Name   string   `json:"name"`
-				Addons []string `json:"addons"`
+				Name    string   `json:"name"`
+				Addons  []string `json:"addons"`
+				Default string   `json:"default"`
 			} `json:"addonFamilies"`
 		} `json:"plans"`
+		Addons []struct {
+			PlanCode string           `json:"planCode"`
+			Pricings []catalogPricing `json:"pricings"`
+		} `json:"addons"`
 	}
 	if err := json.NewDecoder(r).Decode(&payload); err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	out := make(map[string]planConfig, len(payload.Plans))
 	for _, p := range payload.Plans {
-		var pc planConfig
+		pc := planConfig{pricings: p.Pricings}
 		for _, cfg := range p.Configurations {
 			switch cfg.Name {
 			case "region":
@@ -206,13 +230,22 @@ func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
 		}
 		if len(p.AddonFamilies) > 0 {
 			pc.addonFamilies = make(map[string][]string, len(p.AddonFamilies))
+			pc.defaultAddons = make(map[string]string, len(p.AddonFamilies))
 			for _, f := range p.AddonFamilies {
-				pc.addonFamilies[strings.ToLower(f.Name)] = f.Addons
+				family := strings.ToLower(f.Name)
+				pc.addonFamilies[family] = f.Addons
+				if f.Default != "" {
+					pc.defaultAddons[family] = f.Default
+				}
 			}
 		}
 		out[p.PlanCode] = pc
 	}
-	return out, nil
+	addonPricings := make(map[string][]catalogPricing, len(payload.Addons))
+	for _, addon := range payload.Addons {
+		addonPricings[addon.PlanCode] = addon.Pricings
+	}
+	return out, addonPricings, payload.Locale.CurrencyCode, nil
 }
 
 // AddonFamiliesForPlan 取该 (账户子公司, planCode) 的 addon family → addon planCode 列表。
@@ -230,6 +263,78 @@ func AddonFamiliesForPlan(state *app.State, accountID, planCode string) (map[str
 		return nil, fmt.Errorf("%w: %s(子公司 %s / %s 站点)", ErrPlanNotInCatalog, planCode, subsidiary, ovh.SubsidiaryRegion(subsidiary))
 	}
 	return pc.addonFamilies, nil
+}
+
+// ConfigPriceProfile 是通知使用的目录价格补充信息。月费仍以实际购物车询价为准；
+// 安装费与配置类型来自同一子公司公开目录，不额外创建购物车。
+type ConfigPriceProfile struct {
+	ConfigTypeKnown   bool
+	IsDefaultConfig   bool
+	InstallationKnown bool
+	InstallationTotal float64
+	Currency          string
+}
+
+// ConfigPriceProfileForOptions 根据 OVH 目录默认 addon 判断标准/扩展硬件配置，
+// 并累计基础机型与已选硬件 addon 的一次性安装费（含税）。
+func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, options []string) (ConfigPriceProfile, error) {
+	acc, _ := state.FindAccount(accountID)
+	subsidiary := SubsidiaryOfAccount(acc)
+	cat, err := loadSubsidiaryCatalog(state, subsidiary)
+	if err != nil {
+		return ConfigPriceProfile{}, err
+	}
+	pc, ok := cat.plans[planCode]
+	if !ok {
+		return ConfigPriceProfile{}, fmt.Errorf("%w: %s(子公司 %s / %s 站点)", ErrPlanNotInCatalog, planCode, subsidiary, ovh.SubsidiaryRegion(subsidiary))
+	}
+
+	profile := ConfigPriceProfile{Currency: cat.currency, InstallationKnown: true}
+	installTotal := installationAmount(pc.pricings)
+	isDefault, typeKnown := true, true
+	for _, option := range options {
+		family, isKnown := addonFamilyForOption(pc.addonFamilies, option)
+		if !isKnown {
+			// options 来自目录匹配；若目录无法识别，不能武断贴上标准/高配标签。
+			typeKnown = false
+			profile.InstallationKnown = false
+			continue
+		}
+		defaultOption, hasDefault := pc.defaultAddons[family]
+		if !hasDefault {
+			typeKnown = false
+		} else if defaultOption != option {
+			isDefault = false
+		}
+		pricings, found := cat.addonPricings[option]
+		if !found {
+			profile.InstallationKnown = false
+			continue
+		}
+		installTotal += installationAmount(pricings)
+	}
+	profile.ConfigTypeKnown = typeKnown
+	profile.IsDefaultConfig = typeKnown && isDefault
+	profile.InstallationTotal = float64(installTotal) / 1e8
+	return profile, nil
+}
+
+func addonFamilyForOption(families map[string][]string, option string) (string, bool) {
+	for family, addons := range families {
+		if contains(addons, option) {
+			return family, true
+		}
+	}
+	return "", false
+}
+
+func installationAmount(pricings []catalogPricing) int64 {
+	for _, pricing := range pricings {
+		if pricing.Mode == "default" && contains(pricing.Capacities, "installation") {
+			return pricing.Price + pricing.Tax
+		}
+	}
+	return 0
 }
 
 // regionBucketForDC 机房归属的 region 桶(只在 plan 有多个候选时用来消歧)。
@@ -349,25 +454,33 @@ func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCata
 	return cat, err
 }
 
-// fetchSubsidiaryCatalog 真正去拉一份目录并裁剪成内存里那份精简结构。
+// fetchSubsidiaryCatalog 真正去拉一份目录并裁剪成内存里那份结构。
 // 拆出来是为了让 loadSubsidiaryCatalog 里只剩缓存/并发控制的逻辑;
 // 写成变量是为了让测试能换成假实现,用调用次数直接验证 singleflight 和负缓存
 // (这层的价值全在"到底发了几次请求",用真实 HTTP 是测不出来的)。
 var fetchSubsidiaryCatalog = func(state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
-	// 目录单份 12MB 左右,只留 region/机房/addon 三项,不把整份 JSON 留在内存里
+	// 目录单份约 12MB；保留 region、硬件族默认项和价格条目，供下单与通知共用，
+	// 不保留描述、营销文案等未使用字段。
 	var plans map[string]planConfig
+	var addonPricings map[string][]catalogPricing
+	var currency string
 	if err := fetchEcoCatalogBody(subsidiary, func(r io.Reader) error {
-		p, err := parseEcoCatalog(r)
+		var err error
+		plans, addonPricings, currency, err = parseEcoCatalog(r)
 		if err != nil {
 			return fmt.Errorf("解析 %s 目录失败: %w", subsidiary, err)
 		}
-		plans = p
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	parsed := &subsidiaryCatalog{plans: plans, fetchedAt: time.Now()}
-	state.Logger.Info(fmt.Sprintf("[region] 已缓存 %s 目录的区域配置(%d 个 plan)", subsidiary, len(parsed.plans)), "purchase")
+	parsed := &subsidiaryCatalog{
+		plans:         plans,
+		addonPricings: addonPricings,
+		currency:      currency,
+		fetchedAt:     time.Now(),
+	}
+	state.Logger.Info(fmt.Sprintf("[region] 已缓存 %s 目录的区域与价格配置(%d 个 plan)", subsidiary, len(parsed.plans)), "purchase")
 	return parsed, nil
 }
 

@@ -31,7 +31,7 @@ const euCatalogFixture = `{"plans":[
    {"name":"dedicated_datacenter","values":["gra"]}]}]}`
 
 func TestParseEcoCatalog(t *testing.T) {
-	plans, err := parseEcoCatalog(strings.NewReader(usCatalogFixture))
+	plans, _, _, err := parseEcoCatalog(strings.NewReader(usCatalogFixture))
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -48,8 +48,8 @@ func TestParseEcoCatalog(t *testing.T) {
 }
 
 func TestPickRegion(t *testing.T) {
-	us, _ := parseEcoCatalog(strings.NewReader(usCatalogFixture))
-	eu, _ := parseEcoCatalog(strings.NewReader(euCatalogFixture))
+	us, _, _, _ := parseEcoCatalog(strings.NewReader(usCatalogFixture))
+	eu, _, _, _ := parseEcoCatalog(strings.NewReader(euCatalogFixture))
 
 	cases := []struct {
 		name  string
@@ -138,7 +138,7 @@ func TestLiveCatalogRegions(t *testing.T) {
 		if err != nil {
 			t.Skipf("拉取 %s 目录失败(网络问题): %v", tc.subsidiary, err)
 		}
-		plans, err := parseEcoCatalog(resp.Body)
+		plans, _, _, err := parseEcoCatalog(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			t.Fatalf("解析 %s 目录失败: %v", tc.subsidiary, err)
@@ -193,6 +193,30 @@ func TestLiveCatalogRegions(t *testing.T) {
 			}
 		}
 		t.Logf("%s: 穷举校验 %d 个 (plan, 机房) 组合全部通过", tc.subsidiary, checked)
+	}
+}
+
+func TestParseEcoCatalogKeepsDefaultsAndInstallationFees(t *testing.T) {
+	fixture := `{
+		"locale":{"currencyCode":"EUR"},
+		"plans":[{"planCode":"24sk202","pricings":[
+			{"interval":1,"intervalUnit":"month","mode":"default","price":4000000000,"tax":0,"capacities":["renew"]},
+			{"interval":1,"intervalUnit":"month","mode":"default","price":1000000000,"tax":200000000,"capacities":["installation"]}
+		],"addonFamilies":[{"name":"memory","addons":["ram-32","ram-64"],"default":"ram-32"}]}],
+		"addons":[{"planCode":"ram-64","pricings":[{"interval":1,"intervalUnit":"month","mode":"default","price":500000000,"tax":100000000,"capacities":["installation"]}]}]
+	}`
+	plans, addons, currency, err := parseEcoCatalog(strings.NewReader(fixture))
+	if err != nil {
+		t.Fatalf("解析目录失败: %v", err)
+	}
+	if currency != "EUR" || plans["24sk202"].defaultAddons["memory"] != "ram-32" {
+		t.Fatalf("默认配置或币种未保留: currency=%q defaults=%v", currency, plans["24sk202"].defaultAddons)
+	}
+	if got, want := installationAmount(plans["24sk202"].pricings), int64(1200000000); got != want {
+		t.Errorf("基础安装费 = %d, want %d", got, want)
+	}
+	if got, want := installationAmount(addons["ram-64"]), int64(600000000); got != want {
+		t.Errorf("扩展项安装费 = %d, want %d", got, want)
 	}
 }
 

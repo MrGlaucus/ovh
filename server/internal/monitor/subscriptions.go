@@ -189,6 +189,14 @@ func (m *Monitor) cleanupExpiredCaches() {
 		} else if n > 0 {
 			m.state.Logger.Debug(fmt.Sprintf("已清理 %d 个过期一键下单按钮", n), "telegram")
 		}
+		// 通知关联只用于把较新的下架事件编辑回原消息；保留 7 天足够覆盖按钮 24 小时窗口，
+		// 也避免长期运行时 SQLite 持续积累已结束的生命周期记录。
+		beforeSessions := float64(time.Now().Add(-7 * 24 * time.Hour).Unix())
+		if n, err := m.state.DB.DeleteExpiredTelegramNotificationSessions(beforeSessions); err != nil {
+			m.state.Logger.Debug("清理过期 Telegram 通知关联失败: "+err.Error(), "telegram")
+		} else if n > 0 {
+			m.state.Logger.Debug(fmt.Sprintf("已清理 %d 条过期 Telegram 通知关联", n), "telegram")
+		}
 	}
 	m.cacheLock.Lock()
 	defer m.cacheLock.Unlock()
