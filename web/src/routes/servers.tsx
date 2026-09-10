@@ -120,10 +120,13 @@ function ServersPage() {
   const pageAccounts = useAccounts();
   const [activeAccountId] = useActiveAccount();
   const activeAcc = findAccountByID(pageAccounts.data, activeAccountId);
-  const subsidiary = (activeAcc?.zone || accountSub || "IE").toUpperCase();
+  // 价格目录必须严格跟随已确认的活动账户。账户列表尚未到手、或活动账户刚被删除时，
+  // 不用 IE/账户信息作兜底，否则会在真正子公司确定前多拉一份 10MB 以上的目录。
+  const subsidiary = (activeAcc?.zone || "").toUpperCase();
+  const catalogReady = !pageAccounts.isPending && !!activeAcc && !!subsidiary;
 
   // 单次拉取所选 subsidiary 的目录算价格（base plan + addon family 月费累加）
-  const catalogQ = useOvhCatalog(subsidiary);
+  const catalogQ = useOvhCatalog(subsidiary, catalogReady);
   const catalogIdx = useMemo(() => buildCatalogIndex(catalogQ.data), [catalogQ.data]);
   // 卡片显示价格用每台服务器的 catalog defaultOptions 算,跟详情对话框打开时的初始价格一致。
   // 旧的 buildPriceMap 走 FQN 维度前缀匹配,跟 catalog 默认值可能挑到不同 addon → 卡片价跟弹窗价对不上。
@@ -316,7 +319,7 @@ function ServersPage() {
               realtimeDcMap={availMap[srv.planCode]}
               availError={availQ.isError}
               price={priceMap[srv.planCode]}
-              priceLoading={catalogQ.isPending}
+              priceLoading={catalogQ.isPending || !catalogReady}
               priceError={catalogQ.isError}
               subsidiary={subsidiary}
               favorite={favoritePlanCodes.has(srv.planCode)}
@@ -340,7 +343,7 @@ function ServersPage() {
               availError={availQ.isError}
               variants={variantIndex[detailServer.planCode]}
               defaultPrice={priceMap[detailServer.planCode]}
-              priceLoading={catalogQ.isPending}
+              priceLoading={catalogQ.isPending || !catalogReady}
               priceError={catalogQ.isError}
               catalogIdx={catalogIdx}
               subsidiary={subsidiary}

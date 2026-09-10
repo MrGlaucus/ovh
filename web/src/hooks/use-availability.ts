@@ -294,12 +294,12 @@ const CATALOG_REQUEST_TIMEOUT_MS = 120_000;
  * 拉取 OVH 公共目录（每个 subsidiary 各自一份：不同币、不同税、不同促销价）。
  * - 走我们的后端 /api/catalog?subsidiary=XX：后端 SQLite 缓存 2 小时，
  *   首次拉完落库，之后 F5 / 新 tab / 换浏览器都能秒回（~10ms）。
- * - subsidiary 不传时后端按 config.Zone 兜底，前端不需要先调 settings。
+ * - 仅在调用方已经确认当前账户及其子公司后请求，避免启动阶段误用 IE 兜底拉一份大目录。
  * - 缓存策略与 useServers 对齐：2 小时新鲜、24 小时 gc、不自动 refetch
  */
-export function useOvhCatalog(subsidiary?: string) {
+export function useOvhCatalog(subsidiary?: string, enabled: boolean = true) {
   return useQuery({
-    queryKey: ["ovh-catalog", "eco", subsidiary || "auto"] as const,
+    queryKey: ["ovh-catalog", "eco", subsidiary || "pending"] as const,
     queryFn: async () => {
       const params: Record<string, string> = {};
       if (subsidiary) params.subsidiary = subsidiary;
@@ -309,9 +309,10 @@ export function useOvhCatalog(subsidiary?: string) {
       });
       return res.data;
     },
-    // 临时网络抖动或 OVH 限流时重试一次；成功后会进入 2 小时共享缓存。
-    retry: 1,
-    retryDelay: 2_000,
+    // 目录单份超过 10MB；超时后自动重试会立即再拉一整份，既增加负载也掩盖失败原因。
+    // 用户可通过页面“刷新”显式重试。
+    retry: false,
+    enabled: enabled && !!subsidiary,
     staleTime: 2 * 60 * 60_000,
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,
