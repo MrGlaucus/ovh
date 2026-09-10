@@ -277,7 +277,9 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 	if len(keyboard) == 0 {
 		return fmt.Errorf("创建账户选择按钮失败")
 	}
-	backCallback, _ := json.Marshal(map[string]string{"a": "back_to_datacenters", "u": buttonID})
+	// Telegram callback_data 的硬上限是 64 bytes。UUID 已占 36 bytes，
+	// action 必须使用短码；旧的 back_to_datacenters 会序列化为 70 bytes 并被 Telegram 拒绝。
+	backCallback, _ := json.Marshal(map[string]string{"a": "back", "u": buttonID})
 	keyboard = append(keyboard, []button{{Text: "‹ 返回机房选择", CallbackData: string(backCallback)}})
 	if err := telegram.EditMessageReplyMarkup(state, chatID, int64(messageID), map[string]interface{}{"inline_keyboard": keyboard}); err != nil {
 		return err
@@ -437,7 +439,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
-	if action == "back_to_datacenters" {
+	if action == "back" {
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回机房选择", false)
 		if err := restoreTelegramDatacenterChoices(state, mon, cb, buttonID); err != nil {
 			state.Logger.Warn("恢复 Telegram 机房选择失败: "+err.Error(), "telegram")
