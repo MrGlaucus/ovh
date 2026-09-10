@@ -1,4 +1,4 @@
-const CACHE_NAME = "ovh-console-shell-v4";
+const CACHE_NAME = "ovh-console-shell-v6";
 const APP_SHELL = ["/"];
 
 self.addEventListener("install", (event) => {
