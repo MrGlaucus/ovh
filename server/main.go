@@ -169,6 +169,13 @@ func main() {
 	handlers.SetMonitorRef(mon)
 	mon.LoadFromDB()
 	console.Info("监控就绪", "checkInterval", mon.CheckInterval())
+	if state.Config.Get().TgToken != "" {
+		go func() {
+			if err := telegram.SetMyCommands(state); err != nil {
+				state.Logger.Warn(err.Error(), "telegram")
+			}
+		}()
+	}
 
 	// Gin
 	if mode := os.Getenv("GIN_MODE"); mode != "" {

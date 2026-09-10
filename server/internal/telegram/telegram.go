@@ -157,17 +157,54 @@ func EditMessageText(state *app.State, chatID string, messageID int64, text stri
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+cfg.TgToken+"/editMessageText", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("构造 Telegram 请求失败: %s", scrub(err.Error()))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
 	if err != nil {
-		return fmt.Errorf("请求 Telegram API: %w", err)
+		return fmt.Errorf("请求 Telegram API 失败: %s", scrub(err.Error()))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, scrub(string(body)))
+	}
+	return nil
+}
+
+// SetMyCommands 注册 Bot 原生命令菜单；所有命令都由 webhook 的现有授权链继续保护。
+func SetMyCommands(state *app.State) error {
+	cfg := state.Config.Get()
+	if cfg.TgToken == "" {
+		return fmt.Errorf("未配置 Telegram Bot Token")
+	}
+	payload := map[string]interface{}{"commands": []map[string]string{
+		{"command": "buy", "description": "快捷下单"},
+		{"command": "monitor", "description": "监控列表"},
+		{"command": "queue", "description": "抢购队列"},
+	}}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+cfg.TgToken+"/setMyCommands", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("构造 Telegram 命令菜单请求失败: %s", scrub(err.Error()))
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
+	if err != nil {
+		return fmt.Errorf("注册 Telegram 命令菜单失败: %s", scrub(err.Error()))
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.Unmarshal(respBody, &result)
+	if resp.StatusCode != http.StatusOK || !result.OK {
+		if result.Description == "" {
+			result.Description = string(respBody)
+		}
+		return fmt.Errorf("注册 Telegram 命令菜单失败: %s", scrub(result.Description))
 	}
 	return nil
 }
@@ -215,6 +252,10 @@ func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]i
 		if secret != "" {
 			// secret 已经推给 Telegram，从此刻起 webhook 强制校验
 			MarkWebhookSecretRegistered(state)
+		}
+		if err := SetMyCommands(state); err != nil {
+			// Webhook 已经注册成功，命令菜单失败不能让通知与下单整体失效；下次启动或重设 Webhook 会重试。
+			state.Logger.Warn(err.Error(), "telegram")
 		}
 		// 获取 webhook info
 		var info map[string]interface{}
