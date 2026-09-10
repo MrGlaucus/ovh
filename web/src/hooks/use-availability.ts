@@ -287,6 +287,9 @@ export interface PriceInfo {
   currency: string;
 }
 
+// Eco 目录常有 10MB 以上；必须比服务端 catalogFetchTimeout 更长，避免浏览器先中止。
+const CATALOG_REQUEST_TIMEOUT_MS = 120_000;
+
 /**
  * 拉取 OVH 公共目录（每个 subsidiary 各自一份：不同币、不同税、不同促销价）。
  * - 走我们的后端 /api/catalog?subsidiary=XX：后端 SQLite 缓存 2 小时，
@@ -300,9 +303,15 @@ export function useOvhCatalog(subsidiary?: string) {
     queryFn: async () => {
       const params: Record<string, string> = {};
       if (subsidiary) params.subsidiary = subsidiary;
-      const res = await api.get<CatalogData>("/catalog", { params });
+      const res = await api.get<CatalogData>("/catalog", {
+        params,
+        timeout: CATALOG_REQUEST_TIMEOUT_MS,
+      });
       return res.data;
     },
+    // 临时网络抖动或 OVH 限流时重试一次；成功后会进入 2 小时共享缓存。
+    retry: 1,
+    retryDelay: 2_000,
     staleTime: 2 * 60 * 60_000,
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,

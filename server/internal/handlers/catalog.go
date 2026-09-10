@@ -18,6 +18,10 @@ import (
 // catalogTTL OVH 公开 catalog 缓存时长，与前端 useOvhCatalog 的 staleTime 对齐
 const catalogTTL = 2 * time.Hour
 
+// catalogFetchTimeout 要小于前端目录请求超时，确保慢代理/OVH 响应时仍由服务端返回
+// 可读错误或 stale 缓存，而不是先被浏览器中断为一个没有正文的失败请求。
+const catalogFetchTimeout = 105 * time.Second
+
 // catalogBaseURLForSubsidiary 把 subsidiary 映射成对应站点的 base URL。
 // 实现收敛在 ovh 包一份(catalog 包解析 region 时也要用同一张表),
 // 两份各自演化过一次就会出现"某个子公司只在一处被支持"的诡异 bug。
@@ -70,7 +74,7 @@ func GetCatalog(state *app.State) gin.HandlerFunc {
 		// 2. 直连 OVH 拉新数据。站点由子公司决定(三区目录互不相通,查错站点是 400 而不是空目录)
 		baseURL := catalogBaseURLForSubsidiary(sub)
 		url := fmt.Sprintf("%s/v1/order/catalog/public/eco?ovhSubsidiary=%s", baseURL, sub)
-		client := proxy.HTTPClient(30 * time.Second)
+		client := proxy.HTTPClient(catalogFetchTimeout)
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
 		req.Header.Set("accept", "application/json")
 

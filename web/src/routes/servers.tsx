@@ -63,9 +63,19 @@ export const Route = createFileRoute("/servers")({
  * 目录里(三区目录互不相通,机型代码都不一样)。用户盯着一个永远转不完的"加载中",
  * 完全不知道发生了什么。现在把两种情况分开说。
  */
-function PriceFallback({ loading, subsidiary }: { loading: boolean; subsidiary: string }) {
+function PriceFallback({ loading, error, subsidiary }: { loading: boolean; error: boolean; subsidiary: string }) {
   if (loading) {
     return <span className="text-muted-foreground font-normal">— · 价格加载中</span>;
+  }
+  if (error) {
+    return (
+      <span
+        className="text-amber-600 dark:text-amber-400 font-normal"
+        title="价格目录读取失败，可使用页面顶部的刷新按钮重试。"
+      >
+        — · 价格目录读取失败
+      </span>
+    );
   }
   return (
     <span
@@ -254,6 +264,15 @@ function ServersPage() {
         </div>
       )}
 
+      {/* 价格目录失败时不能伪装成“无报价”：前者可重试，后者才是目录中确实不存在该机型。 */}
+      {catalogQ.isError && (
+        <LoadFailedBanner
+          title="价格目录读取失败，下方价格暂不可用"
+          error={catalogQ.error}
+          onRetry={() => catalogQ.refetch()}
+        />
+      )}
+
       {/* 库存接口挂了 —— 必须说出来。卡片上的红点这时候来自目录里的静态字段,
           不是实时库存,把它当成"缺货"会让用户直接放弃一台其实有货的机器。 */}
       {availQ.isError && (
@@ -298,6 +317,7 @@ function ServersPage() {
               availError={availQ.isError}
               price={priceMap[srv.planCode]}
               priceLoading={catalogQ.isPending}
+              priceError={catalogQ.isError}
               subsidiary={subsidiary}
               favorite={favoritePlanCodes.has(srv.planCode)}
               favoritePending={toggleFavorite.isPending}
@@ -321,6 +341,7 @@ function ServersPage() {
               variants={variantIndex[detailServer.planCode]}
               defaultPrice={priceMap[detailServer.planCode]}
               priceLoading={catalogQ.isPending}
+              priceError={catalogQ.isError}
               catalogIdx={catalogIdx}
               subsidiary={subsidiary}
               onClose={() => setDetailPlanCode(null)}
@@ -339,6 +360,7 @@ function ServerCard({
   availError,
   price,
   priceLoading,
+  priceError,
   subsidiary,
   favorite,
   favoritePending,
@@ -352,8 +374,10 @@ function ServerCard({
   /** 实时库存接口挂了 —— 红点只是目录静态值,不能叫"缺货" */
   availError?: boolean;
   price?: PriceInfo;
-  /** 目录还在拉 → 显示"加载中";已拉完仍无价 → 显示"该子公司无报价" */
+  /** 目录还在拉 → 显示“加载中”；成功但缺价才显示“无报价”。 */
   priceLoading: boolean;
+  /** 目录请求失败时必须与真正无报价区分开。 */
+  priceError: boolean;
   subsidiary: string;
   favorite: boolean;
   favoritePending: boolean;
@@ -413,7 +437,7 @@ function ServerCard({
               {price ? (
                 formatPrice(price)
               ) : (
-                <PriceFallback loading={priceLoading} subsidiary={subsidiary} />
+                <PriceFallback loading={priceLoading} error={priceError} subsidiary={subsidiary} />
               )}
             </div>
           </div>
@@ -519,6 +543,7 @@ function DetailContent({
   variants,
   defaultPrice,
   priceLoading,
+  priceError,
   catalogIdx,
   subsidiary,
   onClose,
@@ -532,6 +557,7 @@ function DetailContent({
   /** 用默认配置算出的代表价，作为用户尚未变动时的兜底显示 */
   defaultPrice?: PriceInfo;
   priceLoading: boolean;
+  priceError: boolean;
   /** 目录索引：用户切配置时实时算价用 */
   catalogIdx: CatalogIndex;
   /** 仅用于价格展示的 subsidiary（顶部下拉决定）。实际下单 subsidiary 由后端 cfg.Zone 决定，在设置页改 */
@@ -695,7 +721,7 @@ function DetailContent({
                 formatPrice(price)
               ) : (
                 <span className="text-base">
-                  <PriceFallback loading={priceLoading} subsidiary={subsidiary} />
+                  <PriceFallback loading={priceLoading} error={priceError} subsidiary={subsidiary} />
                 </span>
               )}
             </div>
