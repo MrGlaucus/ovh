@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // SecretTokenHeader Telegram 在 setWebhook 带了 secret_token 之后，
@@ -105,36 +106,31 @@ func ValidateWebhookSecret(state *app.State, headerValue string) (ok bool, legac
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1, false
 }
 
-// IsAuthorizedActor 判断这条 update 的发送者是否是配置里那个 chat。
-// 只认 config.TgChatID：
-//   - 私聊：chat_id 等于配置值即可（Telegram 私聊的 chat_id 就是对方 user_id）；
-//   - 群/超级群（chat_id 为负）：除 chat 匹配外，发送者必须在 TG_ALLOWED_USER_IDS 白名单里，
-//     否则群里任何成员都能下单。
-//
-// 这层挡的是「secret 泄漏 / 兼容模式」下的越权，不是伪造来源 —— 伪造来源由 secret 挡。
+// IsAuthorizedActor 同时验证目标 Chat ID 与设置中的 Telegram 用户白名单。
+// 白名单为空时拒绝全部用户；这是一道独立于 webhook secret 的授权边界，
+// 防止群成员、误发给 Bot 的私聊用户或泄漏的按钮链接触发下单。
 func IsAuthorizedActor(state *app.State, chatID, userID interface{}) bool {
-	want := normalizeID(state.Config.Get().TgChatID)
-	if want == "" {
+	return isAuthorizedActor(state.Config.Get(), chatID, userID)
+}
+
+// isAuthorizedActor 将授权规则拆成无副作用函数，便于覆盖私聊、群聊和空白名单场景。
+func isAuthorizedActor(cfg types.Config, chatID, userID interface{}) bool {
+	wantChat := normalizeID(cfg.TgChatID)
+	allow := strings.TrimSpace(cfg.TgAllowedUserIDs)
+	if wantChat == "" || allow == "" {
 		return false
 	}
 	gotChat := normalizeID(idToString(chatID))
 	gotUser := normalizeID(idToString(userID))
+	if !idInCSV(gotUser, allow) {
+		return false
+	}
 
-	if gotChat != "" && gotChat == want {
-		if strings.HasPrefix(gotChat, "-") {
-			allow := strings.TrimSpace(os.Getenv("TG_ALLOWED_USER_IDS"))
-			if allow == "" {
-				return false
-			}
-			return idInCSV(gotUser, allow)
-		}
+	if gotChat != "" && gotChat == wantChat {
 		return true
 	}
-	// 兼容：配置里填的是 user id，私聊时 chat_id 与之相等
-	if gotUser != "" && gotUser == want && (gotChat == "" || gotChat == gotUser) {
-		return true
-	}
-	return false
+	// 兼容：配置里填的是 User ID，私聊时 chat_id 与之相等。
+	return gotUser == wantChat && (gotChat == "" || gotChat == gotUser)
 }
 
 func idInCSV(id, csv string) bool {

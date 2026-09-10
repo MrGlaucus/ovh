@@ -12,6 +12,8 @@ type Config struct {
 	Endpoint    string `json:"endpoint"`
 	TgToken     string `json:"tgToken"`
 	TgChatID    string `json:"tgChatId"`
+	// TgAllowedUserIDs 是允许处理消息/按钮回调的 Telegram 数字 User ID，逗号分隔；空值即拒绝全部用户。
+	TgAllowedUserIDs string `json:"tgAllowedUserIds"`
 	// WebhookURL 是 Telegram 回调到本服务的公网地址；保存后自动注册并启用 secret_token。
 	WebhookURL string `json:"webhookUrl,omitempty"`
 	IAM        string `json:"iam"`

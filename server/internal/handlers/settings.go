@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +14,35 @@ import (
 	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/types"
 )
+
+// normalizeTelegramUserIDs 只接受稳定的 Telegram 数字 User ID。
+// username 可以修改且可能为空，不能用来授权会触发下单的操作。
+func normalizeTelegramUserIDs(raw string) (string, error) {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || n <= 0 {
+			return "", fmt.Errorf("Telegram 用户白名单只能填写正整数 User ID：%q", id)
+		}
+		canonical := strconv.FormatInt(n, 10)
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		ids = append(ids, canonical)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, _ := strconv.ParseInt(ids[i], 10, 64)
+		right, _ := strconv.ParseInt(ids[j], 10, 64)
+		return left < right
+	})
+	return strings.Join(ids, ","), nil
+}
 
 // GetSettings GET /api/settings
 func GetSettings(state *app.State) gin.HandlerFunc {
@@ -40,6 +72,12 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		newCfg.ConsumerKey = strings.TrimSpace(newCfg.ConsumerKey)
 		newCfg.TgToken = strings.TrimSpace(newCfg.TgToken)
 		newCfg.TgChatID = strings.TrimSpace(newCfg.TgChatID)
+		allowedUserIDs, err := normalizeTelegramUserIDs(newCfg.TgAllowedUserIDs)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": err.Error()})
+			return
+		}
+		newCfg.TgAllowedUserIDs = allowedUserIDs
 		// 同样去空白:webhook 地址末尾带个换行,POST 出去就是 DNS 解析失败
 		newCfg.WebhookURL = strings.TrimSpace(newCfg.WebhookURL)
 		newCfg.NotifyWebhookURL = strings.TrimSpace(newCfg.NotifyWebhookURL)

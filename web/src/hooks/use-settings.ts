@@ -12,6 +12,8 @@ export interface SettingsConfig {
   iam?: string;
   tgToken?: string;
   tgChatId?: string;
+  /** 允许处理 Telegram 消息/回调的数字 User ID，逗号分隔；空值即拒绝全部。 */
+  tgAllowedUserIds?: string;
   /** Telegram 回调地址：Telegram 把用户点按钮的动作推到这里（进） */
   webhookUrl?: string;
   /** 自定义通知地址：补货/下单结果由本程序 POST 到这里（出）。和上面那个方向相反 */

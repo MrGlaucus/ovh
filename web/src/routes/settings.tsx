@@ -338,6 +338,16 @@ function TelegramSection({
           placeholder="-1001234567890"
         />
       </Field>
+      <Field label="用户白名单（User ID，逗号分隔）">
+        <Input
+          value={form.tgAllowedUserIds || ""}
+          onChange={(e) => set("tgAllowedUserIds", e.target.value)}
+          placeholder="例如: 123456789, 987654321"
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          只处理名单内用户的文字命令和按钮回调；留空会拒绝所有 Telegram 用户。请填写稳定的数字 User ID，不支持用户名。
+        </p>
+      </Field>
       <Field label="Telegram 回调地址（可选）">
         <Input
           value={form.webhookUrl || ""}
