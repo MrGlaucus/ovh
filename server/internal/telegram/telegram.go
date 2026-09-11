@@ -502,6 +502,8 @@ func rebuildKeyboard(state *app.State, chatID interface{}, messageID int64, pres
 // 这是让一个 bot 显得"有人管"最便宜的一件事,而以前一条都没注册过。
 var BotCommands = []map[string]string{
 	{"command": "help", "description": "怎么用 / 下单格式"},
+	{"command": "watch", "description": "盯着补货就抢（/watch 型号 [机房] [x数量]）"},
+	{"command": "unwatch", "description": "不盯了（/unwatch 型号）"},
 	{"command": "status", "description": "监控与队列总览"},
 	{"command": "queue", "description": "正在抢的任务"},
 	{"command": "cancel", "description": "取消任务（/cancel 任务号 或 all）"},

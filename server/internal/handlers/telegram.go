@@ -576,10 +576,16 @@ func handleTelegramMessage(state *app.State, mon *monitor.Monitor, u *updateCtx,
 		// 可能远超用户直觉,必须把总数醒目地摆出来。
 		reply = fmt.Sprintf("📥 已创建 %d/%d 个抢购任务\n\n型号: %s\n机房: %s\n数量: %d\n配置: %s\n\n"+
 			"系统将自动尝试下单;每个任务下单成功后会单独通知(注意:下单成功≠已付款)。\n"+
-			"不想跑这么多任务就到「抢购队列」里删。",
+			"查看 /queue · 取消 /cancel all",
 			result.CreatedOrders, result.TotalOrders, orderInfo.PlanCode, dcText, orderInfo.Quantity, optsText)
 	} else {
-		reply = "❌ 下单失败\n\n" + result.Message
+		// 文本下单是「现在就买」:ProcessOrder 要求机器此刻有货,全区无货直接拒绝,
+		// 一个任务都不建。而抢购的常态恰恰是现在没货 —— 用户在这一刻最需要知道
+		// 的就是"可以挂个 /watch 等补货",否则他只会以为这工具坏了,或者反复手动重发。
+		reply = "❌ 下单失败\n\n" + result.Message +
+			"\n\n💡 如果只是现在没货，可以挂着等补货：\n" +
+			"  /watch " + orderInfo.PlanCode + "        补货就通知你\n" +
+			"  /watch " + orderInfo.PlanCode + " x1     补货自动抢 1 台"
 	}
 	telegram.SendReply(state, chatID, reply, int64(messageID))
 	u.JSON(http.StatusOK, gin.H{"ok": true})

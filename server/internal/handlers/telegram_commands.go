@@ -50,6 +50,10 @@ func handleCommand(state *app.State, mon *monitor.Monitor, chatID interface{}, m
 		reply = queueText(state)
 	case "cancel":
 		reply = cancelText(state, args)
+	case "watch", "w":
+		reply = watchText(state, mon, args)
+	case "unwatch", "uw":
+		reply = unwatchText(state, mon, args)
 	case "accounts", "acc":
 		reply = accountsText(state)
 	case "subs", "sub":
@@ -83,11 +87,17 @@ func helpText(state *app.State) string {
 	b.WriteString(fmt.Sprintf("数量上限 %d 台/次，一条消息最多创建 %d 个任务。\n",
 		telegram.MaxOrderQuantity, telegram.MaxOrderFanout))
 	b.WriteString("机房代码是 3-4 位小写字母（gra / rbx / sbg / bhs / waw…）。\n\n")
+	b.WriteString("⚠️ 上面这种是「现在就买」，机器当下没货会直接失败。\n")
+	b.WriteString("   想等补货请用 /watch。\n\n")
+	b.WriteString("【盯补货】机器现在没货时用这个：\n")
+	b.WriteString("  /watch 24sk602         补货就通知我\n")
+	b.WriteString("  /watch 24sk602 gra x1  gra 补货就自动抢 1 台\n")
+	b.WriteString("  /unwatch 24sk602       不盯了\n\n")
 	b.WriteString("【命令】\n")
 	b.WriteString("  /status   监控与队列总览\n")
 	b.WriteString("  /queue    正在抢的任务\n")
 	b.WriteString("  /cancel <任务号|all>  取消任务\n")
-	b.WriteString("  /subs     监控订阅列表\n")
+	b.WriteString("  /subs     在盯哪些型号\n")
 	b.WriteString("  /accounts 可用的 OVH 账户\n")
 	b.WriteString("  /recent   最近的抢购结果\n\n")
 	b.WriteString("💡 上架通知里的按钮可以直接下单，比打字快。\n")

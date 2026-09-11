@@ -209,9 +209,15 @@ func (m *Monitor) resolveNotifyAccountID(planCode string, explicit ...string) st
 
 // accountID 是可变参数而不是必填形参:写入口 check.go 不在本次改动范围内,
 // 加必填形参会直接编译不过。传了就用传的,没传就由 resolveNotifyAccountID 反查订阅。
-func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
+// buildAvailabilityAlert 拼出上架通知的正文和按钮。
+//
+// 从 SendAvailabilityAlertGrouped 里拆出来，是为了能在测试里直接看到
+// 用户真正会收到的那段文字 —— 通知的排版是这个工具的门面，
+// 以前只能靠真的触发一次补货才看得见。
+// 注意它有副作用：会把按钮 UUID 写进 telegram_order_buttons。
+func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
-	accountID ...string) {
+	accountID ...string) (string, map[string]interface{}) {
 
 	var msg strings.Builder
 	msg.WriteString("🎉 服务器上架通知！\n\n")
@@ -350,6 +356,15 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
+	return msg.String(), replyMarkup
+}
+
+// SendAvailabilityAlertGrouped 拼好通知并广播出去。
+func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
+	accountID ...string) {
+	msgText, replyMarkup := m.buildAvailabilityAlert(planCode, availableDCs, configInfo,
+		serverName, priceErrorMessage, traceID, configTraceID, accountID...)
 
 	configDesc := ""
 	if configInfo != nil {
@@ -358,7 +373,7 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
-	if notify.Broadcast(m.state, msg.String(), replyMarkup) > 0 {
+	if notify.Broadcast(m.state, msgText, replyMarkup) > 0 {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
 	} else {
 		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
