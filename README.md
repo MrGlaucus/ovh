@@ -28,7 +28,7 @@ Linux 上记得 `chmod +x`。想自己编译见[部署方式](#部署方式)。
 | 前端 | Vite 5 + React 18 + TypeScript + TanStack Router + TanStack Query + shadcn-ui + Tailwind + recharts |
 | 后端 | Go 1.21+ + Gin + 官方 [go-ovh](https://github.com/ovh/go-ovh) SDK |
 | 持久化 | SQLite(`modernc.org/sqlite` 纯 Go / `mattn/go-sqlite3` cgo 双 driver, build tag 自动选),凭据字段 AES-256-GCM 加密落盘 |
-| 通知 | Telegram Bot Webhook + 自定义 Webhook(钉钉 / 飞书 / Bark / 自建),多通道冗余 |
+| 通知 | Telegram Bot(长轮询,无需公网地址)+ 自定义 Webhook(钉钉 / 飞书 / Bark / 自建),多通道冗余 |
 | 部署 | 单二进制(前端 //go:embed 进 Go 二进制) 或前后端分开跑 |
 
 ## 项目结构
@@ -135,8 +135,7 @@ OVH_ENV_FILE=                    # 配置文件自身的位置, 默认工作目�
                                  # systemd / docker 里工作目录未必是程序所在目录,
                                  # 那种情况写绝对路径, 否则密钥可能"这次写进去下次找不到"
 
-# --- Telegram Webhook 安全（都可不填，留空即用默认行为）---
-TG_WEBHOOK_SECRET=               # 自定义 webhook secret_token; 留空则首次注册时自动生成并落库
+# --- Telegram 安全（都可不填，留空即用默认行为）---
 TG_WEBHOOK_SECRET_OPTIONAL=false # true 时跳过 secret 校验, 仅本地调试用, 公网部署不要开
 TG_ALLOWED_USER_IDS=             # 群聊场景下允许下单的 user id, 逗号分隔; 私聊不需要
 ```
@@ -162,7 +161,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 | **订阅可编辑** | ✅ | 改配置不重置库存状态和历史 —— 删了重建会让"本来就有货"被误判成补货 |
 | Telegram 文本下单 | ✅ | 5 种消息格式,`plancode [机房] [数量] [配置]` |
 | Telegram 一键下单按钮 | ✅ | 上架通知内嵌机房按钮,参数落库、**一次性 nonce**、防重放 |
-| Telegram webhook 安全 | ✅ | secret_token → body 上限 → update_id 幂等 → 发送者授权 → 频率限制 |
+| Telegram 安全链 | ✅ | 发送者授权 → update_id 幂等 → 频率限制 → 一次性按钮 |
 | **多通道通知** | ✅ | Telegram + 自定义 Webhook,只要有一条能用监控就继续跑,全挂才停 |
 | **凭据落盘加密** | ✅ | AES-256-GCM,密钥首次启动自动生成写进 `.env`,老库自动迁移 |
 | **抢购耗时打点** | ✅ | 查库存 / 建车 / 绑车 / 加购 / 配置 / 选项 / 下单 逐段计时,回答"我慢在哪一步" |
@@ -225,7 +224,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 
 | 表 | 用途 |
 |---|---|
-| `kv` | 单例配置(TG token / webhook secret / 通知 webhook 地址 / 服务器与 VPS 检查间隔等非账户级配置),**其中的密钥字段加密存储** |
+| `kv` | 单例配置(TG token / 通知 webhook 地址 / 服务器与 VPS 检查间隔 / 长轮询 offset 等非账户级配置),**其中的密钥字段加密存储** |
 | `ovh_accounts` | OVH 账户(独立 endpoint / AppKey / Secret / ConsumerKey / Zone / is_default),**三个凭据字段加密存储** |
 | `queue` | 抢购队列(`account_id` 关联) |
 | `history` | 抢购历史(`account_id` 关联) |
@@ -235,7 +234,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 | `vps_subscriptions` | VPS 补货订阅(同上) |
 | `server_aliases` | 服务器本地别名(account_id + service_name 复合主键,不下发 OVH) |
 | `telegram_order_buttons` | TG「一键下单」按钮 UUID → 下单参数,`used_at` 做一次性 nonce |
-| `telegram_updates` | TG webhook `update_id` 幂等表,防重放重复下单 |
+| `telegram_updates` | Telegram `update_id` 幂等表,防重投重复下单 |
 
 日志仍走 JSON 文件(`data/logs/app.log.json`),不进 SQLite。
 
@@ -253,31 +252,39 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 
 ## 安全 / 鉴权
 
-- 后端所有 `/api/*`(除少数白名单如 `/health` / `/telegram/webhook` / `/version` / `/version/check-update`)都要求 `X-API-Key` 请求头
+- 后端所有 `/api/*`(除少数白名单如 `/health` / `/version` / `/version/check-update`)都要求 `X-API-Key` 请求头
 - 两层全屏 gate:AuthGate(API 密钥) + OvhCredsGate(至少一个 OVH 账户)
 - API Key 存浏览器 localStorage,失效自动清除并要求重新输入
 - OVH 凭据落 SQLite `ovh_accounts` 表,前端通过 OvhCredsGate / 设置页"OVH 账户" tab 录入
 - `.gitignore` 默认拒绝所有 `.env` 文件入库(只允许 `*.env.example`),同时挡掉 `*.db` / `data/` / `logs/`
-- **凭据落盘加密**:`ovh_accounts` 的 AppKey / AppSecret / ConsumerKey、`kv` 里的 Telegram Token 与 webhook secret 都是 AES-256-GCM 加密存的。密钥优先取环境变量 `OVH_DB_KEY`,没有就在首次启动时生成一把写进 `.env`(权限 0600)
+- **凭据落盘加密**:`ovh_accounts` 的 AppKey / AppSecret / ConsumerKey、`kv` 里的 Telegram Token 都是 AES-256-GCM 加密存的。密钥优先取环境变量 `OVH_DB_KEY`,没有就在首次启动时生成一把写进 `.env`(权限 0600)
 - ⚠️ **加密防的是"只拿到 db 文件"那一类泄漏** —— 备份被同步到网盘、拷整个目录换机器、把 `data/` 打包发给别人排查问题。它**防不住** `.env` 和 db 一起漏出去,那种情况下加密等于没有。而 `.env` 恰恰是最容易被顺手提交、被贴进 issue 的文件
 - **密钥丢了会拒绝启动**:库里有密文却找不到密钥时,程序会停下来并说明怎么办,而不是照常起来。否则表现是"账户都在但每次调 OVH 都报签名错误",没人猜得到是密钥问题,而这时候重新录入凭据会覆盖旧密文,最后一点恢复余地也没了。确实找不回来时用 `OVH_DB_KEY_RESET=1` 启动,那些账户需要重新录入
 
-### Telegram Webhook 安全链
+### Telegram 消息收取与安全链
 
-`/api/telegram/webhook` 在鉴权白名单里(Telegram 不可能带 `X-API-Key`),所以它自己有一条完整校验链,任何一环不过直接拒:
+收 Telegram 消息只有**长轮询**(`getUpdates`)一条路:程序主动去 `api.telegram.org` 拉。
+不需要公网域名和证书,家宽 / NAT 后面 / 没域名的机器都能用一键下单。
+
+> 早先还支持 webhook(Telegram 推给你),已经删掉。它要求公网 HTTPS 域名 + 受信证书、
+> 端口只能 443/80/88/8443,还必须把回调端点放进鉴权白名单(Telegram 不可能带 `X-API-Key`),
+> 于是只能靠 `secret_token` 证明来源,还得为老部署留一个"secret 还没注册"的兼容模式。
+> 长轮询没有入站端点 —— 伪造来源这个问题连同它那一整套机制一起消失了。
+> 升级上来时后端启动会自动 `deleteWebhook`,不需要手动操作。
+
+剩下的校验链照常生效:
 
 | 环节 | 作用 | 失败响应 |
 |---|---|---|
-| **secret_token** | 注册 webhook 时把随机 secret 交给 Telegram,之后每条回调都带 `X-Telegram-Bot-Api-Secret-Token` 头 —— 这是唯一能证明「请求真的来自 Telegram」的凭据 | `401 invalid_secret_token` |
-| **body 上限** | 64 KB,防超大 body 打内存 | `413 body_too_large` |
-| **update_id 幂等** | `telegram_updates` 表去重。Telegram 收不到 200 会重投同一条 update,没这层一次网络抖动就重复下单 | `200 {"duplicate":true}` |
 | **发送者授权** | 只认 `tgChatId` 配置的那个 chat;群聊还要求 user id 在 `TG_ALLOWED_USER_IDS` 白名单里 | `403 unauthorized_actor` |
+| **update_id 幂等** | `telegram_updates` 表去重。offset 是在**下一次** `getUpdates` 时才确认的,处理完还没推进 offset 就崩了/被自更新重启了,这条会重发 —— 没这层一次版本升级就能重复下单 | `200 {"duplicate":true}` |
 | **频率限制** | 单 chat 每 10 秒最多 8 次 | `429 rate_limited` |
 | **一次性按钮** | 「一键下单」按钮的完整参数落 `telegram_order_buttons` 表,`used_at` 原子占用:**同一个按钮只能下单一次**,超 24h 作废;入队失败自动归还可重试 | `409 button_already_used` / `410 button_expired` |
 
 按钮参数原来只存在进程内存里,重启后按钮全部失效、且可被无限次重放下单;落库同时解决了这两个问题。
 
-**升级说明**:升级前注册的 webhook 不带 secret。为了不把现有按钮打挂,后端启动时会用同一个 URL 自动重注册一次把 secret 补上(日志可见);补上之前处于兼容模式(不校验 secret,其余各环照常生效)。也可以在设置页手动点一次「注册 Webhook」立即启用强校验。`GET /api/settings` 不会把 secret 回给前端,保存设置也不会覆盖它。
+**单实例约束**:同一个 Bot Token 只能有一个进程在拉 update。两份程序同时跑会互相把对方踢下线,
+表现是按钮时灵时不灵、消息随机丢。后端识别到这种冲突会在日志和设置页明确说出来。
 
 ## 多区域(EU / US / CA)注意事项
 
@@ -345,4 +352,3 @@ POST /order/cart/{id}/checkout
 |---|---|
 | Go 后端(生产单二进制 / 开发) | **19998** |
 | Vite dev server(仅开发) | 19997 |
-| OVH Telegram webhook 入口 | `/api/telegram/webhook`(不走 X-API-Key,改由 secret_token + 授权链校验,见上) |

@@ -47,7 +47,7 @@ func TestDumpAllTemplates(t *testing.T) {
 		true, 1, "acc-test", false, []string{"ram-32g-ecc-2400", "softraid-2x2000sa"})
 
 	banner("/help")
-	fmt.Println(helpText(st))
+	fmt.Println(helpText())
 
 	banner("/status")
 	fmt.Println(statusText(st, mon))

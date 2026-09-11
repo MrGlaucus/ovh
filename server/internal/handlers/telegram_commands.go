@@ -44,7 +44,7 @@ func handleCommand(state *app.State, mon *monitor.Monitor, chatID interface{}, m
 	var reply string
 	switch cmd {
 	case "start", "help", "h", "?":
-		reply = helpText(state)
+		reply = helpText()
 	case "status", "s":
 		reply = statusText(state, mon)
 	case "queue", "q":
@@ -84,7 +84,7 @@ func clampReply(s string) string {
 	return s[:tgMaxReplyLen] + "\n…(内容过长已截断，完整信息请看控制台)"
 }
 
-func helpText(state *app.State) string {
+func helpText() string {
 	var b strings.Builder
 	b.WriteString("🤖 OVH 抢购助手\n\n")
 	b.WriteString("【下单】直接发一行文本：\n")
@@ -115,11 +115,6 @@ func helpText(state *app.State) string {
 	b.WriteString("  /accounts 可用的 OVH 账户\n")
 	b.WriteString("  /recent   最近的抢购结果\n\n")
 	b.WriteString("💡 上架通知里的按钮可以直接下单，比打字快。\n")
-
-	cfg := state.Config.Get()
-	if cfg.IsPollingMode() {
-		b.WriteString("\n当前收取方式：长轮询（不需要公网地址）")
-	}
 	return b.String()
 }
 

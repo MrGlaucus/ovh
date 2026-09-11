@@ -15,11 +15,7 @@ import (
 // GetSettings GET /api/settings
 func GetSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg := state.Config.Get()
-		// webhook secret 不下发前端：它只在后端和 Telegram 之间使用，
-		// 前端拿到也没用，暴露面反而变大。
-		cfg.TgWebhookSecret = ""
-		c.JSON(http.StatusOK, cfg)
+		c.JSON(http.StatusOK, state.Config.Get())
 	}
 }
 
@@ -53,16 +49,6 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			}
 		}
 
-		// webhook secret 前端不可见也不可改（GetSettings 已抹掉），
-		// 这里必须从旧配置继承回来，否则前端保存一次设置就把 secret 清了，
-		// Telegram 那边仍在校验旧 secret → 所有回调直接 401。
-		newCfg.TgWebhookSecret = prev.TgWebhookSecret
-		newCfg.TgWebhookSecretRegistered = prev.TgWebhookSecretRegistered
-		// 收取方式同理:它由 /api/telegram/update-mode 单独切换,不在这张设置表单里。
-		// 不继承的话,用户在设置页按一次保存就会把长轮询模式悄悄重置成 webhook ——
-		// 表现是重启后交互式下单突然不工作了,而界面上什么都没变。
-		newCfg.TgUpdateMode = prev.TgUpdateMode
-
 		// 默认值兜底
 		if newCfg.Endpoint == "" {
 			newCfg.Endpoint = "ovh-eu"
@@ -76,6 +62,17 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			return
 		}
 		state.Logger.Info("API settings updated in config.json", "system")
+
+		// Token 变了就得重拉长轮询。
+		//
+		// 收 update 只有这一条路,而循环是拿着旧 Token 在跑的 ——
+		// 不重启的话用户换完 Token 保存,界面一切正常,但从此一条命令、
+		// 一个按钮都收不到,而且没有任何地方会提示他。
+		// 首次填 Token 同理:启动时没有 Token,poller 根本没起来。
+		if newCfg.TgToken != prev.TgToken {
+			state.Logger.Info("Telegram Token 已变更,重启长轮询", "telegram")
+			go RestartPoller(state)
+		}
 
 		// TG 配置变更 → 同步发一条测试消息
 		if newCfg.TgToken != "" && newCfg.TgChatID != "" {

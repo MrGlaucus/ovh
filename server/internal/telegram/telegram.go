@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -140,95 +139,6 @@ func SendMessage(state *app.State, message string, replyMarkup map[string]interf
 	}
 	state.Logger.Error(fmt.Sprintf("发送消息到Telegram失败: 状态码=%d, 响应=%s", resp.StatusCode, string(respBody)), "")
 	return false
-}
-
-// SetWebhook 调用 Telegram setWebhook
-func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]interface{}) {
-	cfg := state.Config.Get()
-	if cfg.TgToken == "" {
-		return false, "未配置 Telegram Bot Token", nil
-	}
-	if !strings.HasPrefix(webhookURL, "http://") && !strings.HasPrefix(webhookURL, "https://") {
-		return false, "Webhook URL 必须以 http:// 或 https:// 开头", nil
-	}
-	if !strings.HasSuffix(webhookURL, "/api/telegram/webhook") {
-		webhookURL = strings.TrimSuffix(webhookURL, "/") + "/api/telegram/webhook"
-	}
-	state.Logger.Info("正在设置 Telegram Webhook: "+webhookURL, "telegram")
-
-	// 带上 secret_token：之后 Telegram 每次回调都会带 X-Telegram-Bot-Api-Secret-Token 头，
-	// webhook handler 用它区分「真的来自 Telegram」和「别人拿 URL 伪造」。
-	secret, secErr := EnsureWebhookSecret(state)
-	if secErr != nil {
-		state.Logger.Warn("生成 webhook secret 失败，本次将不带 secret_token 注册: "+secErr.Error(), "telegram")
-	}
-
-	setURL := "https://api.telegram.org/bot" + cfg.TgToken + "/setWebhook"
-	q := url.Values{}
-	q.Set("url", webhookURL)
-	if secret != "" {
-		q.Set("secret_token", secret)
-	}
-	req, _ := http.NewRequest(http.MethodPost, setURL+"?"+q.Encode(), nil)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
-		return false, scrub(err.Error()), nil
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	_ = json.Unmarshal(body, &result)
-	if ok, _ := result["ok"].(bool); ok {
-		state.Logger.Info("✅ Telegram Webhook 设置成功: "+webhookURL, "telegram")
-		if secret != "" {
-			// secret 已经推给 Telegram，从此刻起 webhook 强制校验
-			MarkWebhookSecretRegistered(state)
-		}
-		// 获取 webhook info
-		var info map[string]interface{}
-		infoResp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
-		if err == nil {
-			infoBody, _ := io.ReadAll(infoResp.Body)
-			infoResp.Body.Close()
-			var infoResult map[string]interface{}
-			_ = json.Unmarshal(infoBody, &infoResult)
-			if r, ok := infoResult["result"].(map[string]interface{}); ok {
-				info = r
-			}
-		}
-		return true, webhookURL, info
-	}
-	desc, _ := result["description"].(string)
-	state.Logger.Error("Telegram Webhook 设置失败: "+desc, "telegram")
-	return false, desc, nil
-}
-
-// GetWebhookInfo
-func GetWebhookInfo(state *app.State) (bool, map[string]interface{}, string) {
-	cfg := state.Config.Get()
-	if cfg.TgToken == "" {
-		return false, nil, "未配置 Telegram Bot Token"
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
-	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
-		return false, nil, scrub(err.Error())
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	_ = json.Unmarshal(body, &result)
-	if ok, _ := result["ok"].(bool); ok {
-		if r, ok := result["result"].(map[string]interface{}); ok {
-			return true, r, ""
-		}
-		return true, nil, ""
-	}
-	desc, _ := result["description"].(string)
-	return false, nil, desc
 }
 
 // AnswerCallback 应答 callback_query

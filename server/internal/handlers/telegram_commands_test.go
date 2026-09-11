@@ -131,8 +131,7 @@ func TestCancelRefusesAmbiguousPrefix(t *testing.T) {
 
 // /help 必须把下单格式讲全,这是用户唯一能知道该发什么的地方。
 func TestHelpTextCoversOrderFormat(t *testing.T) {
-	s := newTGTestState(t)
-	h := helpText(s)
+	h := helpText()
 	for _, must := range []string{"型号", "机房", "数量", "/queue", "/cancel", "/status"} {
 		if !strings.Contains(h, must) {
 			t.Errorf("/help 里缺少 %q", must)

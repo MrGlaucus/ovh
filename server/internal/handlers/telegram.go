@@ -4,10 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,80 +19,6 @@ import (
 	"github.com/ovh-buy/server/internal/types"
 )
 
-// SetTelegramWebhook POST /api/telegram/set-webhook
-func SetTelegramWebhook(state *app.State) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var body struct {
-			WebhookURL string `json:"webhook_url"`
-		}
-		_ = c.ShouldBindJSON(&body)
-		if body.WebhookURL == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "缺少 webhook_url 参数"})
-			return
-		}
-		ok, msg, info := telegram.SetWebhook(state, body.WebhookURL)
-		if ok {
-			c.JSON(http.StatusOK, gin.H{
-				"success":      true,
-				"message":      "Webhook 设置成功",
-				"webhook_url":  msg,
-				"webhook_info": info,
-			})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "设置失败: " + msg})
-	}
-}
-
-// GetTelegramWebhookInfo GET /api/telegram/get-webhook-info
-func GetTelegramWebhookInfo(state *app.State) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ok, info, errMsg := telegram.GetWebhookInfo(state)
-		if !ok {
-			status := http.StatusBadRequest
-			if strings.Contains(errMsg, "未配置") {
-				status = http.StatusBadRequest
-			}
-			c.JSON(status, gin.H{"success": false, "error": errMsg})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"success": true, "webhook_info": info})
-	}
-}
-
-// legacyWarnMu / lastLegacyWarn 兼容模式告警节流，避免每条回调刷一行日志
-var (
-	legacyWarnMu   sync.Mutex
-	lastLegacyWarn time.Time
-)
-
-func warnLegacyWebhook(state *app.State) {
-	legacyWarnMu.Lock()
-	due := time.Since(lastLegacyWarn) > 10*time.Minute
-	if due {
-		lastLegacyWarn = time.Now()
-	}
-	legacyWarnMu.Unlock()
-	if due {
-		state.Logger.Warn("Telegram webhook 处于兼容模式（未校验 secret_token）："+
-			"请在设置页重新注册一次 Webhook 以启用强校验", "telegram")
-	}
-}
-
-// TelegramWebhook POST /api/telegram/webhook
-// 这条路由在鉴权白名单里（Telegram 不可能带 X-API-Key），所以安全完全靠下面这条链：
-//
-//	secret_token → body 上限 → 发送者授权 → update_id 幂等 → 频率限制 → 业务
-//
-// 少任何一环，知道 URL 的人就能直接伪造回调下单。
-//
-// 关于「兼容模式」(legacy):webhook 已注册但 secret 尚未注册时,第一环放行。
-// 这时候剩下的"授权"校验的是**攻击者自己写的 JSON 字段**(chat.id),
-// 而 chat_id 不是密钥 —— 设置页明文显示、日志里到处都是、截图备份里都有,
-// 且猜错不限速(限流在授权之后)。所以兼容模式下等于没有鉴权。
-//
-// 处理办法:兼容模式照常收 Telegram 的消息(否则升级期间通知全断),
-// 但**一切会花钱的动作直接拒绝** —— 下单不是"少收一条通知"能类比的损失。
 // updateCtx 处理一条 Telegram update 的上下文。
 //
 // 为什么不直接用 *gin.Context:update 有两条来路 ——
@@ -104,22 +28,17 @@ func warnLegacyWebhook(state *app.State) {
 // 所以把 gin 从处理链路里摘掉,只留下"状态码 + 响应体"这个抽象:
 // webhook 把它写回 HTTP 响应,poller 只拿它记日志。
 type updateCtx struct {
-	// legacyMode webhook 的 secret 还没注册(见 refuseInLegacyMode)。
-	// polling 永远是 false —— 那条路根本不存在"伪造来源"的问题。
-	legacyMode bool
-	status     int
-	body       gin.H
+	status int
+	body   gin.H
 }
 
 func (u *updateCtx) JSON(status int, body gin.H) {
 	u.status, u.body = status, body
 }
 
-// ProcessUpdate 处理一条 update。webhook 和 long polling 共用。
-//
-// legacy 只对 webhook 有意义;polling 传 false。
-func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]interface{}, legacy bool) *updateCtx {
-	u := &updateCtx{legacyMode: legacy, status: http.StatusOK, body: gin.H{"ok": true}}
+// ProcessUpdate 处理一条从 Telegram 拉回来的 update。
+func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]interface{}) *updateCtx {
+	u := &updateCtx{status: http.StatusOK, body: gin.H{"ok": true}}
 
 	// 1) 发送者授权 —— 必须排在幂等写入之前。
 	//
@@ -137,11 +56,9 @@ func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]inter
 
 	// 2) update_id 幂等。
 	//
-	// 两条来路都需要它,原因不同但同样要命:
-	//   · webhook:Telegram 没收到 200 就会重投同一条 update
-	//   · polling:offset 是在**下一次** getUpdates 时才确认的,
-	//     处理完还没来得及推进 offset 就崩了/被自更新重启了,这条会重发一遍
-	// 没有这一步,一次网络抖动或一次版本升级就能重复下单。
+	// offset 是在**下一次** getUpdates 时才确认的 —— 处理完还没来得及推进 offset
+	// 就崩了、或者被自更新重启了,这条 update 会重发一遍。
+	// 没有这一步,一次版本升级就能重复下单。
 	if updateID := parseUpdateID(data["update_id"]); updateID > 0 && state.DB != nil {
 		claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
 		if err != nil {
@@ -174,59 +91,6 @@ func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]inter
 	return u
 }
 
-// TelegramWebhook webhook 入口:只负责"证明来自 Telegram" + 取出 body,
-// 真正的处理交给 ProcessUpdate(与 long polling 共用)。
-func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// 1) secret_token：证明请求真的来自 Telegram
-		okSecret, legacy := telegram.ValidateWebhookSecret(state, c.GetHeader(telegram.SecretTokenHeader))
-		if !okSecret {
-			state.Logger.Warn("拒绝 secret_token 无效的 webhook 请求, from="+c.ClientIP(), "telegram")
-			c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "invalid_secret_token"})
-			return
-		}
-		if legacy {
-			warnLegacyWebhook(state)
-		}
-
-		// 2) body 上限：防止超大 body 打爆内存
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, telegram.MaxTelegramBodyBytes)
-		raw, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			state.Logger.Warn("webhook body 读取失败或超限: "+err.Error(), "telegram")
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"ok": false, "error": "body_too_large"})
-			return
-		}
-		var data map[string]interface{}
-		if err := json.Unmarshal(raw, &data); err != nil {
-			// 非法 JSON 直接吞掉返回 200，否则 Telegram 会一直重投
-			c.JSON(http.StatusOK, gin.H{"ok": true})
-			return
-		}
-
-		u := ProcessUpdate(state, mon, data, legacy)
-		c.JSON(u.status, u.body)
-	}
-}
-
-// refuseInLegacyMode 兼容模式下拒绝花钱的动作。
-//
-// 兼容模式(secret 未注册)时唯一的"鉴权"是请求体里的 chat_id,
-// 而那不是密钥。收通知可以将就,下单不行 —— 一单就是真实订单,
-// 占库存、已弃 14 天撤销期。
-func refuseInLegacyMode(state *app.State, u *updateCtx) bool {
-	if u.legacyMode {
-		state.Logger.Error("兼容模式(webhook secret 未注册)下拒绝执行下单动作。"+
-			"请到设置页点一次「注册 Webhook」启用强校验", "telegram")
-		u.JSON(http.StatusForbidden, gin.H{
-			"ok":    false,
-			"error": "legacy_mode_order_refused",
-		})
-		return true
-	}
-	return false
-}
-
 // actorChatID / actorUserID 从 update 里取出发送者标识,
 // callback_query 和 message 两种形态各取各的位置。
 // 提前取是为了把授权判断挪到幂等写入之前(见 webhook handler 里的说明)。
@@ -255,9 +119,6 @@ func actorUserID(data map[string]interface{}) interface{} {
 
 // handleTelegramCallback 处理「一键下单」按钮回调。
 func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx, cb map[string]interface{}) {
-	if refuseInLegacyMode(state, u) {
-		return
-	}
 	cbData, _ := cb["data"].(string)
 	message, _ := cb["message"].(map[string]interface{})
 	chatID := getNested(message, "chat", "id")
@@ -543,14 +404,6 @@ func handleTelegramMessage(state *app.State, mon *monitor.Monitor, u *updateCtx,
 	// 恰恰是那个模式最需要 /help 把"去注册 secret"这句话讲给用户听。
 	if handleCommand(state, mon, chatID, int64(messageID), text) {
 		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "command"})
-		return
-	}
-
-	// 到这里才是花钱的路径,兼容模式必须拦住
-	if refuseInLegacyMode(state, u) {
-		telegram.SendReply(state, chatID,
-			"⚠️ 当前 webhook 还没启用 secret 强校验，出于安全考虑暂不接受下单。\n"+
-				"请到控制台「设置 → Telegram」点一次「注册 Webhook」，或改用长轮询模式。", int64(messageID))
 		return
 	}
 
