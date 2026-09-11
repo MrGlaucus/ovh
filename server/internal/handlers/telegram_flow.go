@@ -284,29 +284,7 @@ func askAction(state *app.State, f *watchFlow, chatID interface{}, messageID int
 		labels = append(labels, a.Label)
 	}
 
-	var b strings.Builder
-	b.WriteString("🎯 补货的时候怎么办？\n\n")
-	b.WriteString("型号：" + f.PlanCode + "\n")
-	if f.PickedConfig != "" {
-		b.WriteString("配置：" + f.PickedConfig + "\n")
-	} else {
-		b.WriteString("配置：全部\n")
-	}
-	if len(f.DCs) > 0 {
-		b.WriteString("机房：" + strings.ToUpper(strings.Join(f.DCs, " / ")) + "\n")
-	} else {
-		b.WriteString("机房：全部\n")
-	}
-	if f.AccountLabel != "" {
-		b.WriteString("账户：" + f.AccountLabel + "\n")
-	}
-	b.WriteString("\n⚠️ 选自动抢 = 真实下单。数量是**每个机房**各抢这么多")
-	if f.PickedConfig == "" {
-		b.WriteString("，而且**每套配置**都算一次")
-	}
-	b.WriteString("。")
-
-	telegram.SendKeyboard(state, chatID, messageID, b.String(), flowKeyboard(tok, labels))
+	telegram.SendKeyboard(state, chatID, messageID, actionPrompt(f), flowKeyboard(tok, labels))
 	return true
 }
 
@@ -433,4 +411,37 @@ func finishWatchFlow(state *app.State, mon *monitor.Monitor, f *watchFlow, quant
 	}
 	b.WriteString("\n\n取消：/unwatch " + f.PlanCode + " · 全部订阅 /subs")
 	return b.String()
+}
+
+// actionPrompt 「补货时怎么办」那一步的正文。
+// 拆出来是为了能单独审阅措辞 —— 这一步决定要不要真花钱。
+func actionPrompt(f *watchFlow) string {
+	var b strings.Builder
+	b.WriteString("🎯 补货的时候怎么办？\n\n")
+	b.WriteString("型号：" + f.PlanCode + "\n")
+	if f.PickedConfig != "" {
+		b.WriteString("配置：" + f.PickedConfig + "\n")
+	} else {
+		b.WriteString("配置：全部\n")
+	}
+	if len(f.DCs) > 0 {
+		b.WriteString("机房：" + strings.ToUpper(strings.Join(f.DCs, " / ")) + "\n")
+	} else {
+		b.WriteString("机房：全部\n")
+	}
+	if f.AccountLabel != "" {
+		b.WriteString("账户：" + f.AccountLabel + "\n")
+	}
+	b.WriteString("\n⚠️ 选自动抢 = 真实下单。数量是**每个机房**各抢这么多")
+	if f.PickedConfig == "" {
+		b.WriteString("，而且**每套配置**都算一次")
+	}
+	b.WriteString("。")
+
+	return b.String()
+}
+
+// askActionPreview 只拼正文不发送，给模板审阅用。
+func askActionPreview(f *watchFlow) {
+	fmt.Println(actionPrompt(f))
 }

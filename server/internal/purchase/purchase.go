@@ -495,31 +495,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	// 发送 Telegram 成功通知。TG token / chat id 仍然走全局 state.Config(Telegram 是平台级配置,跨账户共享)
 	tgCfg := state.Config.Get()
 	if tgCfg.TgToken != "" && tgCfg.TgChatID != "" {
-		// checkout 用的是 autoPayWithPreferredPaymentMethod:false ——
-		// "成功"的真实语义是「订单已创建、**还没付款**、逾期作废」。
-		// 通知里必须把这句说出来,否则用户看到🎉就睡了,订单过期机器就没了。
-		payNote := "⚠️ 订单尚未付款：请尽快打开订单链接完成付款,逾期未付订单会自动作废。\n" +
-			"(下单时已按惯例放弃 14 天撤销期,付款即开通)\n"
-		if item.AutoPay {
-			// 只承诺我们真正知道的:已请求自动付款 ≠ 扣款一定成功
-			// (默认支付方式失效/余额不足时 OVH 不会扣成),让用户去核对
-			payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
-				"(下单时已按惯例放弃 14 天撤销期)\n"
-		}
-		// 通知里发控制面板深链,不发 checkout 返回的那个 url ——
-		// 后者是带凭证的下载链接(OVH 的 billing.Order 里 url 旁边就是 password),
-		// 而这条消息会进 Telegram 群和用户配的任意 webhook。
-		// 带凭证那份仍然存在本地历史里,界面上照样一键可付。
-		linkURL := ovh.ManagerOrderURL(acc.Endpoint, orderID)
-		if linkURL == "" {
-			linkURL = "请在 OVH 控制面板 → 账单 → 订单 中查看"
-		}
-		msg := fmt.Sprintf("🎉 OVH 服务器下单成功！\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n\n%s",
-			item.PlanCode, item.Datacenter, orderID, linkURL, payNote)
-		if len(item.Options) > 0 {
-			msg += "自定义配置: " + strings.Join(item.Options, ", ") + "\n"
-		}
-		msg += "\n抢购任务ID: " + item.ID
+		msg := BuildOrderSuccessMessage(item, orderID, ovh.ManagerOrderURL(acc.Endpoint, orderID))
 		notify.Broadcast(state, msg, nil)
 		state.Logger.Info("已为订单 "+orderID+" 发送 Telegram 成功通知。", "purchase")
 	} else {
@@ -992,4 +968,38 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 		}
 		return
 	}
+}
+
+// BuildOrderSuccessMessage 抢购成功通知的正文。
+//
+// 抽出来是因为这是整个系统里唯一一条"你花钱了"的消息 ——
+// 措辞错一个字用户就可能少付一笔钱或者多买一台。要能单独看、单独测。
+//
+// 关键在于"成功"两个字的真实语义:checkout 返回订单号就算成功,
+// 但订单是**未付款**的,逾期会自动作废。不把这句写出来,
+// 用户看到 🎉 就睡了,第二天机器没了还以为是我们没抢到。
+func BuildOrderSuccessMessage(item *types.QueueItem, orderID, managerURL string) string {
+	payNote := "⚠️ 订单尚未付款：请尽快打开订单链接完成付款,逾期未付订单会自动作废。\n" +
+		"(下单时已按惯例放弃 14 天撤销期,付款即开通)\n"
+	if item.AutoPay {
+		// 只承诺我们真正知道的:已请求自动付款 ≠ 扣款一定成功
+		// (默认支付方式失效/余额不足时 OVH 不会扣成),让用户去核对
+		payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
+			"(下单时已按惯例放弃 14 天撤销期)\n"
+	}
+	// 发控制面板深链,不发 checkout 返回的那个 url ——
+	// 后者是带凭证的下载链接(OVH 的 billing.Order 里 url 旁边就是 password),
+	// 而这条消息会进 Telegram 群和用户配的任意 webhook。
+	// 带凭证那份仍然存在本地历史里,界面上照样一键可付。
+	linkURL := managerURL
+	if linkURL == "" {
+		linkURL = "请在 OVH 控制面板 → 账单 → 订单 中查看"
+	}
+	msg := fmt.Sprintf("🎉 OVH 服务器下单成功！\n\n服务器型号 (Plan Code): %s\n数据中心: %s\n订单 ID: %s\n订单链接: %s\n\n%s",
+		item.PlanCode, item.Datacenter, orderID, linkURL, payNote)
+	if len(item.Options) > 0 {
+		msg += "自定义配置: " + strings.Join(item.Options, ", ") + "\n"
+	}
+	msg += "\n抢购任务ID: " + item.ID
+	return msg
 }
