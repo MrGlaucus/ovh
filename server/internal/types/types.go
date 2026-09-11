@@ -221,6 +221,16 @@ type Subscription struct {
 	AutoOrderAccountID string                     `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	// AutoPay 下单成功后用默认支付方式自动付款(显式开关,默认关)
 	AutoPay bool `json:"autoPay,omitempty"`
+	// Options 只盯这套配置(addon planCode 列表,如 ram-64g / softraid-2x480ssd)。
+	//
+	// 空 = 盯这个 planCode 的**全部**配置,也是一直以来的行为。
+	//
+	// 为什么需要它:一个 planCode 底下往往有好几套内存/存储组合,监控是按
+	// planCode 做的,通知和自动下单则是**按配置逐套触发**。于是
+	// "自动抢 1 台"在三套配置同时补货时会下三次单(还要再乘以机房数) ——
+	// 用户想要的往往是"只盯 64G + 2x480SSD 那套"。
+	// 没有这个字段之前,他没有任何办法表达这件事。
+	Options []string `json:"options,omitempty"`
 }
 
 // VPSSubscription VPS 监控订阅

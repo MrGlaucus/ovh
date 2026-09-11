@@ -114,6 +114,12 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	// options:只盯某一套配置(空=全部配置,即老行为)。
+	// ListMonitorSubscriptions 是 SELECT * + sqlx 严格映射,
+	// 只加结构体字段不加列会让整个订阅列表报 missing destination name —— 必须同一次上线。
+	if err := db.addColumnIfMissing("monitor_subscriptions", "options", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}

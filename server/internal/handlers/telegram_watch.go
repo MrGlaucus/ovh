@@ -26,6 +26,10 @@ import (
 //	/watch 24sk602 gra rbx         只盯这两个机房
 //	/watch 24sk602 gra x2          补货时自动抢 2 台
 //	/watch 24sk602 x1              所有机房,补货自动抢 1 台
+//
+// watchText 处理 /watch 的文本形式。
+//
+// 返回空串表示"已经用按钮流程自己回复了",调用方不要再发一条。
 func watchText(state *app.State, mon *monitor.Monitor, args []string) string {
 	if mon == nil {
 		return "监控未初始化，暂时不能添加订阅。"
@@ -100,7 +104,7 @@ func watchText(state *app.State, mon *monitor.Monitor, args []string) string {
 
 	// autoPay 恒 false：自动付款是个要用户显式打开的开关，
 	// 不能因为他在手机上打了句 /watch 就替他决定花钱方式。
-	mon.AddSubscription(planCode, dcs, true, false, "", nil, nil, autoOrder, quantity, accountID, false)
+	mon.AddSubscription(planCode, dcs, true, false, "", nil, nil, autoOrder, quantity, accountID, false, nil)
 	mon.SaveToDB()
 
 	// 监控没在跑的话订阅加了也没用 —— 顺手拉起来，并说清楚
@@ -124,7 +128,16 @@ func watchText(state *app.State, mon *monitor.Monitor, args []string) string {
 	if autoOrder {
 		b.WriteString(fmt.Sprintf("补货时：自动抢 %d 台\n", quantity))
 		b.WriteString("账户：" + accLabel + "\n")
-		b.WriteString("\n⚠️ 这是真实下单。抢到的订单默认不自动付款，需要你去付。\n")
+		b.WriteString("配置：全部\n")
+		// 数量的真实含义必须写出来。通知和自动下单是按配置逐套触发的,
+		// 所以 x1 在"三套配置 × 两个机房"同时补货时会下六单 ——
+		// 用户以为自己说的是"抢 1 台"。
+		b.WriteString(fmt.Sprintf(
+			"\n⚠️ 这是真实下单，而且 %d 是**每个机房、每套配置**各 %d 台。\n"+
+				"这个型号如果有多套配置同时补货，实际下单数 = 配置数 × 机房数 × %d。\n"+
+				"想只盯一套配置，去掉 x%d 重发一次 /watch %s，我用按钮让你挑。\n"+
+				"抢到的订单默认不自动付款，需要你去付。\n",
+			quantity, quantity, quantity, quantity, planCode))
 	} else {
 		b.WriteString("补货时：只发通知，你点按钮再下单\n")
 		b.WriteString("\n想补货就自动抢，加个数量：/watch " + planCode + " x1\n")

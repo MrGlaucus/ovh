@@ -41,19 +41,18 @@ func TestRenderAvailabilityAlert(t *testing.T) {
 	detected := time.Now().Add(-3 * time.Second).Format(time.RFC3339Nano)
 
 	dcs := []map[string]interface{}{
-		{"dc": "gra", "detected_time": detected, "duration_text": "历时 2小时14分"},
-		{"dc": "rbx", "detected_time": detected},
-		{"dc": "sbg", "detected_time": detected, "duration_text": "历时 6天3小时"},
+		{"dc": "waw", "detected_time": detected, "raw_status": "1H-low"},
 	}
 	cfg := map[string]interface{}{
-		"display":      "64G / 2x480 SSD",
-		"memory":       "64GB DDR4 ECC 2133MHz",
-		"storage":      "2x480GB SSD SoftRaid",
-		"cached_price": "€69.99/月（含税 €83.99）",
-		"options":      []string{"ram-64g-noecc-2133", "softraid-2x480ssd"},
+		"display":       "32G + 2x2TB HDD",
+		"memory":        "32GB ECC DDR4-2400",
+		"storage":       "2x2TB HDD",
+		"cached_price":  "€17.99/月",
+		"install_price": "€17.99",
+		"options":       []string{"ram-32g-ecc-2400", "softraid-2x2000sa"},
 	}
 
-	msg, markup := m.buildAvailabilityAlert("24sk602", dcs, cfg, "KS-LE-B",
+	msg, markup := m.buildAvailabilityAlert("24ska01", dcs, cfg, "KS-5",
 		"", "trace-9f2a1c", "cfg-77d0")
 
 	fmt.Println("\n┌─────────── Telegram 上架通知 ───────────")
@@ -67,7 +66,7 @@ func TestRenderAvailabilityAlert(t *testing.T) {
 	fmt.Println("└────────────────────────────")
 
 	// 关键信息必须在,顺带当回归测试
-	for _, must := range []string{"24sk602", "64G / 2x480 SSD", "€69.99", "GRA", "RBX", "SBG"} {
+	for _, must := range []string{"KS-5", "32GB ECC DDR4-2400", "2x2TB HDD", "WAW", "1小时内有货 - 低库存", "€17.99"} {
 		if !contains(msg, must) {
 			t.Errorf("通知里缺少关键信息 %q", must)
 		}
@@ -162,4 +161,55 @@ func buttonLines(t *testing.T, markup map[string]interface{}) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// 多机房:每个机房的可用性可能不一样(waw 是 1H-low、gra 是 72H)。
+// 合并成一句「N 个机房有货」会把这个差别抹掉,而它直接决定先抢哪个。
+func TestRenderMultiDCAlert(t *testing.T) {
+	m := renderTestMonitor(t)
+	detected := time.Now().Add(-2 * time.Second).Format(time.RFC3339Nano)
+	dcs := []map[string]interface{}{
+		{"dc": "waw", "detected_time": detected, "raw_status": "1H-low"},
+		{"dc": "gra", "detected_time": detected, "raw_status": "24H"},
+		{"dc": "bhs", "detected_time": detected, "raw_status": "720H"},
+	}
+	cfg := map[string]interface{}{
+		"memory":        "32GB ECC DDR4-2400",
+		"storage":       "2x2TB HDD",
+		"cached_price":  "€17.99/月",
+		"install_price": "€17.99",
+	}
+	msg, _ := m.buildAvailabilityAlert("24ska01", dcs, cfg, "KS-5", "", "", "")
+
+	fmt.Println("\n┌────── 多机房 ──────")
+	for _, line := range splitLines(msg) {
+		fmt.Println("│ " + line)
+	}
+	fmt.Println("└───────────────────")
+
+	// 三个机房各自的可用性都要出现,不能被合并成一句
+	for _, must := range []string{"1小时内有货 - 低库存", "24小时内有货", "720小时内有货（约30天）"} {
+		if !contains(msg, must) {
+			t.Errorf("多机房时每个机房的可用性都要列出来，缺少 %q", must)
+		}
+	}
+	if !contains(msg, "3 个机房有货") {
+		t.Error("应当有机房总数")
+	}
+}
+
+// 价格查不到时必须明说。留空会被读成「免费」或「还没加载」，
+// 这两种理解都会让用户按下一个不知道要花多少钱的按钮。
+func TestRenderAlertSaysWhenPriceMissing(t *testing.T) {
+	m := renderTestMonitor(t)
+	dcs := []map[string]interface{}{{"dc": "gra", "raw_status": "24H"}}
+	msg, _ := m.buildAvailabilityAlert("24ska01", dcs,
+		map[string]interface{}{"memory": "32G", "storage": "2x2TB"},
+		"KS-5", "询价超时", "", "")
+	if !contains(msg, "未获取到") {
+		t.Fatalf("价格缺失必须明说，实际：\n%s", msg)
+	}
+	if !contains(msg, "询价超时") {
+		t.Fatalf("失败原因要带上，实际：\n%s", msg)
+	}
 }

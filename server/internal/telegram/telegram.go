@@ -544,3 +544,48 @@ func RegisterCommands(state *app.State) {
 	}
 	state.Logger.Debug("注册 Telegram 命令菜单被拒: "+r.Description, "telegram")
 }
+
+// SendKeyboard 发一条带内联键盘的消息。
+//
+// SendReply 不带 reply_markup，而分步选择流程的每一步都需要按钮 ——
+// 让用户在手机上点，而不是去背 ram-64g-noecc-2133 这种 addon 代码。
+func SendKeyboard(state *app.State, chatID interface{}, replyToMessageID int64,
+	text string, replyMarkup map[string]interface{}) {
+	cfg := state.Config.Get()
+	if cfg.TgToken == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"text":    text,
+	}
+	if replyToMessageID > 0 {
+		payload["reply_to_message_id"] = replyToMessageID
+	}
+	if replyMarkup != nil {
+		payload["reply_markup"] = replyMarkup
+	}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest(http.MethodPost,
+		"https://api.telegram.org/bot"+cfg.TgToken+"/sendMessage",
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		state.Logger.Warn("发送带按钮的消息失败: "+scrub(err.Error()), "telegram")
+		return
+	}
+	defer resp.Body.Close()
+	// Telegram 对 callback_data 有 64 字节硬限制，超了它**不会报错**，
+	// 按钮发出去就是点了没反应。这里把非 ok 响应记下来，否则这种故障完全无声。
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, MaxTelegramBodyBytes))
+	_ = json.Unmarshal(b, &r)
+	if !r.OK {
+		state.Logger.Warn("Telegram 拒绝了带按钮的消息: "+r.Description, "telegram")
+	}
+}

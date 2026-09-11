@@ -6,9 +6,11 @@ import (
 )
 
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
+// options 为空 = 盯这个 planCode 的全部配置(老行为)。
+// 非空则只盯匹配那套 addon 的配置 —— 见 configMatchesFilter 上的说明。
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
-	autoOrderAccountID string, autoPay bool) {
+	autoOrderAccountID string, autoPay bool, options []string) {
 
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
@@ -38,6 +40,12 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			s.AutoOrderAccountID = autoOrderAccountID
 			// 自动付款依附于自动下单:不下单就谈不上付款
 			s.AutoPay = autoPay && autoOrder
+			// 配置筛选:显式传 nil 和传空切片都当成"盯全部配置"。
+			// 这是就地改配置的路径,options 也要跟着改,否则用户在 TG 上重挑一次配置不生效。
+			if options == nil {
+				options = []string{}
+			}
+			s.Options = options
 			if s.History == nil {
 				s.History = []HistoryEntry{}
 			}
@@ -55,6 +63,9 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 	if history == nil {
 		history = []HistoryEntry{}
 	}
+	if options == nil {
+		options = []string{}
+	}
 	sub := &Subscription{
 		PlanCode:           planCode,
 		Datacenters:        datacenters,
@@ -65,6 +76,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 		History:            history,
 		AutoOrderAccountID: autoOrderAccountID,
 		AutoPay:            autoPay && autoOrder,
+		Options:            options,
 	}
 	if autoOrder {
 		if quantity < 1 {
@@ -270,6 +282,7 @@ func (m *Monitor) SubscriptionConfig(planCode string) SubscriptionConfig {
 			Quantity:           s.Quantity,
 			AutoOrderAccountID: s.AutoOrderAccountID,
 			AutoPay:            s.AutoPay,
+			Options:            append([]string(nil), s.Options...),
 		}
 		s.mu.Unlock()
 		return cfg
@@ -288,6 +301,8 @@ type SubscriptionConfig struct {
 	Quantity           int
 	AutoOrderAccountID string
 	AutoPay            bool
+	// Options 只盯这套配置。空 = 全部配置。
+	Options []string
 }
 
 // ClearAccountRefs 把内存订阅里对某账户的引用清掉。

@@ -43,6 +43,8 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			Quantity           *int      `json:"quantity"`
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 			AutoPay            *bool     `json:"autoPay"`
+			// Options 只盯这套配置。空数组 = 改回"盯全部配置"。
+			Options *[]string `json:"options"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
@@ -58,6 +60,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		quantity := cur.Quantity
 		accountID := cur.AutoOrderAccountID
 		autoPay := cur.AutoPay
+		options := cur.Options
 
 		if body.Datacenters != nil {
 			datacenters = *body.Datacenters
@@ -76,6 +79,9 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		}
 		if body.AutoPay != nil {
 			autoPay = *body.AutoPay
+		}
+		if body.Options != nil {
+			options = *body.Options
 		}
 		if body.AutoOrderAccountID != nil {
 			accountID = *body.AutoOrderAccountID
@@ -99,7 +105,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 
 		// AddSubscription 对已存在的 planCode 是就地改配置,不会重置 LastStatus / History
 		mon.AddSubscription(planCode, datacenters, notifyAvailable, notifyUnavailable,
-			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay)
+			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay, options)
 		mon.SaveToDB()
 		state.Logger.Info("更新服务器订阅配置: "+planCode, "monitor")
 

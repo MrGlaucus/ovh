@@ -42,6 +42,10 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			// AutoPay 下单成功后用默认支付方式自动付款。默认 false ——
 			// 自动扣钱必须是显式打开的开关
 			AutoPay bool `json:"autoPay"`
+			// Options 只盯这套配置(addon planCode 列表)。空 = 全部配置。
+			// 一个 planCode 底下常有好几套内存/存储组合,而通知和自动下单是
+			// 按配置逐套触发的 —— 不筛的话"抢 1 台"会变成"每套配置各抢 1 台"。
+			Options []string `json:"options"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" {
@@ -87,7 +91,8 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		region, subsidiary, regionWarning := mon.PreflightRegion(body.PlanCode, body.AutoOrderAccountID)
 
 		mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
-			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID, body.AutoPay)
+			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID, body.AutoPay,
+			body.Options)
 		mon.SaveToDB()
 
 		if !mon.Running() {
@@ -175,7 +180,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				continue
 			}
 			mon.AddSubscription(pc, []string{}, notifyAvailable, notifyUnavailable,
-				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID, false)
+				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID, false, nil)
 			added++
 			state.Logger.Debug("批量添加订阅: "+pc+" ("+server.Name+")", "monitor")
 		}

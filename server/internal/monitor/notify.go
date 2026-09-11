@@ -220,78 +220,88 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	accountID ...string) (string, map[string]interface{}) {
 
 	var msg strings.Builder
-	msg.WriteString("🎉 服务器上架通知！\n\n")
-	if serverName != "" {
-		msg.WriteString("服务器: " + serverName + "\n")
+	msg.WriteString("🎉 服务器上架通知\n\n")
+
+	// 产品名称:型号名 + CPU。
+	// 光一个 planCode(24sk602)对着手机看不出是什么机器,
+	// 而抢购那一刻用户要在几秒内判断"这是不是我要的那台"。
+	msg.WriteString("📦 产品名称: " + m.productName(planCode, serverName) + "\n")
+
+	memory, _ := configInfo["memory"].(string)
+	storage, _ := configInfo["storage"].(string)
+	if memory != "" {
+		msg.WriteString("💾 内存: " + memory + "\n")
 	}
-	msg.WriteString("型号: " + planCode + "\n")
-	if configInfo != nil {
-		display, _ := configInfo["display"].(string)
-		memory, _ := configInfo["memory"].(string)
-		storage, _ := configInfo["storage"].(string)
-		msg.WriteString("配置: " + display + "\n")
-		msg.WriteString("├─ 内存: " + memory + "\n")
-		msg.WriteString("└─ 存储: " + storage + "\n")
+	if storage != "" {
+		msg.WriteString("💿 存储: " + storage + "\n")
 	}
 
-	priceText, _ := configInfo["cached_price"].(string)
-	if priceText != "" {
-		msg.WriteString("\n💰 价格: " + priceText + "\n")
-	} else if priceErrorMessage != "" {
-		msg.WriteString("\n⚠️ 价格提示：" + priceErrorMessage + "\n")
-	}
-
-	msg.WriteString(fmt.Sprintf("\n✅ 有货的机房 (%d个):\n", len(availableDCs)))
+	// 机房 + 可用性。
+	// 单个机房时按"数据中心 / 可用性"两行摊开;多个机房时列成一张表 ——
+	// 每个机房的可用性可能不一样(waw 是 1H-low、gra 是 72H),
+	// 合并成一句"N 个机房有货"会把这个差别抹掉,而它直接决定先抢哪个。
 	var detectedTimes []time.Time
 	for _, dcInfo := range availableDCs {
-		dc, _ := dcInfo["dc"].(string)
-		msg.WriteString("  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")")
-		if dt, ok := dcInfo["duration_text"].(string); ok && dt != "" {
-			msg.WriteString(" - ⏱️ 上次无货→本次有货: " + strings.TrimPrefix(dt, "历时 "))
-		}
-		msg.WriteString("\n")
 		if dtStr, ok := dcInfo["detected_time"].(string); ok && dtStr != "" {
 			if t, err := time.Parse(time.RFC3339Nano, dtStr); err == nil {
 				detectedTimes = append(detectedTimes, t)
 			}
 		}
 	}
+	if len(availableDCs) == 1 {
+		dc, _ := availableDCs[0]["dc"].(string)
+		msg.WriteString("📍 数据中心: " + dcLine(dc) + "\n")
+		msg.WriteString("✅ 可用性: " + availWording(availableDCs[0]) + "\n")
+	} else {
+		msg.WriteString(fmt.Sprintf("📍 数据中心: %d 个机房有货\n", len(availableDCs)))
+		for _, dcInfo := range availableDCs {
+			dc, _ := dcInfo["dc"].(string)
+			msg.WriteString("   ✅ " + dcLine(dc) + " — " + availWording(dcInfo) + "\n")
+		}
+	}
 
-	pushTime := m.nowBeijing()
+	// 价格。月费和安装费分开写:安装费是一次性的,混在一起会让人以为月付这么多。
+	priceText, _ := configInfo["cached_price"].(string)
+	installText, _ := configInfo["install_price"].(string)
+	switch {
+	case priceText != "":
+		msg.WriteString("💰 价格: " + priceText + "\n")
+	case priceErrorMessage != "":
+		// 价格查不到必须明说。留空会被读成"免费"或"还没加载",
+		// 而这两种理解都会让用户按下一个他不知道要花多少钱的按钮。
+		msg.WriteString("💰 价格: 未获取到（" + priceErrorMessage + "）\n")
+	default:
+		msg.WriteString("💰 价格: 未获取到\n")
+	}
+	if installText != "" {
+		msg.WriteString("💵 安装费: " + installText + "（一次性）\n")
+	}
 
-	// 这条型号已经有几个任务在抢了。
-	//
-	// 补货常常连着来好几条通知,用户在手机上很容易对同一台机器按两次按钮 ——
-	// 抢到就是两笔真实订单、两次扣款。按钮那边有一次性 claim,但那只挡得住
-	// "同一颗按钮按两次",挡不住"两条通知各按一次"。
-	// 在这里直接把当前进行中的任务数摆出来,是最省事也最有效的提醒。
+	// 这个型号已经有几个任务在抢。
+	// 补货常连着来好几条通知,对同一台机器按两次就是两笔真实订单,
+	// 而按钮的一次性 claim 只挡得住同一颗按钮按两次。
 	if n := m.activeQueueCount(planCode); n > 0 {
 		msg.WriteString(fmt.Sprintf("\n⚠️ 这个型号已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
 	}
 
+	pushTime := m.nowBeijing()
+	detected := pushTime
 	if len(detectedTimes) > 0 {
-		earliest := detectedTimes[0]
+		detected = detectedTimes[0]
 		for _, t := range detectedTimes[1:] {
-			if t.Before(earliest) {
-				earliest = t
+			if t.Before(detected) {
+				detected = t
 			}
 		}
-		// 三行时间戳压成一行。抢购的时候用户要的是"哪个机房、多少钱、点哪个",
-		// 检测/推送/延迟三行调试信息把按钮挤到了屏幕外面。
-		secs := int(pushTime.Sub(earliest).Seconds())
-		lag := "<1秒"
-		switch {
-		case secs >= 60:
-			lag = fmt.Sprintf("%d分%d秒", secs/60, secs%60)
-		case secs > 0:
-			lag = fmt.Sprintf("%d秒", secs)
-		}
-		msg.WriteString("\n🕐 " + earliest.Format("15:04:05") + " 检测到，延迟 " + lag)
-	} else {
-		msg.WriteString("\n🕐 " + pushTime.Format("15:04:05"))
+	}
+	msg.WriteString("\n🕐 检测时间: " + detected.Format("2006-01-02 15:04:05") + "\n")
+	// 推送延迟只在明显偏大时才提 —— 正常情况下它是噪音,
+	// 但延迟到分钟级说明通道有问题,那时候用户必须知道自己看到的是旧消息。
+	if lag := pushTime.Sub(detected); lag >= 30*time.Second {
+		msg.WriteString(fmt.Sprintf("⚠️ 这条通知延迟了 %.0f 秒才发出\n", lag.Seconds()))
 	}
 
-	// Trace ID 是排查用的,放最后,不要挡在机房列表和按钮中间
+	// Trace ID 放最后,排查用。放中间会把机房列表和按钮挤开。
 	if traceID != "" || configTraceID != "" {
 		ids := traceID
 		if traceID != "" && configTraceID != "" {
@@ -299,7 +309,7 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 		} else if traceID == "" {
 			ids = configTraceID
 		}
-		msg.WriteString("\n🆔 " + ids)
+		msg.WriteString("🆔 " + ids + "\n")
 	}
 
 	// 构建按钮（每行最多 2 个）
@@ -606,4 +616,60 @@ func (m *Monitor) activeQueueCount(planCode string) int {
 		}
 	}
 	return n
+}
+
+// productName 通知抬头那一行。
+//
+// 光一个 planCode(24sk602)在手机上看不出是什么机器,而抢购那一刻用户
+// 要在几秒内判断"这是不是我要的那台"。所以把型号名和 CPU 拼出来。
+// 目录没加载到时退回 planCode —— 不编,也不留空。
+func (m *Monitor) productName(planCode, serverName string) string {
+	name := strings.TrimSpace(serverName)
+	cpu := ""
+	if m.state != nil {
+		m.state.ServerPlansMu.RLock()
+		for _, p := range m.state.ServerPlans {
+			if p.PlanCode == planCode {
+				if name == "" {
+					name = strings.TrimSpace(p.Name)
+				}
+				cpu = strings.TrimSpace(p.CPU)
+				break
+			}
+		}
+		m.state.ServerPlansMu.RUnlock()
+	}
+	switch {
+	case name != "" && cpu != "":
+		return name + " | " + cpu
+	case name != "":
+		return name
+	default:
+		return planCode
+	}
+}
+
+// dcLine "waw (波兰华沙)"。拿不到中文名就只写代码。
+func dcLine(dc string) string {
+	code := strings.ToUpper(dc)
+	cn := strings.TrimSpace(dcDisplayCN(dc))
+	// dcDisplayCN 拿不到时会退回大写代码,那种情况别写成 "WAW (WAW)"
+	if cn == "" || strings.EqualFold(cn, dc) {
+		return code
+	}
+	return code + " (" + cn + ")"
+}
+
+// availWording 这个机房的可用性该怎么说。
+//
+// 取的是 OVH 原样返回的值(1H-low / 72H …),它才带着"多久能交付、库存高低"
+// 这两个决定要不要立刻下单的信息。没有原值时退回"有货"——
+// 那是归一化之后仅剩的事实,不要编一个更具体的说法出来。
+func availWording(dcInfo map[string]interface{}) string {
+	if raw, ok := dcInfo["raw_status"].(string); ok && raw != "" {
+		if w := AvailabilityCN(raw); w != "" {
+			return w
+		}
+	}
+	return "有货"
 }

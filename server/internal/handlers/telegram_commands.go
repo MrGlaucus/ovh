@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ovh-buy/server/internal/app"
@@ -51,13 +52,22 @@ func handleCommand(state *app.State, mon *monitor.Monitor, chatID interface{}, m
 	case "cancel":
 		reply = cancelText(state, args)
 	case "watch", "w":
-		reply = watchText(state, mon, args)
+		// 带了 x<数量> = 用户明确知道自己要什么,直接建,不打断他。
+		// 否则走按钮流程:让他挑配置和账户 —— 这两件事不挑就等于默默替他决定,
+		// 而它们直接决定会不会抢到、以及会下多少单。
+		if hasExplicitQuantity(args) || len(args) == 0 {
+			reply = watchText(state, mon, args)
+		} else if startWatchFlow(state, mon, chatID, messageID, args[0], dcArgs(args[1:])) {
+			return true // 流程自己回复了
+		} else {
+			reply = watchText(state, mon, args)
+		}
 	case "unwatch", "uw":
 		reply = unwatchText(state, mon, args)
 	case "accounts", "acc":
 		reply = accountsText(state)
 	case "subs", "sub":
-		reply = subsText(mon)
+		reply = subsText(state, mon)
 	case "recent", "history":
 		reply = recentText(state)
 	default:
@@ -90,9 +100,13 @@ func helpText(state *app.State) string {
 	b.WriteString("⚠️ 上面这种是「现在就买」，机器当下没货会直接失败。\n")
 	b.WriteString("   想等补货请用 /watch。\n\n")
 	b.WriteString("【盯补货】机器现在没货时用这个：\n")
-	b.WriteString("  /watch 24sk602         补货就通知我\n")
-	b.WriteString("  /watch 24sk602 gra x1  gra 补货就自动抢 1 台\n")
+	b.WriteString("  /watch 24sk602         我用按钮让你挑配置和账户\n")
+	b.WriteString("  /watch 24sk602 gra     只盯 gra，其余照样按钮挑\n")
+	b.WriteString("  /watch 24sk602 gra x1  跳过按钮，直接盯全部配置自动抢 1 台\n")
 	b.WriteString("  /unwatch 24sk602       不盯了\n\n")
+	b.WriteString("⚠️ 一个型号底下常有好几套内存/存储组合，而补货通知和自动下单是\n")
+	b.WriteString("   **按配置逐套**触发的。不挑配置就是每套都要，\n")
+	b.WriteString("   「抢 1 台」会变成「每套配置在每个机房各抢 1 台」。\n\n")
 	b.WriteString("【命令】\n")
 	b.WriteString("  /status   监控与队列总览\n")
 	b.WriteString("  /queue    正在抢的任务\n")
@@ -337,7 +351,7 @@ func accountsText(state *app.State) string {
 	return b.String()
 }
 
-func subsText(mon *monitor.Monitor) string {
+func subsText(state *app.State, mon *monitor.Monitor) string {
 	if mon == nil {
 		return "监控未初始化。"
 	}
@@ -356,10 +370,21 @@ func subsText(mon *monitor.Monitor) string {
 		if len(s.Datacenters) > 0 {
 			b.WriteString(" @ " + strings.ToUpper(strings.Join(s.Datacenters, "/")))
 		}
-		if s.AutoOrderAccountID != "" {
-			b.WriteString(" · 自动下单")
-		}
 		b.WriteString("\n")
+		// 配置和账户必须列出来 —— 这两件事决定了会不会抢到、以及会下多少单,
+		// 而用户是在几天前点按钮选的,不会记得。
+		if len(s.Options) > 0 {
+			b.WriteString("    配置：" + strings.Join(s.Options, " + ") + "\n")
+		} else {
+			b.WriteString("    配置：全部（每套补货各触发一次）\n")
+		}
+		if s.AutoOrder && s.AutoOrderAccountID != "" {
+			label := s.AutoOrderAccountID
+			if acc, ok := state.FindAccount(s.AutoOrderAccountID); ok {
+				label = acc.Name + "（" + strings.ToUpper(acc.Zone) + "）"
+			}
+			b.WriteString(fmt.Sprintf("    补货自动抢 %d 台 · 账户 %s\n", s.Quantity, label))
+		}
 		// 检查失败要显式说:表现和"一直无货"一模一样,不说用户永远发现不了
 		if s.LastCheckError != "" {
 			b.WriteString("    ⚠️ 最近一次检查失败：" + truncate(s.LastCheckError, 80) + "\n")
@@ -413,4 +438,30 @@ func recentText(state *app.State) string {
 		}
 	}
 	return b.String()
+}
+
+// hasExplicitQuantity 参数里有没有 x<数量>。
+// 有就说明用户很清楚自己要什么,不该再拿按钮打断他。
+func hasExplicitQuantity(args []string) bool {
+	for _, a := range args {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if len(a) > 1 && a[0] == 'x' {
+			if _, err := strconv.Atoi(a[1:]); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dcArgs 从参数里挑出机房代码,忽略其它。
+func dcArgs(args []string) []string {
+	out := []string{}
+	for _, a := range args {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if len(a) >= 3 && len(a) <= 4 && isLowerAlpha(a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }

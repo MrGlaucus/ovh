@@ -295,6 +295,14 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	}
 
 	action := strOr(callbackObj, "a", "action")
+	// /watch 的分步选择。它不花钱(只是建订阅),走自己的分支,
+	// 不经过下面那套一次性按钮的 claim 逻辑 —— 那套是给"按一次就下单"用的。
+	if action == "wf" {
+		if handleFlowCallback(state, mon, cb, callbackObj, chatID, int64(messageID)) {
+			u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "watch_flow"})
+			return
+		}
+	}
 	if action != "add_to_queue" {
 		state.Logger.Warn("未知的action: "+action, "telegram")
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Unknown action: " + action})

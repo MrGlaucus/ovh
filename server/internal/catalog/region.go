@@ -107,10 +107,27 @@ type planConfig struct {
 	// 监控和快速下单要用它把 availabilities 里的 FQN 段(ram-64g-ecc-2133)映射成
 	// 下单用的 addon planCode(ram-64g-ecc-2133-24sk20-us)。
 	addonFamilies map[string][]string
+	// monthly / install: 这个 plan 自身的月费与安装费(不含 addon)。
+	// 单位已经从 OVH 的 1e8 定点整数换算成真实金额。
+	monthly PriceParts
+	install PriceParts
 }
 
+// PriceParts 一笔价格的不含税/税额两部分。
+type PriceParts struct {
+	Price float64
+	Tax   float64
+	OK    bool
+}
+
+// Total 含税金额
+func (p PriceParts) Total() float64 { return p.Price + p.Tax }
+
 type subsidiaryCatalog struct {
-	plans     map[string]planConfig
+	plans map[string]planConfig
+	// addons: addon planCode → 它自己的月费/安装费。算总价要把选中的 addon 累加进去。
+	addons    map[string]planConfig
+	currency  string
 	fetchedAt time.Time
 }
 
@@ -175,8 +192,74 @@ func pickRegion(pc planConfig, apiDC string) string {
 }
 
 // parseEcoCatalog 从目录 JSON 里只挑出 region / 机房两项配置。纯函数,便于测试。
+// catalogPricing 目录里的一条计价。OVH 的 price / tax 是放大 1e8 的定点整数。
+type catalogPricing struct {
+	Capacities   []string `json:"capacities"`
+	IntervalUnit string   `json:"intervalUnit"`
+	Interval     int      `json:"interval"`
+	Mode         string   `json:"mode"`
+	Price        int64    `json:"price"`
+	Tax          int64    `json:"tax"`
+}
+
+// monthlyOf 月费:intervalUnit=month + interval=1 + mode=default,且**不是**安装费那条。
+//
+// 同一个 plan 的 pricings 里,安装费和月费两条都满足 interval=1+month+default,
+// 只靠 capacities 区分(installation vs renew/[])。漏掉这个过滤会把安装费当月费,
+// 通知里的价格就成了"月费+安装费"。前端 use-availability.ts 踩过同一个坑,口径必须一致。
+func monthlyOf(ps []catalogPricing) PriceParts {
+	for _, pr := range ps {
+		if containsStr(pr.Capacities, "installation") {
+			continue
+		}
+		if pr.IntervalUnit == "month" && pr.Interval == 1 && pr.Mode == "default" {
+			return PriceParts{Price: float64(pr.Price) / 1e8, Tax: float64(pr.Tax) / 1e8, OK: true}
+		}
+	}
+	return PriceParts{}
+}
+
+// installOf 安装费:mode=default 且 capacities 含 installation。
+func installOf(ps []catalogPricing) PriceParts {
+	for _, pr := range ps {
+		if pr.Mode != "default" {
+			continue
+		}
+		if containsStr(pr.Capacities, "installation") {
+			return PriceParts{Price: float64(pr.Price) / 1e8, Tax: float64(pr.Tax) / 1e8, OK: true}
+		}
+	}
+	return PriceParts{}
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+type ecoCatalogPayload struct {
+	plans    map[string]planConfig
+	addons   map[string]planConfig
+	currency string
+}
+
 func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
+	p, err := parseEcoCatalogFull(r)
+	if err != nil {
+		return nil, err
+	}
+	return p.plans, nil
+}
+
+func parseEcoCatalogFull(r io.Reader) (ecoCatalogPayload, error) {
 	var payload struct {
+		Locale struct {
+			CurrencyCode string `json:"currencyCode"`
+		} `json:"locale"`
 		Plans []struct {
 			PlanCode       string `json:"planCode"`
 			Configurations []struct {
@@ -187,10 +270,15 @@ func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
 				Name   string   `json:"name"`
 				Addons []string `json:"addons"`
 			} `json:"addonFamilies"`
+			Pricings []catalogPricing `json:"pricings"`
 		} `json:"plans"`
+		Addons []struct {
+			PlanCode string           `json:"planCode"`
+			Pricings []catalogPricing `json:"pricings"`
+		} `json:"addons"`
 	}
 	if err := json.NewDecoder(r).Decode(&payload); err != nil {
-		return nil, err
+		return ecoCatalogPayload{}, err
 	}
 	out := make(map[string]planConfig, len(payload.Plans))
 	for _, p := range payload.Plans {
@@ -209,9 +297,18 @@ func parseEcoCatalog(r io.Reader) (map[string]planConfig, error) {
 				pc.addonFamilies[strings.ToLower(f.Name)] = f.Addons
 			}
 		}
+		pc.monthly = monthlyOf(p.Pricings)
+		pc.install = installOf(p.Pricings)
 		out[p.PlanCode] = pc
 	}
-	return out, nil
+	addons := make(map[string]planConfig, len(payload.Addons))
+	for _, a := range payload.Addons {
+		addons[a.PlanCode] = planConfig{
+			monthly: monthlyOf(a.Pricings),
+			install: installOf(a.Pricings),
+		}
+	}
+	return ecoCatalogPayload{plans: out, addons: addons, currency: payload.Locale.CurrencyCode}, nil
 }
 
 // AddonFamiliesForPlan 取该 (账户子公司, planCode) 的 addon family → addon planCode 列表。
@@ -353,19 +450,24 @@ func loadSubsidiaryCatalog(state *app.State, subsidiary string) (*subsidiaryCata
 // 写成变量是为了让测试能换成假实现,用调用次数直接验证 singleflight 和负缓存
 // (这层的价值全在"到底发了几次请求",用真实 HTTP 是测不出来的)。
 var fetchSubsidiaryCatalog = func(state *app.State, subsidiary string) (*subsidiaryCatalog, error) {
-	// 目录单份 12MB 左右,只留 region/机房/addon 三项,不把整份 JSON 留在内存里
-	var plans map[string]planConfig
+	// 目录单份 12MB 左右,只留 region/机房/addon/价格几项,不把整份 JSON 留在内存里
+	var payload ecoCatalogPayload
 	if err := fetchEcoCatalogBody(subsidiary, func(r io.Reader) error {
-		p, err := parseEcoCatalog(r)
+		p, err := parseEcoCatalogFull(r)
 		if err != nil {
 			return fmt.Errorf("解析 %s 目录失败: %w", subsidiary, err)
 		}
-		plans = p
+		payload = p
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	parsed := &subsidiaryCatalog{plans: plans, fetchedAt: time.Now()}
+	parsed := &subsidiaryCatalog{
+		plans:     payload.plans,
+		addons:    payload.addons,
+		currency:  payload.currency,
+		fetchedAt: time.Now(),
+	}
 	state.Logger.Info(fmt.Sprintf("[region] 已缓存 %s 目录的区域配置(%d 个 plan)", subsidiary, len(parsed.plans)), "purchase")
 	return parsed, nil
 }
@@ -527,4 +629,60 @@ func WarmRegionCache(state *app.State) {
 			state.Logger.Warn(fmt.Sprintf("[region] 预热 %s 目录失败(下单时会重试): %s", s, err.Error()), "purchase")
 		}
 	}
+}
+
+// PlanPrice 一套配置的完整报价。
+type PlanPrice struct {
+	// Monthly / Install 都是含税金额(price + tax)。
+	// 只给含税:抢购时用户关心的是"要付多少",拆开反而要他自己加。
+	Monthly  float64
+	Install  float64
+	Currency string
+	// Partial 有 addon 在目录里查不到 —— 报价可能偏低,调用方要说明。
+	Partial bool
+}
+
+// PriceForOptions 按 planCode + 选中的 addon 算月费和安装费。
+//
+// 口径必须和前端 use-availability.ts 的 computePrice 一致:
+// base plan 的月费/安装费,加上每个选中 addon 各自的月费/安装费。
+// 走的是已经缓存 2 小时的公开目录,不消耗账户 API 配额。
+//
+// 为什么不复用询价接口(price.GetInternal):那个要真的建购物车、加商品、拿 summary、删车,
+// 一次好几秒还会占配额。补货通知是"有货那一刻要立刻发出去"的东西,不能等。
+func PriceForOptions(state *app.State, accountID, planCode string, options []string) (PlanPrice, error) {
+	acc, _ := state.FindAccount(accountID)
+	subsidiary := SubsidiaryOfAccount(acc)
+	cat, err := loadSubsidiaryCatalog(state, subsidiary)
+	if err != nil {
+		return PlanPrice{}, err
+	}
+	pc, ok := cat.plans[planCode]
+	if !ok {
+		return PlanPrice{}, fmt.Errorf("%w: %s(子公司 %s)", ErrPlanNotInCatalog, planCode, subsidiary)
+	}
+	if !pc.monthly.OK {
+		return PlanPrice{}, fmt.Errorf("目录里 %s 没有可用的月费计价", planCode)
+	}
+	out := PlanPrice{
+		Monthly:  pc.monthly.Total(),
+		Install:  pc.install.Total(),
+		Currency: cat.currency,
+	}
+	for _, o := range options {
+		a, ok := cat.addons[o]
+		if !ok {
+			// 目录里没有这个 addon —— 报价会偏低,必须让调用方知道,
+			// 不能悄悄给出一个"看起来很便宜"的数字。
+			out.Partial = true
+			continue
+		}
+		if a.monthly.OK {
+			out.Monthly += a.monthly.Total()
+		}
+		if a.install.OK {
+			out.Install += a.install.Total()
+		}
+	}
+	return out, nil
 }

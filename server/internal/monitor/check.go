@@ -19,9 +19,14 @@ import (
 type notification struct {
 	// notify 这条跳变要不要发通知。与"要不要下单"分开:
 	// 下单只看跳变本身,通知才受 NotifyAvailable/NotifyUnavailable 控制。
-	notify           bool
-	dc               string
-	status           string
+	notify bool
+	dc     string
+	status string
+	// rawStatus OVH 原样返回的可用性值(1H-low / 24H / 72H …)。
+	// status 是归一化后的 available/unavailable/price_check_failed,
+	// 丢掉原值就没法在通知里告诉用户"多久能交付、库存高还是低" ——
+	// 而这正是决定要不要立刻下单的信息。
+	rawStatus        string
 	oldStatus        string
 	hasOld           bool
 	statusKey        string
@@ -407,6 +412,18 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 当前发现 %d 个配置组合", planCode, len(currentAvailability)), "monitor")
 
 	for configKey, configData := range currentAvailability {
+		// 订阅指定了配置就只盯那一套。
+		//
+		// 这个循环下面的每一件事都是**按配置逐套**做的:发一条通知、触发一次
+		// 自动下单。所以不筛的话,"自动抢 1 台"在三套配置同时补货时会下三次单
+		// (还要再乘以机房数)。用户想要的往往是"只盯 64G + 2x480SSD 那套",
+		// 在有这个字段之前他没有任何办法表达。
+		// 空 = 全部配置,保持一直以来的行为。
+		if !configMatchesFilter(cfg.Options, configData.Options) {
+			m.state.Logger.Debug(fmt.Sprintf("订阅 %s 跳过配置 %s(与订阅指定的配置不符)",
+				planCode, configKey), "monitor")
+			continue
+		}
 		memory := configData.Memory
 		storage := configData.Storage
 		configDisplay := memory + " + " + storage
@@ -585,6 +602,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				n := notification{
 					dc:               dc,
 					status:           actualStatus,
+					rawStatus:        ds.status,
 					oldStatus:        ds.oldStatus,
 					hasOld:           ds.hasOld,
 					statusKey:        ds.statusKey,
@@ -696,9 +714,18 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			if priceText != "" {
 				configInfoWithPrice["cached_price"] = priceText
 			}
+			// 安装费从公开目录算(已缓存 2 小时,不占账户配额)。
+			// 不走询价接口:那个要真的建购物车再删,一次好几秒 ——
+			// 而补货通知的全部价值就在于"有货那一刻立刻发出去"。
+			if ip := m.installPriceText(planCode, choice.accountID, configData.Options); ip != "" {
+				configInfoWithPrice["install_price"] = ip
+			}
 			availDCs := make([]map[string]interface{}, 0, len(availables))
 			for _, n := range availables {
 				dcInfo := map[string]interface{}{"dc": n.dc, "status": n.status}
+				if n.rawStatus != "" {
+					dcInfo["raw_status"] = n.rawStatus
+				}
 				if n.durationText != "" {
 					dcInfo["duration_text"] = n.durationText
 				}
@@ -882,3 +909,28 @@ func (m *Monitor) calcDuration(sub *Subscription, dc, configDisplay string, targ
 	}
 	return fmt.Sprintf("历时 %d秒", seconds)
 }
+
+// configMatchesFilter 判断一套配置是否落在订阅指定的配置范围内。
+//
+// want 为空 = 不筛,盯全部配置(老行为)。
+// 非空时要求 want 里的每一项都出现在这套配置的 options 里 —— 用"子集"而不是
+// "完全相等":用户在 TG 上只会挑内存和存储两项,而一套配置的 options 还包含
+// 带宽、vRack 之类他没挑也不关心的东西,要求相等会一个都匹配不上。
+func configMatchesFilter(want, have []string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	set := make(map[string]struct{}, len(have))
+	for _, h := range have {
+		set[h] = struct{}{}
+	}
+	for _, w := range want {
+		if _, ok := set[w]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// ConfigMatchesFilter 导出版，给测试和别的包用。语义见 configMatchesFilter。
+func ConfigMatchesFilter(want, have []string) bool { return configMatchesFilter(want, have) }

@@ -101,6 +101,10 @@ type Subscription struct {
 	Quantity           int               `json:"quantity,omitempty"`
 	AutoOrderAccountID string            `json:"autoOrderAccountId,omitempty"` // 空 = 触发时只通知不下单
 	AutoPay            bool              `json:"autoPay,omitempty"`            // 下单后自动付款(显式开关,默认关)
+	// Options 只盯这套配置。空 = 全部配置(老行为)。
+	// 一个 planCode 底下常有好几套内存/存储组合,而通知和自动下单是按配置逐套触发的,
+	// "自动抢 1 台"在三套配置同时补货时会下三次单(再乘机房数)。
+	Options []string `json:"options,omitempty"`
 
 	// —— 本轮可用性查询的诊断信息 ——
 	// 只存内存、不落库(每轮检查都会重算,持久化没有意义)。
@@ -132,6 +136,7 @@ type subCheckConfig struct {
 	Quantity           int
 	AutoOrderAccountID string
 	AutoPay            bool
+	Options            []string
 }
 
 func (s *Subscription) checkConfig() subCheckConfig {
@@ -139,8 +144,11 @@ func (s *Subscription) checkConfig() subCheckConfig {
 	defer s.mu.Unlock()
 	dcs := make([]string, len(s.Datacenters))
 	copy(dcs, s.Datacenters)
+	opts := make([]string, len(s.Options))
+	copy(opts, s.Options)
 	return subCheckConfig{
 		Datacenters:        dcs,
+		Options:            opts,
 		NotifyAvailable:    s.NotifyAvailable,
 		NotifyUnavailable:  s.NotifyUnavailable,
 		ServerName:         s.ServerName,
@@ -230,9 +238,12 @@ func (s *Subscription) snapshot() *Subscription {
 	}
 	hist := make([]HistoryEntry, len(s.History))
 	copy(hist, s.History)
+	opts := make([]string, len(s.Options))
+	copy(opts, s.Options)
 	return &Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
+		Options:            opts,
 		NotifyAvailable:    s.NotifyAvailable,
 		NotifyUnavailable:  s.NotifyUnavailable,
 		LastStatus:         last,
