@@ -48,18 +48,46 @@ func StandardizeConfig(config string) string {
 	return normalized
 }
 
+var (
+	reMemoryDisplay  = regexp.MustCompile(`(?i)(\d+)g(?:-(?:no)?ecc)?(?:-(\d+))?`)
+	reStorageDisplay = regexp.MustCompile(`(?i)(\d+)x(\d+)(?:g|gb)?(?:-|)(ssd|nvme|hdd|sas|sa)`)
+)
+
+// FormatMemoryDisplay 只根据 OVH FQN 中明确给出的容量、ECC 与频率生成展示文案。
+// DDR 代际不在 ram-32g-ecc-2133 这类 FQN 内，不能为了好看而猜成 DDR4。
 func FormatMemoryDisplay(memoryCode string) string {
-	if m := regexp.MustCompile(`(?i)(\d+)g`).FindStringSubmatch(memoryCode); m != nil {
-		return m[1] + "GB RAM"
+	m := reMemoryDisplay.FindStringSubmatch(memoryCode)
+	if m == nil {
+		return memoryCode
 	}
-	return memoryCode
+	parts := []string{m[1] + "GB"}
+	// noecc 是明确的非 ECC 标记；不能用宽泛的 Contains("ecc")，否则会把
+	// ram-128g-noecc-2933 错写为 ECC 内存。
+	if strings.Contains(strings.ToLower(memoryCode), "-ecc-") {
+		parts = append(parts, "ECC")
+	}
+	parts = append(parts, "RAM")
+	if m[2] != "" {
+		parts[len(parts)-1] += "-" + m[2]
+	}
+	return strings.Join(parts, " ")
 }
 
+// FormatStorageDisplay 同样只转换编码中可确认的信息；sa/sas 不会被擅自标成 HDD。
 func FormatStorageDisplay(storageCode string) string {
-	if m := regexp.MustCompile(`(?i)(\d+)x(\d+)(ssd|nvme|hdd)`).FindStringSubmatch(storageCode); m != nil {
-		return m[1] + "x " + m[2] + "GB " + strings.ToUpper(m[3])
+	m := reStorageDisplay.FindStringSubmatch(storageCode)
+	if m == nil {
+		return storageCode
 	}
-	return storageCode
+	capacity := m[2] + "GB"
+	if len(m[2]) >= 4 && strings.HasSuffix(m[2], "000") {
+		capacity = strings.TrimSuffix(m[2], "000") + "TB"
+	}
+	medium := strings.ToUpper(m[3])
+	if strings.EqualFold(medium, "nvme") {
+		medium = "NVMe"
+	}
+	return m[1] + "×" + capacity + " " + medium
 }
 
 func FormatConfigDisplay(memoryCode, storageCode string) string {
@@ -71,7 +99,7 @@ func FormatConfigDisplay(memoryCode, storageCode string) string {
 	if storageCode != "" {
 		stor = FormatStorageDisplay(storageCode)
 	}
-	return mem + " + " + stor
+	return mem + " · " + stor
 }
 
 func MatchConfig(userMemory, userStorage, ovhMemory, ovhStorage string) bool {

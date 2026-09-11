@@ -168,7 +168,7 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 				return
 			}
 			wantedSegs++
-			hits := matchAddonsForSegment(addonFamilies[family], raw, std)
+			hits := matchAddonsForSegment(addonFamilies[family], raw, std, planCode)
 			if len(hits) == 0 {
 				return
 			}
@@ -231,7 +231,7 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 // 绝对不能退回 strings.Contains:softraid-2x6000sa 会同时命中
 // hybridsoftraid-2x6000sa-2x512nvme(实测 US 92 条、EU/CA 各 119 条这样误配),
 // 而 Options 是 monitor / quick_order / telegram 直接拿去下单的 —— 误配就是买错配置。
-func matchAddonsForSegment(addons []string, seg, segStd string) []string {
+func matchAddonsForSegment(addons []string, seg, segStd, planCode string) []string {
 	if len(addons) == 0 || (seg == "" && segStd == "") {
 		return nil
 	}
@@ -249,7 +249,7 @@ func matchAddonsForSegment(addons []string, seg, segStd string) []string {
 	// (…-26sk50a-v1 → …nvmea),正确项因此丢掉分隔符、反而落到比错误项更低的档,
 	// 实测就是这样把 €0 的 2x960NVMe 配成了 €24 的混合盘。
 	if seg != "" {
-		if best := shortestWithPrefix(addons, seg+"-"); best != "" {
+		if best := bestAddonWithPrefix(addons, seg+"-", planCode); best != "" {
 			return []string{best}
 		}
 	}
@@ -263,38 +263,76 @@ func matchAddonsForSegment(addons []string, seg, segStd string) []string {
 			}
 		}
 		if len(exact) > 0 {
-			return exact
+			if best := bestAddonWithPrefix(exact, "", planCode); best != "" {
+				return []string{best}
+			}
 		}
-		// 第 4 档:标准化后前缀,同样取剩余最短
-		best, bestLen := "", -1
+		// 第 4 档:标准化后前缀，同样优先匹配当前 plan 的后缀。
+		candidates := make([]string, 0)
 		for _, addon := range addons {
-			as := StandardizeConfig(addon)
-			if !strings.HasPrefix(as, segStd) {
-				continue
-			}
-			if bestLen < 0 || len(as) < bestLen {
-				best, bestLen = addon, len(as)
+			if strings.HasPrefix(StandardizeConfig(addon), segStd) {
+				candidates = append(candidates, addon)
 			}
 		}
-		if best != "" {
+		if best := bestAddonWithPrefix(candidates, "", planCode); best != "" {
 			return []string{best}
 		}
 	}
 	return nil
 }
 
-// shortestWithPrefix 返回以 prefix 开头且整体最短的那个 addon(没有则空串)
-func shortestWithPrefix(addons []string, prefix string) string {
-	best := ""
+var addonPlanSuffixRE = regexp.MustCompile(`(?i)-\d+(?:sk|rise|sys|ks)[a-z0-9-]*`)
+
+// bestAddonWithPrefix 在当前 plan 的候选中优先选择最短项。若候选已包含其他机型后缀，
+// 绝不能把它当作当前 plan 的兜底；只有没有机型归属的公共 addon 才可退回使用。
+func bestAddonWithPrefix(addons []string, prefix, planCode string) string {
+	best, fallback := "", ""
 	for _, addon := range addons {
-		if !strings.HasPrefix(addon, prefix) {
+		if prefix != "" && !strings.HasPrefix(addon, prefix) {
 			continue
 		}
-		if best == "" || len(addon) < len(best) {
-			best = addon
+		if addonHasPlanSuffix(addon, planCode) {
+			if best == "" || len(addon) < len(best) {
+				best = addon
+			}
+			continue
+		}
+		if addonPlanSuffixRE.MatchString(addon) {
+			continue
+		}
+		if fallback == "" || len(addon) < len(fallback) {
+			fallback = addon
 		}
 	}
-	return best
+	if best != "" {
+		return best
+	}
+	return fallback
+}
+
+// addonHasPlanSuffix 只接受完整 planCode。不能把 24sk202-sgp / 24sk202-syd
+// 当作 24sk202 的后缀变体：它们是目录中的独立可售机型，价格、机房和 addon 都可能不同。
+// -us/-ca/-eu 是公开目录为同一机型附加的站点尾缀，保留这三个历史兼容形式。
+func addonHasPlanSuffix(addon, planCode string) bool {
+	planCode = strings.ToLower(strings.TrimSpace(planCode))
+	if planCode == "" {
+		return false
+	}
+	addon = strings.ToLower(addon)
+	for start := 0; ; {
+		i := strings.Index(addon[start:], "-"+planCode)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + 1 + len(planCode)
+		suffix := addon[end:]
+		switch suffix {
+		case "", "-us", "-ca", "-eu":
+			return true
+		}
+		start = end
+	}
 }
 
 // 匹配强度分档:数值只用来比大小,越大越可信。

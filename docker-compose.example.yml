@@ -23,6 +23,8 @@ services:
       OVH_DB_KEY: "请替换为固定且已备份的数据库加密密钥"
       ENABLE_API_KEY_AUTH: "true"
       GIN_MODE: "release"
+      # 与 Telegram / 控制台的用户可见时间保持一致；可按部署地区覆盖。
+      TZ: "Asia/Shanghai"
       LISTEN_HOST: "0.0.0.0"
       PORT: "19998"
       DATA_DIR: "/data"

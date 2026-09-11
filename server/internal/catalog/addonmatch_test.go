@@ -25,7 +25,7 @@ func TestMatchAddonsForSegment_PrefixAmbiguity(t *testing.T) {
 		{"softraid-2x6000sa", "softraid-2x6000sa-26sk50a-v1"},
 	}
 	for _, c := range cases {
-		got := matchAddonsForSegment(addons, c.seg, StandardizeConfig(c.seg))
+		got := matchAddonsForSegment(addons, c.seg, StandardizeConfig(c.seg), "26sk50a-v1")
 		if len(got) != 1 || got[0] != c.want {
 			t.Errorf("段 %q → %v, 期望 [%s]", c.seg, got, c.want)
 		}
@@ -35,7 +35,7 @@ func TestMatchAddonsForSegment_PrefixAmbiguity(t *testing.T) {
 // 内存频率对不上时(可用性报 ecc-2933、目录只卖 ecc-3200)必须靠标准化那一档认出来
 func TestMatchAddonsForSegment_FrequencyMismatch(t *testing.T) {
 	addons := []string{"ram-1024g-ecc-3200-24rise06-v1", "ram-512g-ecc-3200-24rise06-v1"}
-	got := matchAddonsForSegment(addons, "ram-1024g-ecc-2933", StandardizeConfig("ram-1024g-ecc-2933"))
+	got := matchAddonsForSegment(addons, "ram-1024g-ecc-2933", StandardizeConfig("ram-1024g-ecc-2933"), "24rise06-v1")
 	if len(got) != 1 || got[0] != "ram-1024g-ecc-3200-24rise06-v1" {
 		t.Errorf("频率不一致时 → %v, 期望 [ram-1024g-ecc-3200-24rise06-v1]", got)
 	}
@@ -44,7 +44,7 @@ func TestMatchAddonsForSegment_FrequencyMismatch(t *testing.T) {
 // 原始码完全相等优先于任何前缀档
 func TestMatchAddonsForSegment_ExactWins(t *testing.T) {
 	addons := []string{"ram-64g-ecc-2133-24sk20-us", "ram-64g-ecc-2133"}
-	got := matchAddonsForSegment(addons, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"))
+	got := matchAddonsForSegment(addons, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"), "24sk20")
 	if len(got) != 1 || got[0] != "ram-64g-ecc-2133" {
 		t.Errorf("原始相等应优先 → %v", got)
 	}
@@ -53,7 +53,7 @@ func TestMatchAddonsForSegment_ExactWins(t *testing.T) {
 // 美区 addon 带 -us 后缀时仍要能命中(原始前缀档)
 func TestMatchAddonsForSegment_USSuffix(t *testing.T) {
 	addons := []string{"ram-64g-ecc-2133-24sk20-us", "ram-32g-ecc-2133-24sk20-us"}
-	got := matchAddonsForSegment(addons, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"))
+	got := matchAddonsForSegment(addons, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"), "24sk20")
 	if len(got) != 1 || got[0] != "ram-64g-ecc-2133-24sk20-us" {
 		t.Errorf("美区后缀应命中 → %v", got)
 	}
@@ -62,7 +62,35 @@ func TestMatchAddonsForSegment_USSuffix(t *testing.T) {
 // 段在目录里完全没有对应 addon 时必须返回空,不能硬凑一个
 func TestMatchAddonsForSegment_NoMatch(t *testing.T) {
 	addons := []string{"ram-64g-ecc-2133-24sk20", "softraid-2x450nvme-24sk20"}
-	if got := matchAddonsForSegment(addons, "softraid-4x8000sa", StandardizeConfig("softraid-4x8000sa")); len(got) != 0 {
+	if got := matchAddonsForSegment(addons, "softraid-4x8000sa", StandardizeConfig("softraid-4x8000sa"), "24sk20"); len(got) != 0 {
 		t.Errorf("无对应 addon 时应返回空 → %v", got)
+	}
+}
+
+// planCode 互为前缀时必须选择完整机型后缀。否则 24sk202 会错误拿到
+// 24sk20 的选项，继而造成报价翻倍和购物车添加选项失败。
+func TestMatchAddonsForSegment_PrefersExactPlanSuffix(t *testing.T) {
+	addons := []string{
+		"ram-32g-ecc-2133-24sk20",
+		"ram-32g-ecc-2133-24sk202",
+		"ram-32g-ecc-2133-24sk202-sgp",
+		"ram-32g-ecc-2133-24sk202-syd",
+	}
+	segment := "ram-32g-ecc-2133"
+	got := matchAddonsForSegment(addons, segment, StandardizeConfig(segment), "24sk202")
+	if len(got) != 1 || got[0] != "ram-32g-ecc-2133-24sk202" {
+		t.Fatalf("24sk202 不得匹配 24sk20/24sk202-sgp/24sk202-syd：%v", got)
+	}
+	for _, planCode := range []string{"24sk202-sgp", "24sk202-syd"} {
+		got = matchAddonsForSegment(addons, segment, StandardizeConfig(segment), planCode)
+		want := "ram-32g-ecc-2133-" + planCode
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("%s 必须匹配自身 addon，实际 %v", planCode, got)
+		}
+	}
+
+	got = matchAddonsForSegment(addons[:1], segment, StandardizeConfig(segment), "24sk202")
+	if len(got) != 0 {
+		t.Fatalf("没有 24sk202 addon 时不得回退到 24sk20：%v", got)
 	}
 }

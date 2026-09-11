@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -112,7 +113,9 @@ func SendMessageWithRef(state *app.State, message string, replyMarkup map[string
 	}
 
 	url := "https://api.telegram.org/bot" + cfg.TgToken + "/sendMessage"
-	payload := map[string]interface{}{"chat_id": cfg.TgChatID, "text": message}
+	// 新消息与后续 editMessageText 必须使用相同的 HTML 语义：发送时先转义纯文本，
+	// 下架编辑时再仅插入受控的 <s> 标签。否则原消息和编辑消息的字符解释会不一致。
+	payload := map[string]interface{}{"chat_id": cfg.TgChatID, "text": html.EscapeString(message), "parse_mode": "HTML"}
 	if replyMarkup != nil {
 		payload["reply_markup"] = replyMarkup
 	}

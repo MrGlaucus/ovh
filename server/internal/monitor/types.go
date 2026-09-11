@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // Monitor 服务器补货监控器
@@ -379,13 +380,9 @@ func (m *Monitor) CheckInterval() int {
 	return m.checkInterval
 }
 
-// nowBeijing 返回北京时间
+// nowBeijing 返回统一的用户可见时区，避免容器 Local 配置改变监控时间口径。
 func (m *Monitor) nowBeijing() time.Time {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return time.Now().UTC().Add(8 * time.Hour)
-	}
-	return time.Now().In(loc)
+	return types.NowChina()
 }
 
 // maxHistorySize 单条订阅保留的历史条数上限。

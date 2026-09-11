@@ -409,7 +409,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	for configKey, configData := range currentAvailability {
 		memory := configData.Memory
 		storage := configData.Storage
-		configDisplay := memory + " + " + storage
+		configDisplay := catalog.FormatConfigDisplay(memory, storage)
 
 		configTraceID := uuid.NewString()
 		m.state.Logger.Info(fmt.Sprintf("检查配置: %s [config-trace:%s]", configDisplay, configTraceID), "monitor")

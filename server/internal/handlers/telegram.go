@@ -256,9 +256,13 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 	keyboard := make([][]button, 0, (len(accounts)+1)/2)
 	line := make([]button, 0, 2)
 	options := db.ParseTelegramButtonOptions(row.Options)
+	configInfo := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(row.ConfigInfo), &configInfo); err != nil {
+		return fmt.Errorf("读取通知配置身份失败: %w", err)
+	}
 	for _, account := range accounts {
 		childID := uuid.NewString()
-		if err := state.DB.UpsertTelegramButtonForAccount(childID, account.ID, row.PlanCode, row.Datacenter, options, nil, row.CreatedAt); err != nil {
+		if err := state.DB.UpsertTelegramButtonForAccount(childID, account.ID, row.PlanCode, row.Datacenter, options, configInfo, row.CreatedAt); err != nil {
 			state.Logger.Warn("创建 Telegram 账户选择按钮失败: "+err.Error(), "telegram")
 			continue
 		}
@@ -563,6 +567,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	// btnAccountID:发通知时记下的「触发订阅所用账户」。planCode 是分区的,
 	// 用它下单才不会把欧区机型落到美区账户上。空 = 老按钮/无账户维度 → 退回默认账户。
 	btnAccountID := ""
+	configKey := ""
 	explicitOptions := false
 	var options []string
 	if optsRaw, ok := callbackObj["o"]; ok {
@@ -593,6 +598,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 			dc = row.Datacenter
 			options = db.ParseTelegramButtonOptions(row.Options)
 			btnAccountID = strings.TrimSpace(row.AccountID)
+			configKey = telegramButtonConfigKey(row.ConfigInfo)
 			if menu, err := readBuyMenuState(row); err == nil {
 				explicitOptions = menu.ExplicitOptions
 			}
@@ -682,6 +688,25 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		// 明示"这是兜底账户"而不是通知里那个订阅账户，用户才知道要核对
 		accLabel += "［默认账户］"
 	}
+
+	// 通知发出后库存可能已变化；这里必须按最终选中的账户、机房和完整配置再次查询。
+	// 未通过时归还一次性按钮，不创建"明知无货"的抢购任务，用户可在补货消息仍有效时重试。
+	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在实时检查库存", false)
+	configs := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
+	if !telegramOrderTargetAvailable(configs, configKey, dc, options) {
+		if claimed {
+			_ = state.DB.UnclaimTelegramButton(buttonID)
+		}
+		state.Logger.Info(fmt.Sprintf("Telegram 通知一键下单库存检查未通过: %s@%s, config=%s, options=%v, account=%s",
+			planCode, dc, configKey, options, accountID), "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "库存已变化，未创建任务", true)
+		telegram.SendReply(state, chatID,
+			"⚠️ 当前机房或所选配置已经无货，未创建抢购任务。\n\n请等待下一条有货通知后再试。",
+			int64(messageID))
+		c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "stock_no_longer_available"})
+		return
+	}
+
 	item := types.QueueItem{
 		ID:            uuid.NewString(),
 		AccountID:     accountID,
@@ -737,6 +762,52 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已添加到队列！", false)
 	telegram.SendReply(state, chatID, confirmMsg, int64(messageID))
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// telegramOrderTargetAvailable 按完整配置身份检查某个通知按钮是否仍可立即下单。
+// configKey 来自有货通知时 OVH 返回的 FQN；旧按钮缺少它时才退化为完整 options 集合匹配。
+func telegramOrderTargetAvailable(
+	configs map[string]*catalog.ConfigAvailability,
+	configKey, datacenter string,
+	options []string,
+) bool {
+	if configKey != "" {
+		config := configs[configKey]
+		return config != nil && catalog.IsAvailableForOrder(config.Datacenters[datacenter])
+	}
+	for _, config := range configs {
+		if sameTelegramOptions(config.Options, options) && catalog.IsAvailableForOrder(config.Datacenters[datacenter]) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameTelegramOptions(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, option := range left {
+		seen[option]++
+	}
+	for _, option := range right {
+		if seen[option] == 0 {
+			return false
+		}
+		seen[option]--
+	}
+	return true
+}
+
+func telegramButtonConfigKey(raw string) string {
+	var info struct {
+		ConfigKey string `json:"config_key"`
+	}
+	if json.Unmarshal([]byte(raw), &info) != nil {
+		return ""
+	}
+	return strings.TrimSpace(info.ConfigKey)
 }
 
 type buyMenuCandidate struct {
@@ -1061,7 +1132,7 @@ func shortTelegramText(s string, maxRunes int) string {
 
 func formatTelegramTime(raw string) string {
 	if t, ok := types.ParseTS(raw); ok {
-		return t.Local().Format("01-02 15:04")
+		return types.InChina(t).Format("01-02 15:04")
 	}
 	return "尚未检查"
 }
@@ -1070,7 +1141,7 @@ func formatTelegramUnixTime(unix float64) string {
 	if unix <= 0 {
 		return "尚未检查"
 	}
-	return time.Unix(int64(unix), 0).Local().Format("01-02 15:04")
+	return types.InChina(time.Unix(int64(unix), 0)).Format("01-02 15:04")
 }
 
 func displayTelegramPlan(state *app.State, planCode string) string {

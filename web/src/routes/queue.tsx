@@ -42,7 +42,7 @@ import {
   usePurchaseTimings,
   type PurchaseTiming,
 } from "@/hooks/use-queue";
-import { useServers } from "@/hooks/use-servers";
+import { useServers, type ServerOption } from "@/hooks/use-servers";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useAccounts, findAccountByID } from "@/hooks/use-accounts";
@@ -50,7 +50,12 @@ import { TimingChip } from "@/components/common/TimingChip";
 import { AccountChip } from "@/components/common/AccountChip";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
-import { groupOptions, type OptionGroupKey } from "@/lib/option-groups";
+import {
+  classifyOption,
+  formatOptionDisplay,
+  groupOptions,
+  type OptionGroupKey,
+} from "@/lib/option-groups";
 import {
   useAvailability,
   buildVariantIndex,
@@ -78,7 +83,15 @@ function QueuePage() {
   // 队列仅保存 planCode；展示名从当前账户目录实时映射，目录未命中时回退原始标识。
   const servers = useServers();
   const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
-  const optionLabels = useMemo(() => new Map((servers.data || []).flatMap((server) => [...server.defaultOptions, ...server.availableOptions].map((option) => [option.value, option.label] as const))), [servers.data]);
+  // 保留完整 option 元数据，而不是只取原始 label；队列表据此复用选配页的通用友好展示。
+  const optionsByValue = useMemo(
+    () => new Map<string, ServerOption>(
+      (servers.data || []).flatMap((server) =>
+        [...server.defaultOptions, ...server.availableOptions].map((option) => [option.value, option] as const),
+      ),
+    ),
+    [servers.data],
+  );
   // 每条链路上一轮的耗时,用来回答"我到底卡在哪一步"
   const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
@@ -195,7 +208,7 @@ function QueuePage() {
               key={q.id}
               item={q}
               displayName={serverNames.get(q.planCode)}
-              optionLabels={optionLabels}
+              optionsByValue={optionsByValue}
               timing={timings.data?.[`${q.planCode}@${q.datacenter}`]}
               onToggle={() =>
                 toggle.mutate({
@@ -729,14 +742,14 @@ function CreateQueueDialog({
 function QueueRow({
   item,
   displayName,
-  optionLabels,
+  optionsByValue,
   timing,
   onToggle,
   onDelete,
 }: {
   item: QueueItem;
   displayName?: string;
-  optionLabels: Map<string, string>;
+  optionsByValue: Map<string, ServerOption>;
   timing?: PurchaseTiming;
   onToggle: () => void;
   onDelete: () => void;
@@ -808,8 +821,15 @@ function QueueRow({
             <AccountChip accountId={item.accountId} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
             {item.options?.map((option) => {
-              const label = optionLabels.get(option);
-              return <Chip key={option} tone="default" title={label ? option : "已选可选配置"}>{label || option}</Chip>;
+              const catalogOption = optionsByValue.get(option);
+              const display = catalogOption
+                ? formatOptionDisplay(catalogOption, classifyOption(catalogOption))
+                : option;
+              return (
+                <Chip key={option} tone="default" title={catalogOption ? option : "未识别的可选配置：" + option}>
+                  {display}
+                </Chip>
+              );
             })}
             {item.autoPay && (
               <Chip tone="warning" title="下单成功后会用 OVH 默认支付方式自动扣款">

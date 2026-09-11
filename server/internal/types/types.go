@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// chinaLocation 是用户可见时间的统一时区。持久化仍使用带偏移的 RFC3339，
+// 但 Telegram、通知和旧的无时区数据必须显式按北京时间展示，不能依赖 Docker 的 Local。
+var chinaLocation = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*60*60)
+	}
+	return loc
+}()
+
+func ChinaLocation() *time.Location { return chinaLocation }
+
+func NowChina() time.Time { return time.Now().In(chinaLocation) }
+
+func InChina(t time.Time) time.Time { return t.In(chinaLocation) }
+
 type Config struct {
 	AppKey      string `json:"appKey"`
 	AppSecret   string `json:"appSecret"`
@@ -295,8 +311,8 @@ func ParseTS(s string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, NowISOLayout, "2006-01-02T15:04:05.000000", "2006-01-02T15:04:05"} {
-		// 无时区旧格式沿用进程本地时区解释；新格式自带 UTC/偏移信息。
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+		// 新格式自带 UTC/偏移信息；无时区历史记录统一按北京时间解释，不能受容器 Local 影响。
+		if t, err := time.ParseInLocation(layout, s, chinaLocation); err == nil {
 			return t, true
 		}
 	}

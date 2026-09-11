@@ -431,11 +431,11 @@ function ServerCard({
   return (
     <Card className="overflow-hidden transition-colors hover:bg-secondary/30">
       <CardContent className="p-5 flex flex-col gap-4">
-        {/* 头部：planCode + 状态 chip */}
+        {/* 头部：对外型号优先，planCode 仅作为核对标识 */}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <h3 className="font-mono text-[15px] font-semibold truncate">{server.planCode}</h3>
-            <p className="text-[12px] text-muted-foreground truncate mt-0.5">{server.name}</p>
+            <h3 className="text-[15px] font-semibold truncate">{server.name || server.planCode}</h3>
+            {server.name && <p className="font-mono text-[12px] text-muted-foreground truncate mt-0.5">{server.planCode}</p>}
             <div className="text-[13px] font-semibold mt-1 tabular-nums">
               {price ? (
                 formatPrice(price)

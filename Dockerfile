@@ -34,7 +34,9 @@ WORKDIR /app
 COPY --from=server-builder /out/ovh-server /usr/local/bin/ovh-server
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint
 RUN chmod 0755 /usr/local/bin/ovh-server /usr/local/bin/entrypoint && mkdir -p /data && chown ovh:ovh /data
-ENV DATA_DIR=/data \
+# 运行时默认时区与用户可见时间一致；Go 代码仍显式使用 Asia/Shanghai，避免被宿主环境覆盖。
+ENV TZ=Asia/Shanghai \
+    DATA_DIR=/data \
     CACHE_DIR=/data/cache \
     LOGS_DIR=/data/logs \
     PORT=19998 \
