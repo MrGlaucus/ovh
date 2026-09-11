@@ -154,30 +154,33 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
             {isDirect ? "账号代理：直连" : proxyStatus.isPending ? "账号代理：检测中" : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false ? "账号代理：出口 IP 未确认（OVH 已阻断）" : `账号代理：出口 IP 已确认${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`}
           </button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-[300px] p-0">
-          <div className="px-4 pt-3 pb-2">
+        <PopoverContent align="start" className="w-[calc(100vw-2rem)] max-w-[320px] p-0">
+          <div className="px-3.5 pt-3 pb-2.5">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[13px] font-semibold">{active?.name || "当前账户"} · 账号代理</span>
-              <span className="text-[10px] uppercase text-muted-foreground">{active?.proxyUrl ? "proxy" : "direct"}</span>
+              <span className="text-[13px] font-semibold truncate">{active?.name || "当前账户"} · 账号代理</span>
+              <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">{active?.proxyUrl ? "proxy" : "direct"}</span>
             </div>
-            <div className="mt-1 text-[12px] text-muted-foreground break-all">{active?.proxyUrl || "未配置账户代理，此账户的 OVH API 直连"}</div>
+            <div className="mt-1 text-[11px] leading-tight text-muted-foreground break-all">{active?.proxyUrl || "未配置账户代理，此账户的 OVH API 直连"}</div>
           </div>
-          <div className="border-t border-border px-4 py-2.5 text-[11px] leading-snug text-muted-foreground">
+          <div className="border-t border-border px-3.5 py-2.5 text-[11px] leading-tight text-muted-foreground">
             {isDirect ? <p>当前账户直连；不执行代理出口 IP 检测或阻断。</p> : <>
-              <p>预期出口 IP：<span className="font-mono text-foreground">{proxyStatus.data?.expectedOutboundIp || active?.expectedOutboundIp || "未配置"}</span></p>
-              <p className="mt-1">实际出口 IP：<span className={cn("font-mono", proxyStatus.data?.outboundIpStatus === "verified" ? "text-success" : "text-destructive")}>{proxyStatus.data?.actualOutboundIp || "未确认"}</span></p>
-              <p className="mt-1">{proxyStatus.data?.outboundIpCheckedAt ? `上次检查：${new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleString()}；每 30 秒自动复检` : "尚未检查；每 30 秒自动复检"}</p>
-              <p className="mt-1">此处只覆盖携带「{active?.name || "当前"}」账户 AppKey/AppSecret/ConsumerKey 签名的 OVH API 请求；IP 不一致或查询失败时不会发送这些请求。</p>
-              {(proxyStatus.data?.outboundIpError || proxyStatus.isError) && <p className="mt-1 text-destructive">出口 IP：{proxyStatus.data?.outboundIpError || "检测失败，30 秒后自动重试"}</p>}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                <p>预期 IP<br /><span className="font-mono text-foreground">{proxyStatus.data?.expectedOutboundIp || active?.expectedOutboundIp || "未配置"}</span></p>
+                <p>实际 IP<br /><span className={cn("font-mono", proxyStatus.data?.outboundIpStatus === "verified" ? "text-success" : "text-destructive")}>{proxyStatus.data?.actualOutboundIp || "未确认"}</span></p>
+              </div>
+              <div className="mt-2 inline-flex max-w-full items-center rounded-md bg-info/10 px-2 py-1 text-[10px] font-medium text-info">
+                {proxyStatus.data?.outboundIpCheckedAt ? `上次检查：${new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleString()}（每 30 秒复检）` : "尚未检查（每 30 秒自动复检）"}
+              </div>
+              {(proxyStatus.data?.outboundIpError || proxyStatus.isError) && <p className="mt-2 text-destructive">出口 IP：{proxyStatus.data?.outboundIpError || "检测失败，30 秒后自动重试"}</p>}
               {proxyStatus.data?.ovhAuthStatus === "failed" && <p className="mt-1 text-destructive">OVH 凭据：{proxyStatus.data.ovhAuthError || "验证失败"}</p>}
             </>}
-            <p className="mt-1">`auth/time`、库存公开探测及 Telegram/GitHub/Webhook 请看右上角公共代理。</p>
+            <p className="mt-2 border-t border-border/70 pt-2 text-[10px] leading-snug">仅覆盖「{active?.name || "当前"}」账户的签名 OVH API 请求；公网探测及 Telegram/GitHub/Webhook 使用右上角公共代理。</p>
           </div>
-          <div className="border-t border-border px-4 py-2.5 flex items-center justify-between gap-2">
-            <span className={cn("text-[11px]", !active?.proxyUrl ? "text-muted-foreground" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "text-destructive" : "text-success")}>
+          <div className="border-t border-border px-3.5 py-2.5 flex items-center justify-between gap-2">
+            <span className={cn("min-w-0 text-[11px] leading-tight", !active?.proxyUrl ? "text-muted-foreground" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "text-destructive" : "text-success")}>
               {isDirect ? "直连（不检查代理出口 IP）" : proxyStatus.isPending ? "检测中…" : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false ? "出口 IP 不匹配/未确认，OVH 已阻断" : `出口 IP 已确认，已鉴权连通${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`}
             </span>
-            <button onClick={() => proxyStatus.refetch()} disabled={proxyStatus.isFetching} className="flex items-center gap-1 px-2 py-1 rounded-md border border-border text-[11px] hover:bg-muted disabled:opacity-60"><RefreshCw className={cn("w-3 h-3", proxyStatus.isFetching && "animate-spin")} />重新检测</button>
+            <button onClick={() => proxyStatus.refetch()} disabled={proxyStatus.isFetching} className="shrink-0 inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border px-2.5 py-1.5 text-[11px] hover:bg-muted disabled:opacity-60"><RefreshCw className={cn("w-3 h-3", proxyStatus.isFetching && "animate-spin")} />重新检测</button>
           </div>
         </PopoverContent>
       </Popover>

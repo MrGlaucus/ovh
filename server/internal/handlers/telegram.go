@@ -260,6 +260,9 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 	if err := json.Unmarshal([]byte(row.ConfigInfo), &configInfo); err != nil {
 		return fmt.Errorf("读取通知配置身份失败: %w", err)
 	}
+	// 子按钮只代表某个账户，不属于原始机房菜单。若继承 telegram_menu_id，
+	// 返回机房页按 menu ID 查询时会把每个账户子按钮误当作机房按钮，造成重复项。
+	delete(configInfo, "telegram_menu_id")
 	for _, account := range accounts {
 		childID := uuid.NewString()
 		if err := state.DB.UpsertTelegramButtonForAccount(childID, account.ID, row.PlanCode, row.Datacenter, options, configInfo, row.CreatedAt); err != nil {
@@ -308,14 +311,25 @@ func restoreTelegramDatacenterChoices(state *app.State, mon *monitor.Monitor, cb
 	var config map[string]interface{}
 	_ = json.Unmarshal([]byte(parent.ConfigInfo), &config)
 	menuID, _ := config["telegram_menu_id"].(string)
-	buttons := []db.TelegramButtonRow{parent}
+	// parent 优先保留；同一通知每个机房只允许恢复一个按钮。
+	// 该去重同时兼容旧版本已错误继承 menu ID 的账户子按钮，避免它们再次出现在机房菜单中。
+	buttonsByDatacenter := map[string]db.TelegramButtonRow{parent.Datacenter: parent}
 	if menuID != "" {
-		if rows, err := state.DB.ListTelegramButtonsByMenuID(menuID); err == nil && len(rows) > 0 {
-			buttons = rows
-		} else if err != nil {
+		if rows, err := state.DB.ListTelegramButtonsByMenuID(menuID); err == nil {
+			for _, row := range rows {
+				if _, exists := buttonsByDatacenter[row.Datacenter]; !exists {
+					buttonsByDatacenter[row.Datacenter] = row
+				}
+			}
+		} else {
 			return err
 		}
 	}
+	buttons := make([]db.TelegramButtonRow, 0, len(buttonsByDatacenter))
+	for _, item := range buttonsByDatacenter {
+		buttons = append(buttons, item)
+	}
+	sort.Slice(buttons, func(i, j int) bool { return buttons[i].Datacenter < buttons[j].Datacenter })
 
 	type button struct {
 		Text         string `json:"text"`

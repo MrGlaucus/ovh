@@ -29,7 +29,8 @@ import { Skeleton } from "@/components/common/Skeleton";
 import { MetricRing } from "@/components/common/MetricRing";
 import { useStats } from "@/hooks/use-stats";
 import { useQueueList, type QueueItem } from "@/hooks/use-queue";
-import { useServers } from "@/hooks/use-servers";
+import { useServers, type ServerOption } from "@/hooks/use-servers";
+import { classifyOption, formatOptionDisplay } from "@/lib/option-groups";
 import { useSystemMetrics, useAppVersion, useUpdateCheck } from "@/hooks/use-system-metrics";
 
 /** 仪表盘:3 KPI + 活跃队列 / 系统状态 + 系统监控(CPU / 内存 / 磁盘 / 网络) */
@@ -43,6 +44,14 @@ function DashboardPage() {
   // 队列只保存 planCode；对外型号名从当前账户的服务器目录实时映射。
   const servers = useServers();
   const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
+  const optionsByValue = useMemo(
+    () => new Map<string, ServerOption>(
+      (servers.data || []).flatMap((server) =>
+        [...server.defaultOptions, ...server.availableOptions].map((option) => [option.value, option] as const),
+      ),
+    ),
+    [servers.data],
+  );
   const sys = useSystemMetrics();
   const version = useAppVersion();
   const update = useUpdateCheck();
@@ -158,26 +167,36 @@ function DashboardPage() {
               />
             ) : (
               <div className="space-y-2">
-                {activeQueue.map((q) => (
-                  <div
-                    key={q.id}
-                    className="flex items-center justify-between gap-3 rounded-xl px-4 py-3 bg-secondary/50 border border-border"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm truncate">{serverNames.get(q.planCode) || q.planCode}</p>
-                      {serverNames.has(q.planCode) && <p className="font-mono text-[10px] text-muted-foreground truncate">{q.planCode}</p>}
-                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
-                        <span className="inline-flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {q.datacenter.toUpperCase()}
-                        </span>
-                        <span className="text-muted-foreground/50">·</span>
-                        <span>第 {q.retryCount + 1} 次尝试</span>
+                {activeQueue.map((q) => {
+                  const config = (q.options || []).map((option) => {
+                    const catalogOption = optionsByValue.get(option);
+                    return catalogOption
+                      ? formatOptionDisplay(catalogOption, classifyOption(catalogOption))
+                      : option;
+                  });
+                  return (
+                    <div
+                      key={q.id}
+                      className="flex items-center justify-between gap-3 rounded-xl px-4 py-3 bg-secondary/50 border border-border"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-sm truncate">{serverNames.get(q.planCode) || q.planCode}</p>
+                        <p className="text-[11px] text-muted-foreground truncate mt-0.5" title={q.options?.join(" · ") || "默认配置"}>
+                          {config.length > 0 ? config.join(" · ") : "默认配置"}
+                        </p>
+                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
+                          <span className="inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {q.datacenter.toUpperCase()}
+                          </span>
+                          <span className="text-muted-foreground/50">·</span>
+                          <span>第 {q.retryCount + 1} 次尝试</span>
+                        </div>
                       </div>
+                      <QueueStatusChip status={q.status} />
                     </div>
-                    <QueueStatusChip status={q.status} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>
