@@ -41,6 +41,7 @@ import {
   type PurchaseTiming,
 } from "@/hooks/use-queue";
 import { useServers } from "@/hooks/use-servers";
+import { classifyOption, formatOptionDisplay } from "@/lib/option-groups";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useAccounts, findAccountByID } from "@/hooks/use-accounts";
@@ -673,6 +674,13 @@ function CreateQueueDialog({
   );
 }
 
+function formatQueueOptions(options: string[]): string {
+  return options.map((value) => {
+    const option = { value, label: value };
+    return formatOptionDisplay(option, classifyOption(option));
+  }).join(" · ");
+}
+
 function QueueRow({
   item,
   timing,
@@ -734,6 +742,7 @@ function QueueRow({
             )}
             <TimingChip totalMs={timing?.totalMs} phases={timing?.phases} />
           </div>
+          {item.options?.length ? <p className="mb-1 truncate text-[11px] text-muted-foreground">{formatQueueOptions(item.options)}</p> : null}
           <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
             <Clock className="w-3 h-3" />
             {/* failed / completed 是终态,不会再重试 —— 再显示"下次尝试"会让用户以为还在排队。

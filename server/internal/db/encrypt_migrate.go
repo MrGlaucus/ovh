@@ -23,17 +23,22 @@ func (db *DB) EncryptExistingSecrets() (migrated int, err error) {
 
 	// ---- 1. ovh_accounts 的三个凭据列 ----
 	type row struct {
-		ID          string `db:"id"`
-		AppKey      string `db:"app_key"`
-		AppSecret   string `db:"app_secret"`
-		ConsumerKey string `db:"consumer_key"`
+		ID                 string `db:"id"`
+		AppKey             string `db:"app_key"`
+		AppSecret          string `db:"app_secret"`
+		ConsumerKey        string `db:"consumer_key"`
+		ProxyURL           string `db:"proxy_url"`
+		ExpectedOutboundIP string `db:"expected_outbound_ip"`
+		ActualOutboundIP   string `db:"actual_outbound_ip"`
 	}
 	var rows []row
-	if err := db.Select(&rows, `SELECT id, app_key, app_secret, consumer_key FROM ovh_accounts`); err != nil {
+	if err := db.Select(&rows, `SELECT id, app_key, app_secret, consumer_key, proxy_url, expected_outbound_ip, actual_outbound_ip FROM ovh_accounts`); err != nil {
 		return 0, fmt.Errorf("读取账户失败: %w", err)
 	}
 	for _, r := range rows {
-		if secret.IsEncrypted(r.AppKey) && secret.IsEncrypted(r.AppSecret) && secret.IsEncrypted(r.ConsumerKey) {
+		encryptedOrEmpty := func(v string) bool { return v == "" || secret.IsEncrypted(v) }
+		if encryptedOrEmpty(r.AppKey) && encryptedOrEmpty(r.AppSecret) && encryptedOrEmpty(r.ConsumerKey) &&
+			encryptedOrEmpty(r.ProxyURL) && encryptedOrEmpty(r.ExpectedOutboundIP) && encryptedOrEmpty(r.ActualOutboundIP) {
 			continue // 已经加密过
 		}
 		// 只加密还是明文的那几列,避免把密文再加密一层
@@ -44,8 +49,8 @@ func (db *DB) EncryptExistingSecrets() (migrated int, err error) {
 			return secret.Encrypt(v)
 		}
 		if _, uerr := db.Exec(
-			`UPDATE ovh_accounts SET app_key = ?, app_secret = ?, consumer_key = ? WHERE id = ?`,
-			enc(r.AppKey), enc(r.AppSecret), enc(r.ConsumerKey), r.ID,
+			`UPDATE ovh_accounts SET app_key = ?, app_secret = ?, consumer_key = ?, proxy_url = ?, expected_outbound_ip = ?, actual_outbound_ip = ? WHERE id = ?`,
+			enc(r.AppKey), enc(r.AppSecret), enc(r.ConsumerKey), enc(r.ProxyURL), enc(r.ExpectedOutboundIP), enc(r.ActualOutboundIP), r.ID,
 		); uerr != nil {
 			// 记下来但继续:一条坏数据不该让整个启动流程失败
 			err = fmt.Errorf("加密账户 %s 失败: %w", r.ID, uerr)

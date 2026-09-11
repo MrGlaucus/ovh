@@ -24,6 +24,7 @@ import { useNotifyChannels, useTestNotification } from "@/hooks/use-notify-chann
 import { cn } from "@/lib/utils";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import { apiBaseUrlForEndpoint } from "@/lib/ovh-regions";
+import { api } from "@/lib/api";
 import {
   useAccounts,
   useCreateAccount,
@@ -691,13 +692,34 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
     appSecret: "",
     consumerKey: "",
     proxyUrl: "",
+    expectedOutboundIp: acc?.expectedOutboundIp || "",
     zone: acc?.zone || "IE",
   });
+  const [checkingOutboundIP, setCheckingOutboundIP] = useState(false);
   const set = (k: keyof typeof form, v: string) => setForm((p) => ({ ...p, [k]: v }));
   // 新建时三个凭据必填；编辑时可以全留空（只改名字/区域）
   const canSubmit = isEdit
-    ? !!form.name.trim()
-    : form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim();
+    ? !!form.name.trim() && !!form.expectedOutboundIp.trim()
+    : form.name.trim() && form.appKey.trim() && form.appSecret.trim() && form.consumerKey.trim() && form.expectedOutboundIp.trim();
+
+  const checkOutboundIP = async () => {
+    if (!form.expectedOutboundIp.trim()) {
+      toast.error("请先填写预期出口 IPv4");
+      return;
+    }
+    setCheckingOutboundIP(true);
+    try {
+      const result = await api.post<{ actualOutboundIp: string }>("/accounts/outbound-ip/check", {
+        proxyUrl: form.proxyUrl.trim(),
+        expectedOutboundIp: form.expectedOutboundIp.trim(),
+      });
+      toast.success(`出口 IP 匹配：${result.data.actualOutboundIp}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.error || "出口 IP 检测失败，OVH 请求将保持阻断");
+    } finally {
+      setCheckingOutboundIP(false);
+    }
+  };
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -708,6 +730,7 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
       appSecret: form.appSecret.trim(),
       consumerKey: form.consumerKey.trim(),
       proxyUrl: form.proxyUrl.trim(),
+      expectedOutboundIp: form.expectedOutboundIp.trim(),
       zone: form.zone,
       endpoint: endpointForZone(form.zone),
     };
@@ -724,7 +747,7 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
       <DialogContent className="w-[95vw] sm:w-full sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? `编辑账户 ${acc!.name}` : "添加 OVH 账户"}</DialogTitle>
-          <DialogDescription>填三个 OVH 密钥 + 选子公司,保存时会自动调 /me 验证凭据。</DialogDescription>
+          <DialogDescription>填三个 OVH 密钥、子公司和预期出口 IPv4。保存后先校验出口 IP，匹配后才允许验证凭据与调用 OVH。</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
           <Field label="账户名称 *">
@@ -751,6 +774,12 @@ function AccountDialog({ acc, onClose }: { acc?: OVHAccount; onClose: () => void
           <Field label="账户级 OVH 代理" hint="仅该账户的 OVH API 走此代理；留空=该账户明确直连。代理不可用时请求会被阻断，绝不回退直连。">
             <Input type="password" value={form.proxyUrl} onChange={(e) => set("proxyUrl", e.target.value)}
               placeholder={isEdit && acc?.proxyUrl ? `${acc.proxyUrl}（留空=保持不变）` : "socks5://user:pass@host:port（留空=直连）"} />
+          </Field>
+          <Field label="预期出口 IPv4 *" hint="所有带账户签名的 OVH 请求都会先校验此账户通过上方代理（或直连）的实际出口 IP；不一致即阻断。">
+            <Input value={form.expectedOutboundIp} onChange={(e) => set("expectedOutboundIp", e.target.value)} placeholder="例如 203.0.113.10" inputMode="numeric" />
+            <Button type="button" variant="outline" size="sm" className="mt-2" disabled={checkingOutboundIP} onClick={checkOutboundIP}>
+              {checkingOutboundIP ? "正在检测…" : "检测出口 IP"}
+            </Button>
           </Field>
           <Field
             label="OVH 子公司 (Zone)"

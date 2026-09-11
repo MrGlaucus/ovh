@@ -171,8 +171,21 @@ func enumerateConfigs(state *app.State, planCode, accountID string) []configChoi
 func startWatchFlow(state *app.State, mon *monitor.Monitor, chatID interface{}, messageID int64,
 	planCode string, dcs []string) bool {
 
-	configs := enumerateConfigs(state, planCode, "")
-	accounts := listAccounts(state)
+	// 逐账户确认该 planCode 是否属于其区域。OVH 跨区查询常返回空数组而
+	// 非错误，不能把所有账户都给用户选，否则自动下单会静默落到错误站点。
+	allAccounts := listAccounts(state)
+	accounts := make([]types.OVHAccount, 0, len(allAccounts))
+	configs := []configChoice{}
+	for _, account := range allAccounts {
+		choices := enumerateConfigs(state, planCode, account.ID)
+		if len(choices) == 0 {
+			continue
+		}
+		accounts = append(accounts, account)
+		if len(configs) == 0 {
+			configs = choices
+		}
+	}
 
 	// 只有一套配置、且只有一个账户 —— 没什么可选的，让调用方走直接路径
 	if len(configs) <= 1 && len(accounts) <= 1 {

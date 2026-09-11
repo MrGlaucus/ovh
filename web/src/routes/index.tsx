@@ -35,6 +35,18 @@ export const Route = createFileRoute("/")({
   component: DashboardPage,
 });
 
+function formatQueueOptions(options: string[]): string {
+  return options.map((option) => {
+    const memory = option.match(/^ram-(\d+)g(?:-ecc)?-(\d+)/i);
+    if (memory) return `${memory[1]}GB${option.includes("ecc") ? " ECC" : ""} RAM-${memory[2]}`;
+    const storage = option.match(/(?:soft)?raid-(\d+)x(\d+)(nvme|ssd|hdd|sa)/i);
+    if (storage) return `${storage[1]}×${storage[2]}GB ${storage[3].toUpperCase()}`;
+    const bandwidth = option.match(/^bandwidth-(\d+)/i);
+    if (bandwidth) return `${bandwidth[1]} Mbps`;
+    return option;
+  }).join(" · ");
+}
+
 function DashboardPage() {
   const stats = useStats();
   const queue = useQueueList();
@@ -160,6 +172,7 @@ function DashboardPage() {
                   >
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-sm truncate">{q.planCode}</p>
+                      {q.options?.length ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{formatQueueOptions(q.options)}</p> : null}
                       <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
                         <span className="inline-flex items-center gap-1">
                           <Clock className="w-3 h-3" />

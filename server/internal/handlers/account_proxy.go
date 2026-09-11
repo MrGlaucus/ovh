@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -8,11 +9,14 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/proxy"
+	"github.com/ovh-buy/server/internal/types"
 )
 
-// AccountProxyStatus 检查一个账户的 OVH 专用代理。配置了代理时使用该账户独立
-// Transport 请求 /me；代理错误绝不会走直连。直连账户只回显 direct，不把它伪装成代理可用。
+// AccountProxyStatus returns the persisted account-specific outbound-IP state.
+// It is deliberately read-only: rendering the account switcher must not send a
+// signed OVH request.
 func AccountProxyStatus(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := strings.TrimSpace(c.Param("id"))
@@ -21,22 +25,103 @@ func AccountProxyStatus(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "账户不存在"})
 			return
 		}
-		if strings.TrimSpace(acc.ProxyURL) == "" {
-			c.JSON(http.StatusOK, gin.H{"accountId": id, "mode": "direct", "configured": false, "healthy": true})
+		c.JSON(http.StatusOK, outboundIPResponse(acc, acc.OutboundIPStatus == "verified", 0, ""))
+	}
+}
+
+// CheckAccountProxyStatus 手动检测账户出口 IP。探测使用独立的账户专属 HTTP client，
+// 只有 IP 与预期一致才会继续发送带签名的 OVH /me 请求。
+func CheckAccountProxyStatus(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := strings.TrimSpace(c.Param("id"))
+		acc, ok := state.FindAccount(id)
+		if !ok || acc.ID != id {
+			c.JSON(http.StatusNotFound, gin.H{"error": "账户不存在"})
 			return
 		}
 		start := time.Now()
-		client, err := state.OVH.ClientFor(id)
-		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"accountId": id, "mode": "proxy", "configured": true, "healthy": false, "proxy": proxy.Mask(acc.ProxyURL), "error": err.Error()})
+		if err := state.OVH.CheckOutboundIP(id, true); err != nil {
+			acc, _ = state.FindAccount(id)
+			c.JSON(http.StatusServiceUnavailable, outboundIPResponse(acc, false, time.Since(start).Milliseconds(), err.Error()))
 			return
 		}
-		var me map[string]interface{}
-		err = client.Get("/me", &me)
-		if err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"accountId": id, "mode": "proxy", "configured": true, "healthy": false, "proxy": proxy.Mask(acc.ProxyURL), "error": "账户代理不可用，OVH 请求已阻断"})
+		valid, warning := verifyAccountCreds(state, id)
+		acc, _ = state.FindAccount(id)
+		response := outboundIPResponse(acc, valid, time.Since(start).Milliseconds(), "")
+		if warning != "" {
+			response["subsidiaryWarning"] = warning
+		}
+		if !valid {
+			response["error"] = "出口 IP 已验证，但 OVH 凭据验证失败"
+			c.JSON(http.StatusServiceUnavailable, response)
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"accountId": id, "mode": "proxy", "configured": true, "healthy": true, "proxy": proxy.Mask(acc.ProxyURL), "latencyMs": time.Since(start).Milliseconds()})
+		c.JSON(http.StatusOK, response)
 	}
+}
+
+// CheckProspectiveOutboundIP validates a form's expected IP through its proxy
+// without saving anything or sending an OVH credential.
+func CheckProspectiveOutboundIP() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var body struct {
+			ProxyURL           string `json:"proxyUrl"`
+			ExpectedOutboundIP string `json:"expectedOutboundIp"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		body.ProxyURL = strings.TrimSpace(body.ProxyURL)
+		body.ExpectedOutboundIP = strings.TrimSpace(body.ExpectedOutboundIP)
+		ip := net.ParseIP(body.ExpectedOutboundIP)
+		if ip == nil || ip.To4() == nil || ip.String() != body.ExpectedOutboundIP {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "预期出口 IP 必须是单个 IPv4 地址"})
+			return
+		}
+		if body.ProxyURL != "" {
+			if _, err := proxy.ParseAccountProxy(body.ProxyURL); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		actual, err := ovh.ProbeOutboundIP(c.Request.Context(), body.ProxyURL)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"expectedOutboundIp": body.ExpectedOutboundIP, "outboundIpStatus": "blocked", "blocked": true, "error": err.Error()})
+			return
+		}
+		if actual != body.ExpectedOutboundIP {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"expectedOutboundIp": body.ExpectedOutboundIP, "actualOutboundIp": actual, "outboundIpStatus": "blocked", "blocked": true, "error": "实际出口 IP 与预期不一致"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"expectedOutboundIp": body.ExpectedOutboundIP, "actualOutboundIp": actual, "outboundIpStatus": "verified", "blocked": false})
+	}
+}
+
+func outboundIPResponse(acc types.OVHAccount, healthy bool, latencyMS int64, errText string) gin.H {
+	configured := strings.TrimSpace(acc.ProxyURL) != ""
+	mode := "direct"
+	if configured {
+		mode = "proxy"
+	}
+	response := gin.H{
+		"accountId":           acc.ID,
+		"mode":                mode,
+		"configured":          configured,
+		"healthy":             healthy,
+		"expectedOutboundIp":  acc.ExpectedOutboundIP,
+		"actualOutboundIp":    acc.ActualOutboundIP,
+		"outboundIpStatus":    acc.OutboundIPStatus,
+		"outboundIpCheckedAt": acc.OutboundIPCheckedAt,
+		"outboundIpError":     acc.OutboundIPError,
+		"blocked":             acc.OutboundIPStatus != "verified",
+		"latencyMs":           latencyMS,
+	}
+	if configured {
+		response["proxy"] = proxy.Mask(acc.ProxyURL)
+	}
+	if errText != "" {
+		response["error"] = errText
+	}
+	return response
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/monitor"
 	"github.com/ovh-buy/server/internal/ovh"
@@ -193,6 +194,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	// btnAccountID:发通知时记下的「触发订阅所用账户」。planCode 是分区的,
 	// 用它下单才不会把欧区机型落到美区账户上。空 = 老按钮/无账户维度 → 退回默认账户。
 	btnAccountID := ""
+	targetFQN := ""
 	var options []string
 	if optsRaw, ok := callbackObj["o"]; ok {
 		options = toStringSlice(optsRaw)
@@ -222,6 +224,10 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			dc = row.Datacenter
 			options = db.ParseTelegramButtonOptions(row.Options)
 			btnAccountID = strings.TrimSpace(row.AccountID)
+			var configInfo map[string]interface{}
+			if json.Unmarshal([]byte(row.ConfigInfo), &configInfo) == nil {
+				targetFQN, _ = configInfo["fqn"].(string)
+			}
 			state.Logger.Info(fmt.Sprintf("✅ 按钮已认领: id=%s, %s@%s, options=%v, account=%s",
 				buttonID, planCode, dc, options, btnAccountID), "telegram")
 		} else {
@@ -273,11 +279,15 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	// 用户却收到一句"已添加到抢购队列"，等于把失败藏到几十次重试之后。
 	acc, hasAcc := state.FindAccount(btnAccountID)
 	if !hasAcc && btnAccountID != "" {
-		// 按钮里的账户已被删除 —— 不能直接失败(用户还有别的账户可下),
-		// 但必须落一条 Warn:退回默认账户很可能就是跨区下错单的那一刻。
-		state.Logger.Warn("按钮记录的账户已不存在，退回默认账户: "+btnAccountID, "telegram")
-		btnAccountID = ""
-		acc, hasAcc = state.FindAccount("")
+		// 一键下单按钮绑定的账户被删除后必须 fail-closed。回退默认账户会让
+		// 原本按某个区域库存生成的按钮跨区下单。
+		if claimed {
+			_ = state.DB.UnclaimTelegramButton(buttonID)
+		}
+		state.Logger.Warn("按钮记录的账户已不存在，拒绝下单: "+btnAccountID, "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "绑定账户已删除，请重新选择账户", true)
+		u.JSON(http.StatusGone, gin.H{"ok": false, "error": "account_not_found"})
+		return
 	}
 	if !hasAcc {
 		if claimed {
@@ -290,6 +300,27 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		return
 	}
 	accountID := acc.ID
+	// 通知可能在用户点击前已过时。入队前针对绑定账户重新拉取精确 FQN
+	// 配置和机房状态；查不到、配置不符或已无货都 fail-closed，不能把旧库存
+	// 通知变成一次盲目下单。
+	availableNow := false
+	for _, cfg := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID) {
+		if cfg == nil || (targetFQN != "" && cfg.FQN != targetFQN) || !monitor.ConfigMatchesFilter(options, cfg.Options) {
+			continue
+		}
+		if catalog.IsAvailableForOrder(cfg.Datacenters[dc]) {
+			availableNow = true
+			break
+		}
+	}
+	if !availableNow {
+		if claimed {
+			_ = state.DB.UnclaimTelegramButton(buttonID)
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "库存已变化，请等待下一条通知", true)
+		u.JSON(http.StatusConflict, gin.H{"ok": false, "error": "inventory_unavailable"})
+		return
+	}
 	// planCode 是分区的：欧区 planCode 落到美区账户上，OVH 只会返回空库存而不报错。
 	// 按钮带账户时这里就是发通知时那个订阅的账户；退回默认账户的情况仍可能选错，
 	// 所以把"这一单会用哪个账户、哪个子公司/大区"明确写进日志和回复，

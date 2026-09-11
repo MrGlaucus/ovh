@@ -13,6 +13,11 @@ export interface OVHAccount {
   iam: string;
   /** 脱敏后的账户 OVH API 专用代理；空=明确直连 */
   proxyUrl: string;
+  expectedOutboundIp: string;
+  actualOutboundIp: string;
+  outboundIpStatus: string;
+  outboundIpCheckedAt: string;
+  outboundIpError: string;
   isDefault: boolean;
   createdAt: string;
 }
@@ -26,6 +31,7 @@ export interface AccountInput {
   consumerKey: string;
   iam?: string;
   proxyUrl?: string;
+  expectedOutboundIp: string;
   setDefault?: boolean;
 }
 

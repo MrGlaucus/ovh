@@ -181,6 +181,7 @@ func NewState(paths storage.Paths, cfg *config.Store, lg *logger.Logger, sqliteD
 	}
 	// Factory 闭包注入 lookup,允许按 id 查账户(空 id → 默认)
 	s.OVH = ovh.NewFactory(cfg, s.FindAccount)
+	s.OVH.SetOutboundIPStatusWriter(s.UpdateOutboundIPStatus)
 	return s
 }
 
@@ -232,6 +233,26 @@ func (s *State) ServerCacheKey(accountID string) string {
 		return DefaultServerBucket
 	}
 	return strings.ToLower(acc.Endpoint) + "|" + strings.ToUpper(acc.Zone)
+}
+
+// UpdateOutboundIPStatus persists a probe result then updates the in-memory
+// account copy. Credentials are intentionally not touched by this path.
+func (s *State) UpdateOutboundIPStatus(id, actualIP, status, checkedAt, reason string) error {
+	if err := s.DB.UpdateOutboundIPStatus(id, actualIP, status, checkedAt, reason); err != nil {
+		return err
+	}
+	s.AccountsMu.Lock()
+	for i := range s.Accounts {
+		if s.Accounts[i].ID == id {
+			s.Accounts[i].ActualOutboundIP = actualIP
+			s.Accounts[i].OutboundIPStatus = status
+			s.Accounts[i].OutboundIPCheckedAt = checkedAt
+			s.Accounts[i].OutboundIPError = reason
+			break
+		}
+	}
+	s.AccountsMu.Unlock()
+	return nil
 }
 
 // ReloadAccounts 从 SQLite 重新加载账户到内存,并把整个 OVH client 缓存清掉,

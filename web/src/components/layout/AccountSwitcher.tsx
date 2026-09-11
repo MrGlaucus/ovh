@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { Check, ChevronsUpDown, Plus, User } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useAccounts } from "@/hooks/use-accounts";
@@ -26,12 +27,13 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
   // 受控:选完要自己关掉。Radix Popover 默认不会因为点了内容里的按钮就收起,
   // 不管的话选完账户面板还杵在那儿挡着导航。
   const [open, setOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const list = accounts.data || [];
   const active = list.find((a) => a.id === activeId);
   const proxyStatus = useQuery({
     queryKey: ["account", active?.id, "proxy-status"],
-    queryFn: async () => (await api.get<{ configured: boolean; healthy: boolean; mode: string; proxy?: string; latencyMs?: number }>(`/accounts/${active!.id}/proxy-status`)).data,
+    queryFn: async () => (await api.get<{ configured: boolean; healthy: boolean; mode: string; proxy?: string; latencyMs?: number; expectedOutboundIp: string; actualOutboundIp: string; outboundIpStatus: string; outboundIpCheckedAt: string; outboundIpError: string; blocked: boolean }>(`/accounts/${active!.id}/proxy-status`)).data,
     enabled: !!active?.id,
     refetchInterval: 60_000,
   });
@@ -145,13 +147,37 @@ export function AccountSwitcher({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         </PopoverContent>
       </Popover>
-      <div className={cn("mt-1.5 px-2 py-1 rounded-md text-[10px] flex items-center gap-1.5", !active?.proxyUrl ? "text-muted-foreground bg-muted/50" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "text-destructive bg-destructive/5" : "text-success bg-success/5")} title={proxyStatus.data?.proxy || undefined}>
-        <span className={cn("w-1.5 h-1.5 rounded-full", !active?.proxyUrl ? "bg-muted-foreground" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "bg-destructive" : "bg-success")} />
-        {!active?.proxyUrl ? "账号代理：直连" : proxyStatus.isPending ? "账号代理：检测中" : proxyStatus.isError || proxyStatus.data?.healthy === false ? "账号代理：不可用（OVH 已阻断）" : `账号代理：已连接${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`}
+      <div className={cn("mt-1.5 px-2 py-1 rounded-md text-[10px] flex items-center gap-1.5", proxyStatus.isPending ? "text-muted-foreground bg-muted/50" : proxyStatus.isError || proxyStatus.data?.blocked ? "text-destructive bg-destructive/5" : "text-success bg-success/5")} title={proxyStatus.data?.proxy || undefined}>
+        <span className={cn("w-1.5 h-1.5 rounded-full", proxyStatus.isPending ? "bg-muted-foreground" : proxyStatus.isError || proxyStatus.data?.blocked ? "bg-destructive" : "bg-success")} />
+        {proxyStatus.isPending ? "出口 IP：检测中" : proxyStatus.isError || proxyStatus.data?.blocked ? "出口 IP：已阻断" : "出口 IP：已验证"}
       </div>
-      <p className="px-0.5 mt-1.5 text-[10px] text-muted-foreground leading-snug">
-        机型、价格、库存、控制台都按这个账户所在站点显示
-      </p>
+      <div className="mt-1.5 rounded-md border border-border/60 px-2 py-1.5 text-[10px] leading-relaxed">
+        <p>预期出口 IP：{active?.expectedOutboundIp || "未配置"}</p>
+        <p>当前出口 IP：{proxyStatus.data?.actualOutboundIp || active?.actualOutboundIp || "待检测"}</p>
+        {proxyStatus.data?.outboundIpCheckedAt && <p className="text-muted-foreground">最近检测：{new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleString()}</p>}
+        {(proxyStatus.isError || proxyStatus.data?.blocked) && <p className="mt-1 text-destructive">出口不一致或查询失败时，不会发送携带该账户签名的 OVH 请求。</p>}
+      </div>
+      <button
+        type="button"
+        disabled={!active?.id || checking}
+        onClick={async () => {
+          if (!active?.id) return;
+          setChecking(true);
+          try {
+            await api.post(`/accounts/${active.id}/proxy-status`);
+            toast.success("出口 IP 已检测");
+          } catch (error: any) {
+            toast.error(error?.response?.data?.error || "出口 IP 检测失败，OVH 请求保持阻断");
+          } finally {
+            setChecking(false);
+            void proxyStatus.refetch();
+          }
+        }}
+        className="mt-1.5 w-full rounded-md border border-border px-2 py-1 text-[10px] hover:bg-muted disabled:opacity-60"
+      >
+        {checking ? "正在检测出口 IP…" : "重新检测出口 IP"}
+      </button>
+      <p className="px-0.5 mt-1.5 text-[10px] text-muted-foreground leading-snug">机型、价格、库存、控制台都按这个账户所在站点显示</p>
     </div>
   );
 }

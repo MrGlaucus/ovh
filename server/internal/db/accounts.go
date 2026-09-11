@@ -9,17 +9,22 @@ import (
 )
 
 type accountRow struct {
-	ID          string `db:"id"`
-	Name        string `db:"name"`
-	Endpoint    string `db:"endpoint"`
-	Zone        string `db:"zone"`
-	AppKey      string `db:"app_key"`
-	AppSecret   string `db:"app_secret"`
-	ConsumerKey string `db:"consumer_key"`
-	IAM         string `db:"iam"`
-	ProxyURL    string `db:"proxy_url"`
-	IsDefault   int    `db:"is_default"`
-	CreatedAt   string `db:"created_at"`
+	ID                  string `db:"id"`
+	Name                string `db:"name"`
+	Endpoint            string `db:"endpoint"`
+	Zone                string `db:"zone"`
+	AppKey              string `db:"app_key"`
+	AppSecret           string `db:"app_secret"`
+	ConsumerKey         string `db:"consumer_key"`
+	IAM                 string `db:"iam"`
+	ProxyURL            string `db:"proxy_url"`
+	ExpectedOutboundIP  string `db:"expected_outbound_ip"`
+	ActualOutboundIP    string `db:"actual_outbound_ip"`
+	OutboundIPStatus    string `db:"outbound_ip_status"`
+	OutboundIPCheckedAt string `db:"outbound_ip_checked_at"`
+	OutboundIPError     string `db:"outbound_ip_error"`
+	IsDefault           int    `db:"is_default"`
+	CreatedAt           string `db:"created_at"`
 }
 
 // rowToAccount 出库时解密三个凭据字段。
@@ -36,17 +41,22 @@ func rowToAccount(r accountRow) types.OVHAccount {
 		return out
 	}
 	return types.OVHAccount{
-		ID:          r.ID,
-		Name:        r.Name,
-		Endpoint:    r.Endpoint,
-		Zone:        r.Zone,
-		AppKey:      dec(r.AppKey),
-		AppSecret:   dec(r.AppSecret),
-		ConsumerKey: dec(r.ConsumerKey),
-		IAM:         r.IAM,
-		ProxyURL:    dec(r.ProxyURL),
-		IsDefault:   r.IsDefault == 1,
-		CreatedAt:   r.CreatedAt,
+		ID:                  r.ID,
+		Name:                r.Name,
+		Endpoint:            r.Endpoint,
+		Zone:                r.Zone,
+		AppKey:              dec(r.AppKey),
+		AppSecret:           dec(r.AppSecret),
+		ConsumerKey:         dec(r.ConsumerKey),
+		IAM:                 r.IAM,
+		ProxyURL:            dec(r.ProxyURL),
+		ExpectedOutboundIP:  dec(r.ExpectedOutboundIP),
+		ActualOutboundIP:    dec(r.ActualOutboundIP),
+		OutboundIPStatus:    r.OutboundIPStatus,
+		OutboundIPCheckedAt: r.OutboundIPCheckedAt,
+		OutboundIPError:     r.OutboundIPError,
+		IsDefault:           r.IsDefault == 1,
+		CreatedAt:           r.CreatedAt,
 	}
 }
 
@@ -57,17 +67,22 @@ func accountToRow(a types.OVHAccount) accountRow {
 		bi = 1
 	}
 	return accountRow{
-		ID:          a.ID,
-		Name:        a.Name,
-		Endpoint:    a.Endpoint,
-		Zone:        a.Zone,
-		AppKey:      secret.Encrypt(a.AppKey),
-		AppSecret:   secret.Encrypt(a.AppSecret),
-		ConsumerKey: secret.Encrypt(a.ConsumerKey),
-		IAM:         a.IAM,
-		ProxyURL:    secret.Encrypt(a.ProxyURL),
-		IsDefault:   bi,
-		CreatedAt:   a.CreatedAt,
+		ID:                  a.ID,
+		Name:                a.Name,
+		Endpoint:            a.Endpoint,
+		Zone:                a.Zone,
+		AppKey:              secret.Encrypt(a.AppKey),
+		AppSecret:           secret.Encrypt(a.AppSecret),
+		ConsumerKey:         secret.Encrypt(a.ConsumerKey),
+		IAM:                 a.IAM,
+		ProxyURL:            secret.Encrypt(a.ProxyURL),
+		ExpectedOutboundIP:  secret.Encrypt(a.ExpectedOutboundIP),
+		ActualOutboundIP:    secret.Encrypt(a.ActualOutboundIP),
+		OutboundIPStatus:    a.OutboundIPStatus,
+		OutboundIPCheckedAt: a.OutboundIPCheckedAt,
+		OutboundIPError:     a.OutboundIPError,
+		IsDefault:           bi,
+		CreatedAt:           a.CreatedAt,
 	}
 }
 
@@ -135,9 +150,9 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 	r := accountToRow(a)
 	_, err = tx.NamedExec(`
 		INSERT INTO ovh_accounts
-		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, proxy_url, is_default, created_at)
+		(id, name, endpoint, zone, app_key, app_secret, consumer_key, iam, proxy_url, expected_outbound_ip, actual_outbound_ip, outbound_ip_status, outbound_ip_checked_at, outbound_ip_error, is_default, created_at)
 		VALUES
-		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :proxy_url, :is_default, :created_at)
+		(:id, :name, :endpoint, :zone, :app_key, :app_secret, :consumer_key, :iam, :proxy_url, :expected_outbound_ip, :actual_outbound_ip, :outbound_ip_status, :outbound_ip_checked_at, :outbound_ip_error, :is_default, :created_at)
 		ON CONFLICT(id) DO UPDATE SET
 		  name         = excluded.name,
 		  endpoint     = excluded.endpoint,
@@ -145,14 +160,34 @@ func (db *DB) UpsertAccount(a types.OVHAccount) error {
 		  app_key      = excluded.app_key,
 		  app_secret   = excluded.app_secret,
 		  consumer_key = excluded.consumer_key,
-		  iam          = excluded.iam,
-		  proxy_url    = excluded.proxy_url,
-		  is_default   = excluded.is_default
+		  iam                    = excluded.iam,
+		  proxy_url              = excluded.proxy_url,
+		  expected_outbound_ip   = excluded.expected_outbound_ip,
+		  actual_outbound_ip     = excluded.actual_outbound_ip,
+		  outbound_ip_status     = excluded.outbound_ip_status,
+		  outbound_ip_checked_at = excluded.outbound_ip_checked_at,
+		  outbound_ip_error      = excluded.outbound_ip_error,
+		  is_default             = excluded.is_default
 	`, r)
 	if err != nil {
 		return fmt.Errorf("upsert account %s: %w", a.ID, err)
 	}
 	return tx.Commit()
+}
+
+// UpdateOutboundIPStatus updates only IP verification state. It deliberately
+// avoids UpsertAccount so a background probe can never overwrite credentials.
+func (db *DB) UpdateOutboundIPStatus(id, actualIP, status, checkedAt, reason string) error {
+	result, err := db.Exec(`UPDATE ovh_accounts
+		SET actual_outbound_ip = ?, outbound_ip_status = ?, outbound_ip_checked_at = ?, outbound_ip_error = ?
+		WHERE id = ?`, secret.Encrypt(actualIP), status, checkedAt, reason, id)
+	if err != nil {
+		return fmt.Errorf("update outbound IP status for %s: %w", id, err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("account %s not found", id)
+	}
+	return nil
 }
 
 // SetDefaultAccount 把指定账户标为默认,其他清 0

@@ -3,6 +3,7 @@ package secret
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,6 +118,9 @@ func TestKeyFromEnv不落盘(t *testing.T) {
 // 退回 .dbkey 时权限必须是 0600 —— 同机器其它用户不能读。
 // (默认路径现在是写进 .env,那条的权限由 TestInit没密钥时写进配置文件 盯着)
 func TestKeyFile权限(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不提供 POSIX 0600 权限语义")
+	}
 	dir := t.TempDir()
 	t.Setenv(KeyEnv, "")
 	os.Unsetenv(KeyEnv)
@@ -175,9 +179,11 @@ func TestInit没密钥时写进配置文件(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, keyFile)); err == nil {
 		t.Error("新装机器不该再生成 data/.dbkey")
 	}
-	// 0600:同机器上别的用户不该读得到
-	if st, _ := os.Stat(env); st != nil && st.Mode().Perm() != 0o600 {
-		t.Errorf("配置文件权限应该是 0600,实际 %o", st.Mode().Perm())
+	// Windows 不提供 POSIX 0600 权限语义；Unix 上必须保证同机器其它用户不能读。
+	if runtime.GOOS != "windows" {
+		if st, _ := os.Stat(env); st != nil && st.Mode().Perm() != 0o600 {
+			t.Errorf("配置文件权限应该是 0600,实际 %o", st.Mode().Perm())
+		}
 	}
 }
 

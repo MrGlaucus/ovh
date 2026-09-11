@@ -435,6 +435,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			"memory":  memory,
 			"storage": storage,
 			"display": configDisplay,
+			"fqn":     configData.FQN,
 			"options": configData.Options,
 		}
 		// 询价必须走上面选中的那个账户:验价账户和下单账户不一致时,
@@ -743,7 +744,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				errIfNoPrice = priceFetchError
 			}
 			m.SendAvailabilityAlertGrouped(planCode, availDCs, configInfoWithPrice, cfg.ServerName,
-				errIfNoPrice, traceID, configTraceForNotif)
+				errIfNoPrice, traceID, configTraceForNotif, choice.accountID)
 
 			entries := make([]HistoryEntry, 0, len(availables))
 			for _, n := range availables {

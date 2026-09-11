@@ -27,6 +27,7 @@ import (
 	"github.com/ovh-buy/server/internal/secret"
 	"github.com/ovh-buy/server/internal/storage"
 	"github.com/ovh-buy/server/internal/telegram"
+	"github.com/ovh-buy/server/internal/types"
 	"github.com/ovh-buy/server/internal/updater"
 )
 
@@ -146,6 +147,7 @@ func main() {
 	handlers.SetMonitorRef(mon)
 	mon.LoadFromDB()
 	console.Info("监控就绪", "checkInterval", mon.CheckInterval())
+	startOutboundIPGuardian(state)
 
 	// Gin
 	if mode := os.Getenv("GIN_MODE"); mode != "" {
@@ -266,7 +268,9 @@ func main() {
 		// 出站代理配置与各 host 连通性(右上角指示器轮询 / 手动重检)
 		api.GET("/proxy/status", handlers.GetProxyStatus())
 		api.POST("/proxy/check", handlers.CheckProxy())
+		api.POST("/accounts/outbound-ip/check", handlers.CheckProspectiveOutboundIP())
 		api.GET("/accounts/:id/proxy-status", handlers.AccountProxyStatus(state))
+		api.POST("/accounts/:id/proxy-status", handlers.CheckAccountProxyStatus(state))
 		api.GET("/version", handlers.GetVersion(state))
 		api.GET("/version/check-update", handlers.CheckUpdate(state))
 		// 在线更新:下载 → 校验 → 替换自己 → 自动重启。gracefulRestart 在下面赋值,
@@ -667,6 +671,30 @@ func isTrue(v string) bool {
 		return true
 	}
 	return false
+}
+
+// startOutboundIPGuardian continuously refreshes every account's independent
+// outbound-IP check. A failed probe remains fail-closed and is retried on the
+// next tick, allowing automatic recovery after a temporary provider outage.
+func startOutboundIPGuardian(state *app.State) {
+	checkAll := func() {
+		state.AccountsMu.RLock()
+		accounts := append([]types.OVHAccount(nil), state.Accounts...)
+		state.AccountsMu.RUnlock()
+		for _, account := range accounts {
+			if err := state.OVH.CheckOutboundIP(account.ID, true); err != nil {
+				state.Logger.Warn("账户出口 IP 校验未通过: "+account.Name+": "+err.Error(), "outbound-ip")
+			}
+		}
+	}
+	go func() {
+		checkAll()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			checkAll()
+		}
+	}()
 }
 
 // allowedOrigins CORS 白名单:本机的前端来源 + 用户显式声明的。

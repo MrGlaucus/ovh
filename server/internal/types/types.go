@@ -60,9 +60,14 @@ type OVHAccount struct {
 	ConsumerKey string `json:"consumerKey"`
 	IAM         string `json:"iam"` // go-ovh-<zone-lower>
 	// ProxyURL 是此账户 OVH API 专用代理。空值表示该账户显式直连；非空时请求绝不回退直连。
-	ProxyURL  string `json:"proxyUrl"`
-	IsDefault bool   `json:"isDefault"` // 默认账户（未指定时 fallback 用它）
-	CreatedAt string `json:"createdAt"`
+	ProxyURL            string `json:"proxyUrl"`
+	ExpectedOutboundIP  string `json:"expectedOutboundIp"`
+	ActualOutboundIP    string `json:"actualOutboundIp"`
+	OutboundIPStatus    string `json:"outboundIpStatus"`
+	OutboundIPCheckedAt string `json:"outboundIpCheckedAt"`
+	OutboundIPError     string `json:"outboundIpError"`
+	IsDefault           bool   `json:"isDefault"` // 默认账户（未指定时 fallback 用它）
+	CreatedAt           string `json:"createdAt"`
 }
 
 // QueueItem 抢购队列项

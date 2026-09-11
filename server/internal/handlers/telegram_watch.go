@@ -8,6 +8,7 @@ import (
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/monitor"
 	"github.com/ovh-buy/server/internal/telegram"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // 从 Telegram 添加「盯着补货就抢」的订阅。
@@ -78,10 +79,27 @@ func watchText(state *app.State, mon *monitor.Monitor, args []string) string {
 	accountID := ""
 	accLabel := ""
 	if autoOrder {
-		acc, ok := state.FindAccount("")
-		if !ok {
+		allAccounts := listAccounts(state)
+		if len(allAccounts) == 0 {
 			return "要自动下单得先配置 OVH 账户。请到控制台「设置 → OVH 账户」添加，或者去掉 x<数量> 只接收通知。"
 		}
+		// 单账户没有歧义；多账户时才允许通过可用性查询筛出区域兼容项。
+		compatible := allAccounts
+		if len(allAccounts) > 1 {
+			compatible = make([]types.OVHAccount, 0, 1)
+			for _, candidate := range allAccounts {
+				if len(enumerateConfigs(state, planCode, candidate.ID)) > 0 {
+					compatible = append(compatible, candidate)
+				}
+			}
+		}
+		if len(compatible) == 0 {
+			return "没有可用于此型号区域的 OVH 账户，已拒绝自动下单。请先添加对应区域账户，或去掉 x<数量> 只接收通知。"
+		}
+		if len(compatible) > 1 {
+			return "此型号有多个区域兼容账户。请发送不带 x<数量> 的 /watch，按步骤选择账户后再选择自动下单。"
+		}
+		acc := compatible[0]
 		accountID = acc.ID
 		sub := strings.ToUpper(strings.TrimSpace(acc.Zone))
 		accLabel = fmt.Sprintf("%s（子公司 %s）", acc.Name, sub)

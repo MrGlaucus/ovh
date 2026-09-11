@@ -111,8 +111,17 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("history", "retraction_time", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := db.addColumnIfMissing("ovh_accounts", "proxy_url", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	for _, c := range [][2]string{
+		{"proxy_url", "TEXT NOT NULL DEFAULT ''"},
+		{"expected_outbound_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"actual_outbound_ip", "TEXT NOT NULL DEFAULT ''"},
+		{"outbound_ip_status", "TEXT NOT NULL DEFAULT 'pending'"},
+		{"outbound_ip_checked_at", "TEXT NOT NULL DEFAULT ''"},
+		{"outbound_ip_error", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := db.addColumnIfMissing("ovh_accounts", c[0], c[1]); err != nil {
+			return err
+		}
 	}
 	if err := db.addColumnIfMissing("monitor_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err

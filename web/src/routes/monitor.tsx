@@ -313,11 +313,6 @@ function SubRow({
               ) : sub.autoOrder ? (
                 <Chip tone="warning">已勾自动下单但未选账户(只通知)</Chip>
               ) : null}
-              {sub.autoOrder && (
-                <Chip tone={sub.delaySeconds && sub.delaySeconds > 0 ? "info" : "default"} title="补货后等待的秒数；0 表示立即开始下单">
-                  下单延迟 {sub.delaySeconds && sub.delaySeconds > 0 ? `${sub.delaySeconds}s` : "立即"}
-                </Chip>
-              )}
             </div>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">

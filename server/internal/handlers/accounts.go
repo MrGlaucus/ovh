@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -19,15 +20,16 @@ import (
 
 // accountInput POST/PUT body
 type accountInput struct {
-	Name        string `json:"name"`
-	Endpoint    string `json:"endpoint"` // 可空,会按 zone 推断
-	Zone        string `json:"zone"`
-	AppKey      string `json:"appKey"`
-	AppSecret   string `json:"appSecret"`
-	ConsumerKey string `json:"consumerKey"`
-	IAM         string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
-	ProxyURL    string `json:"proxyUrl"`
-	SetDefault  bool   `json:"setDefault"`
+	Name               string `json:"name"`
+	Endpoint           string `json:"endpoint"` // 可空,会按 zone 推断
+	Zone               string `json:"zone"`
+	AppKey             string `json:"appKey"`
+	AppSecret          string `json:"appSecret"`
+	ConsumerKey        string `json:"consumerKey"`
+	IAM                string `json:"iam"` // 可空,会自动生成 go-ovh-<zone>
+	ProxyURL           string `json:"proxyUrl"`
+	ExpectedOutboundIP string `json:"expectedOutboundIp"`
+	SetDefault         bool   `json:"setDefault"`
 }
 
 // endpointForZone 根据 zone 推 endpoint。
@@ -49,6 +51,7 @@ func (in *accountInput) normalize() {
 	in.ConsumerKey = strings.TrimSpace(in.ConsumerKey)
 	in.IAM = strings.TrimSpace(in.IAM)
 	in.ProxyURL = strings.TrimSpace(in.ProxyURL)
+	in.ExpectedOutboundIP = strings.TrimSpace(in.ExpectedOutboundIP)
 	if in.Zone == "" {
 		// 没填 zone 时按 endpoint 推同大区的默认子公司,而不是一律回落 "IE"。
 		// 回落 IE 对「只填了 endpoint=ovh-us / ovh-ca」的请求是致命的:
@@ -103,6 +106,10 @@ func (in *accountInput) validate() string {
 		if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
 			return err.Error()
 		}
+	}
+	ip := net.ParseIP(in.ExpectedOutboundIP)
+	if ip == nil || ip.To4() == nil || ip.String() != in.ExpectedOutboundIP {
+		return "预期出口 IP 必须是单个 IPv4 地址"
 	}
 	return ""
 }
@@ -174,9 +181,8 @@ func GetAccountByID(state *app.State) gin.HandlerFunc {
 }
 
 // CreateAccount POST /api/accounts
-// 创建后立即用新凭据调 OVH /me 验证,valid 一并返回。
-// 注意:验证失败的账户仍然入库(只是 valid=false)——凭据填错时用户往往只想改一个字段,
-// 直接删掉会让人重填一遍;前端据 valid 提示即可。
+// 创建只保存账户与待校验的出口 IP 状态。任何携带凭据的 OVH /me 请求都
+// 必须等出口 IP 已验证后才能发送；后台或手动检测会自动推进状态。
 func CreateAccount(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var in accountInput
@@ -204,17 +210,19 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 		}
 
 		acc := types.OVHAccount{
-			ID:          uuid.NewString(),
-			Name:        in.Name,
-			Endpoint:    in.Endpoint,
-			Zone:        in.Zone,
-			AppKey:      in.AppKey,
-			AppSecret:   in.AppSecret,
-			ConsumerKey: in.ConsumerKey,
-			IAM:         in.IAM,
-			ProxyURL:    in.ProxyURL,
-			IsDefault:   isDefault,
-			CreatedAt:   types.NowISO(),
+			ID:                 uuid.NewString(),
+			Name:               in.Name,
+			Endpoint:           in.Endpoint,
+			Zone:               in.Zone,
+			AppKey:             in.AppKey,
+			AppSecret:          in.AppSecret,
+			ConsumerKey:        in.ConsumerKey,
+			IAM:                in.IAM,
+			ProxyURL:           in.ProxyURL,
+			ExpectedOutboundIP: in.ExpectedOutboundIP,
+			OutboundIPStatus:   "pending",
+			IsDefault:          isDefault,
+			CreatedAt:          types.NowISO(),
 		}
 		if err := state.DB.UpsertAccount(acc); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -222,13 +230,8 @@ func CreateAccount(state *app.State) gin.HandlerFunc {
 		}
 		_ = state.ReloadAccounts()
 
-		// 用新凭据验证
-		valid, subsidiaryWarning := verifyAccountCreds(state, acc.ID)
-		state.Logger.Info("创建账户: "+acc.Name+" ("+acc.Zone+"/"+ovh.SubsidiaryRegion(acc.Zone)+" 区) valid="+boolStr(valid), "accounts")
-
-		// subsidiaryWarning 非空 = 凭据能用,但这个账户在 OVH 那边属于另一个子公司,
-		// 目录/价格/下单 region 都会按填错的那个走。给前端原样提示,别让它在下单时才炸。
-		c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": valid, "subsidiaryWarning": subsidiaryWarning})
+		state.Logger.Info("创建账户: "+acc.Name+" ("+acc.Zone+"/"+ovh.SubsidiaryRegion(acc.Zone)+" 区) 等待出口 IP 校验", "accounts")
+		c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": false, "outboundIPPending": true})
 	}
 }
 
@@ -286,12 +289,38 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 			acc.ConsumerKey = in.ConsumerKey
 		}
 		// 前端编辑时回传掩码则保持原值；新地址必须在保存前校验，避免把坏代理写入账户。
+		proxyChanged := false
 		if in.ProxyURL != "" && !strings.Contains(in.ProxyURL, "•••") && !strings.Contains(in.ProxyURL, "***") {
 			if _, err := proxy.ParseAccountProxy(in.ProxyURL); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 				return
 			}
+			proxyChanged = in.ProxyURL != acc.ProxyURL
 			acc.ProxyURL = in.ProxyURL
+		}
+		if in.ExpectedOutboundIP != "" {
+			ip := net.ParseIP(in.ExpectedOutboundIP)
+			if ip == nil || ip.To4() == nil || ip.String() != in.ExpectedOutboundIP {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "预期出口 IP 必须是单个 IPv4 地址"})
+				return
+			}
+			if in.ExpectedOutboundIP != acc.ExpectedOutboundIP {
+				acc.ExpectedOutboundIP = in.ExpectedOutboundIP
+				proxyChanged = true
+			}
+		}
+		// 已有账户升级后如果从未配置预期 IP，任何编辑也必须补齐；否则 API
+		// 允许它继续处于不可解释的未保护状态。
+		ip := net.ParseIP(acc.ExpectedOutboundIP)
+		if ip == nil || ip.To4() == nil || ip.String() != acc.ExpectedOutboundIP {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "预期出口 IP 必须是单个 IPv4 地址"})
+			return
+		}
+		if proxyChanged {
+			acc.ActualOutboundIP = ""
+			acc.OutboundIPStatus = "pending"
+			acc.OutboundIPCheckedAt = ""
+			acc.OutboundIPError = ""
 		}
 
 		// 解不开的密文绝不能被空串覆盖回去。
@@ -332,8 +361,13 @@ func UpdateAccount(state *app.State) gin.HandlerFunc {
 		invalidateOrderMappingCache(acc.ID) // 换了凭据/endpoint,旧缓存里的订单可能已经不属于这个账户了
 		_ = state.ReloadAccounts()
 
-		valid, subsidiaryWarning := verifyAccountCreds(state, acc.ID)
-		c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": valid, "subsidiaryWarning": subsidiaryWarning})
+		if proxyChanged {
+			c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": false, "outboundIPPending": true})
+			return
+		}
+		// 未改代理或预期 IP 时，现有校验状态仍有效；不在账户编辑请求中
+		// 额外发送带签名的 /me，请用户使用“检测出口 IP/验证凭据”操作。
+		c.JSON(http.StatusOK, gin.H{"account": sanitizeAccount(acc), "valid": acc.OutboundIPStatus == "verified"})
 	}
 }
 

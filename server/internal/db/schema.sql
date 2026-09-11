@@ -28,8 +28,13 @@ CREATE TABLE IF NOT EXISTS ovh_accounts (
   app_secret   TEXT NOT NULL,
   consumer_key TEXT NOT NULL,
   iam          TEXT NOT NULL,
-  proxy_url    TEXT NOT NULL DEFAULT '', -- 加密存储的账户级 OVH API 专用代理
-  is_default   INTEGER NOT NULL DEFAULT 0,
+  proxy_url               TEXT NOT NULL DEFAULT '', -- 加密存储的账户级 OVH API 专用代理
+  expected_outbound_ip    TEXT NOT NULL DEFAULT '',
+  actual_outbound_ip      TEXT NOT NULL DEFAULT '',
+  outbound_ip_status      TEXT NOT NULL DEFAULT 'pending',
+  outbound_ip_checked_at  TEXT NOT NULL DEFAULT '',
+  outbound_ip_error       TEXT NOT NULL DEFAULT '',
+  is_default              INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ovh_accounts_default ON ovh_accounts(is_default);
