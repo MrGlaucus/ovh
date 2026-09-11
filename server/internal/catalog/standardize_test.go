@@ -23,3 +23,18 @@ func TestFormatMemoryDisplayDoesNotMislabelNoECC(t *testing.T) {
 		t.Fatalf("noecc 内存展示 = %q，期望 %q", got, want)
 	}
 }
+
+func TestFormatOptionDisplay(t *testing.T) {
+	cases := map[string]string{
+		"ram-32g-ecc-2133-24sk20":    "32GB ECC RAM-2133",
+		"softraid-2x450nvme-24sk20":  "2×450GB NVMe",
+		"bandwidth-500-25sk":         "500 Mbps",
+		"bandwidth-1000-24sk202":     "1 Gbps",
+		"unrecognized-addon-24sk202": "unrecognized-addon-24sk202",
+	}
+	for input, want := range cases {
+		if got := FormatOptionDisplay(input); got != want {
+			t.Errorf("FormatOptionDisplay(%q) = %q，期望 %q", input, got, want)
+		}
+	}
+}

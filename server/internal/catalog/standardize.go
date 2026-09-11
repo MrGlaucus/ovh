@@ -49,8 +49,9 @@ func StandardizeConfig(config string) string {
 }
 
 var (
-	reMemoryDisplay  = regexp.MustCompile(`(?i)(\d+)g(?:-(?:no)?ecc)?(?:-(\d+))?`)
-	reStorageDisplay = regexp.MustCompile(`(?i)(\d+)x(\d+)(?:g|gb)?(?:-|)(ssd|nvme|hdd|sas|sa)`)
+	reMemoryDisplay    = regexp.MustCompile(`(?i)(\d+)g(?:-(?:no)?ecc)?(?:-(\d+))?`)
+	reStorageDisplay   = regexp.MustCompile(`(?i)(\d+)x(\d+)(?:g|gb)?(?:-|)(ssd|nvme|hdd|sas|sa)`)
+	reBandwidthDisplay = regexp.MustCompile(`(?i)^bandwidth-(\d+)`)
 )
 
 // FormatMemoryDisplay 只根据 OVH FQN 中明确给出的容量、ECC 与频率生成展示文案。
@@ -100,6 +101,31 @@ func FormatConfigDisplay(memoryCode, storageCode string) string {
 		stor = FormatStorageDisplay(storageCode)
 	}
 	return mem + " · " + stor
+}
+
+// FormatOptionDisplay 将队列中保存的原始 OVH addon code 转为用户可读文本。
+// 仅转换编码中明确可知的容量、介质、ECC、频率与带宽，不猜测 DDR 代际或磁盘类型。
+func FormatOptionDisplay(optionCode string) string {
+	raw := strings.TrimSpace(optionCode)
+	if raw == "" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.HasPrefix(lower, "ram-"):
+		return FormatMemoryDisplay(raw)
+	case strings.Contains(lower, "raid") || strings.Contains(lower, "disk"):
+		if formatted := FormatStorageDisplay(raw); formatted != raw {
+			return formatted
+		}
+	case reBandwidthDisplay.MatchString(raw):
+		m := reBandwidthDisplay.FindStringSubmatch(raw)
+		if m[1] == "1000" {
+			return "1 Gbps"
+		}
+		return m[1] + " Mbps"
+	}
+	return raw
 }
 
 func MatchConfig(userMemory, userStorage, ovhMemory, ovhStorage string) bool {

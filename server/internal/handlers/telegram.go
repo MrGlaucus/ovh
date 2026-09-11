@@ -1193,11 +1193,12 @@ func renderTelegramMonitorList(state *app.State, mon *monitor.Monitor) string {
 		} else {
 			name += "（" + sub.PlanCode + "）"
 		}
-		fmt.Fprintf(&msg, "\n• %s\n  📍 %s\n  库存：🟢 %d · ⚫ %d", name, dcs, available, unavailable)
+		// 每条监控独立成块，便于在多型号、多机房时逐项核对库存状态。
+		fmt.Fprintf(&msg, "\n\n━━━━━━━━━━━━━━━━\n%s\n📍 机房：%s\n📦 库存：🟢 %d 可下单 · ⚫ %d 无货", name, dcs, available, unavailable)
 		if failed > 0 || sub.LastCheckError != "" {
 			msg.WriteString(" · ⚠️ 异常")
 		}
-		fmt.Fprintf(&msg, "\n  最近检查：%s", formatTelegramTime(sub.LastCheckAt))
+		fmt.Fprintf(&msg, "\n🕒 最近检查：%s", formatTelegramTime(sub.LastCheckAt))
 		if sub.AutoOrder {
 			fmt.Fprintf(&msg, " · 🤖 自动下单 ×%d", sub.Quantity)
 		}
@@ -1206,6 +1207,22 @@ func renderTelegramMonitorList(state *app.State, mon *monitor.Monitor) string {
 		fmt.Fprintf(&msg, "\n\n其余 %d 项未展开，请前往控制台查看。", len(subs)-limit)
 	}
 	return shortTelegramText(msg.String(), 3900)
+}
+
+func formatTelegramQueueOptions(options []string) string {
+	if len(options) == 0 {
+		return "默认配置"
+	}
+	readable := make([]string, 0, len(options))
+	for _, option := range options {
+		if formatted := catalog.FormatOptionDisplay(option); formatted != "" {
+			readable = append(readable, formatted)
+		}
+	}
+	if len(readable) == 0 {
+		return "默认配置"
+	}
+	return shortTelegramText(strings.Join(readable, " · "), 100)
 }
 
 func queueStatusLabel(status string) string {
@@ -1261,17 +1278,14 @@ func renderTelegramQueueList(state *app.State) string {
 		limit = 20
 	}
 	for _, item := range items[:limit] {
-		config := "默认配置"
-		if len(item.Options) > 0 {
-			config = shortTelegramText(strings.Join(item.Options, " · "), 90)
-		}
 		account := accountNames[item.AccountID]
 		if account == "" {
 			account = "已删除账户"
 		}
-		fmt.Fprintf(&msg, "\n• %s · %s\n  📍 %s · 🧩 %s\n  账户：%s · 重试 %d 次 · 最近检查：%s",
+		// 每项独立成块，避免多条任务挤在一起难以核对；配置始终使用可读文本。
+		fmt.Fprintf(&msg, "\n\n━━━━━━━━━━━━━━━━\n%s · %s\n📍 机房：%s\n🧩 配置：%s\n👤 账户：%s\n🔁 重试：%d 次 · 最近检查：%s",
 			queueStatusLabel(item.Status), displayTelegramPlan(state, item.PlanCode), monitor.DisplayDatacenterShortName(item.Datacenter),
-			config, shortTelegramText(account, 40), item.RetryCount, formatTelegramUnixTime(item.LastCheckTime))
+			formatTelegramQueueOptions(item.Options), shortTelegramText(account, 40), item.RetryCount, formatTelegramUnixTime(item.LastCheckTime))
 	}
 	if len(items) > limit {
 		fmt.Fprintf(&msg, "\n\n其余 %d 项未展开，请前往控制台查看。", len(items)-limit)
