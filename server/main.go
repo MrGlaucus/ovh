@@ -253,6 +253,9 @@ func main() {
 		api.POST("/telegram/set-webhook", handlers.SetTelegramWebhook(state))
 		api.GET("/telegram/get-webhook-info", handlers.GetTelegramWebhookInfo(state))
 		api.POST("/telegram/webhook", handlers.TelegramWebhook(state, mon))
+		// 长轮询模式:不需要公网地址就能用交互式下单。和 webhook 互斥,切换在这里做。
+		api.GET("/telegram/update-mode", handlers.GetTelegramUpdateMode(state))
+		api.POST("/telegram/update-mode", handlers.SetTelegramUpdateMode(state))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state))
@@ -515,7 +518,15 @@ func main() {
 	go catalog.WarmRegionCache(state)
 	// Telegram webhook secret 自愈：老部署注册过的 webhook 不带 secret_token，
 	// 启动时用同一 URL 重注册一次，把强校验补上（未配置 TG 时无操作）。
-	go telegram.AutoUpgradeWebhookSecret(state)
+	// 只在 webhook 模式下做 —— 长轮询模式压根没有 webhook 可修。
+	if !state.Config.Get().IsPollingMode() {
+		go telegram.AutoUpgradeWebhookSecret(state)
+	}
+	// 长轮询:配置成 polling 模式就在这里拉起来(内部会先 deleteWebhook)
+	handlers.InitPoller(state, mon)
+	go handlers.StartPollerIfEnabled(state)
+	// 把命令菜单推给 Telegram,用户打 "/" 就能看到能用什么(以前一条都没注册过)
+	go telegram.RegisterCommands(state)
 	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
 
 	// 自动启动监控（如果有订阅）

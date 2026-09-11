@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, Webhook, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
@@ -17,6 +17,9 @@ import {
   useCacheInfo,
   useClearCache,
   useTelegramWebhookInfo,
+  useRegisterTelegramWebhook,
+  useTelegramUpdateMode,
+  useSetTelegramUpdateMode,
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
@@ -305,6 +308,53 @@ function NotifySection({
   );
 }
 
+/**
+ * 一条轮询错误是不是"另一个进程在抢同一个 Token"。
+ * 判据跟后端日志里那段保持一致(Conflict / 409),两边说法不一致会把人绕晕。
+ */
+function isPollConflict(err: string): boolean {
+  return err.includes("Conflict") || err.includes("409");
+}
+
+/** 收取方式二选一里的一个选项。整块可点,当前生效的那个描边加深 + 挂"当前生效"chip */
+function TelegramModeOption({
+  active,
+  title,
+  desc,
+  disabledReason,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  desc: string;
+  /** 非空 = 不给切,这句话同时当 tooltip */
+  disabledReason: string;
+  onClick: () => void;
+}) {
+  const disabled = !!disabledReason;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || active}
+      title={disabledReason || undefined}
+      className={cn(
+        "text-left rounded-2xl border p-3 transition-colors",
+        active
+          ? "border-foreground bg-secondary"
+          : "border-border hover:bg-muted disabled:hover:bg-transparent",
+        disabled && !active && "opacity-50 cursor-not-allowed"
+      )}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-[13px] font-medium">{title}</span>
+        {active && <Chip tone="solid">当前生效</Chip>}
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{desc}</p>
+    </button>
+  );
+}
+
 function TelegramSection({
   form,
   set,
@@ -313,6 +363,26 @@ function TelegramSection({
   set: (k: keyof SettingsConfig, v: string) => void;
 }) {
   const webhook = useTelegramWebhookInfo();
+  const registerHook = useRegisterTelegramWebhook();
+  const updateMode = useTelegramUpdateMode();
+  const setMode = useSetTelegramUpdateMode();
+
+  // 模式没读到手就是 undefined,绝不 fallback 成 "webhook" ——
+  // 那等于把"没问到"渲染成"当前走 webhook",用户会照着这个假状态去折腾域名和证书。
+  const mode = updateMode.data?.mode;
+  const polling = mode === "polling";
+  const hasToken = updateMode.data?.hasToken === true;
+  const poller = updateMode.data?.poller;
+
+  // 不给切的三种情况分开写:用户要知道接下来该干什么 —— 重试 / 去填 token / 等它切完
+  const blocked = !updateMode.data
+    ? "收取模式还没读取成功,现在不知道哪种在生效,先重试"
+    : !hasToken
+      ? "请先填写并保存 Bot Token"
+      : setMode.isPending
+        ? "正在切换,等这次切完"
+        : "";
+
   const onFetch = () => {
     if (!form.tgToken) {
       toast.error("请先填写并保存 Bot Token");
@@ -322,6 +392,156 @@ function TelegramSection({
   };
   return (
     <Section title="Telegram 通知">
+      {/* ── 收取方式:webhook / 长轮询 二选一 ───────────────────────────────
+          Telegram 只允许一种生效:开着 webhook 就拉不到 getUpdates。
+          所以这里是单选,不是两个各自能开关的开关。 */}
+      <div className="space-y-2">
+        <h3 className="text-[13px] font-medium flex items-center gap-1.5">
+          <Radio className="w-3.5 h-3.5 text-muted-foreground" />
+          更新收取方式
+        </h3>
+        <p className="text-[11px] text-muted-foreground">
+          Telegram 规定这两种方式<b>互斥</b>,只能有一种生效 —— 挂着 webhook 时 getUpdates 直接报错。
+        </p>
+
+        {updateMode.isPending ? (
+          <Skeleton className="h-24 rounded-2xl" />
+        ) : (
+          <>
+            {updateMode.isError && (
+              // 两种情况分开说:
+              // 一次都没读到 → 下面谁都不高亮,这是"没问到",不是"两种都没开"
+              //                (后者会让用户以为通知彻底没配,跑去重配一遍);
+              // 读到过又刷新失败 → 下面那个高亮是**上一次**的结果,可能已经过时了。
+              <LoadFailedBanner
+                title={
+                  updateMode.data
+                    ? "刷新失败 —— 下面高亮的是上一次读到的模式，现在可能已经不是它了"
+                    : "收取方式没读到 —— 下面哪种在生效是未知的，不代表两种都没开"
+                }
+                error={updateMode.error}
+                onRetry={() => updateMode.refetch()}
+              />
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <TelegramModeOption
+                active={polling}
+                title="长轮询（推荐，不需要公网地址）"
+                desc="本程序主动去 api.telegram.org 拉消息。只要这台机器能出站访问 Telegram 就行：家宽、NAT 后面、没有域名的机器都能用。"
+                disabledReason={blocked}
+                onClick={() => setMode.mutate("polling")}
+              />
+              <TelegramModeOption
+                active={mode === "webhook"}
+                title="Webhook（需要公网域名 + 证书）"
+                desc="Telegram 主动 POST 给你。必须有公网 HTTPS 域名和受信证书，端口只能是 443/80/88/8443，缺一样都收不到。"
+                disabledReason={blocked}
+                onClick={() => setMode.mutate("webhook")}
+              />
+            </div>
+            {updateMode.data && !hasToken && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                请先填写并保存 Bot Token —— 两种方式都要拿它去 Telegram 认身份，没有 token 切哪边都不会生效。
+                （这里看的是<b>后端已保存</b>的 token，下面输入框里刚敲的那个还不算）
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* 轮询状态。只有 polling 真的生效时才有意义 */}
+      {polling && (
+        <div className="border border-border rounded-2xl p-4 space-y-2 text-[12px]">
+          <div className="flex items-center justify-between">
+            <h3 className="text-[13px] font-medium">轮询状态</h3>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => updateMode.refetch()}
+              disabled={updateMode.isFetching}
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", updateMode.isFetching && "animate-spin")} />
+              刷新
+            </Button>
+          </div>
+
+          {!poller ? (
+            // 后端没带 poller 回来。这是"看不到状态",不是"停了"——
+            // 写成"已停止"会让用户去反复重启一个其实在正常跑的东西。
+            <p className="text-muted-foreground">
+              后端没有返回轮询状态，这里看不出它是不是真的在收消息（poller 没初始化，一般是后端版本太老或刚启动）。
+            </p>
+          ) : (
+            <>
+              <InfoRow
+                label="运行状态"
+                value={
+                  poller.running ? (
+                    <Chip tone="success">
+                      <CheckCircle2 className="w-3 h-3" />
+                      运行中
+                    </Chip>
+                  ) : (
+                    <Chip tone="warning">
+                      <AlertTriangle className="w-3 h-3" />
+                      已停止
+                    </Chip>
+                  )
+                }
+              />
+              <InfoRow
+                label="最近一次拉取"
+                value={
+                  poller.lastPollAt ? (
+                    <span className="font-mono">
+                      {new Date(poller.lastPollAt).toLocaleString("zh-CN")}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">还没拉到过</span>
+                  )
+                }
+              />
+              <InfoRow
+                label="已确认 update_id"
+                value={<span className="font-mono">{poller.offset}</span>}
+              />
+              {poller.lastError ? (
+                <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <p className="font-semibold text-destructive">上次拉取报错</p>
+                    <p className="mt-0.5 break-words">{poller.lastError}</p>
+                    {isPollConflict(poller.lastError) && (
+                      <p className="mt-1.5 text-destructive">
+                        这是<b>同一个 Bot Token 有另一个进程也在收</b>：两边会互相把对方踢下线，
+                        表现就是「一键下单」按钮时灵时不灵、消息随机丢。
+                        先停掉另一份程序（另一台机器 / 另一个容器 / 本地调试进程），或者给这一份换一个 Bot Token。
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <InfoRow
+                  label="错误状态"
+                  value={
+                    <Chip tone="success">
+                      <CheckCircle2 className="w-3 h-3" />
+                      正常
+                    </Chip>
+                  }
+                />
+              )}
+              {!poller.running && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                  模式是长轮询，但收取器没在跑 —— 现在一条按钮回调都收不到。看上面的报错，或者重启程序。
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <Field label="Bot Token">
         <Input
           type="password"
@@ -337,108 +557,141 @@ function TelegramSection({
           placeholder="-1001234567890"
         />
       </Field>
-      <Field label="Telegram 回调地址（可选）">
-        <Input
-          value={form.webhookUrl || ""}
-          onChange={(e) => set("webhookUrl", e.target.value)}
-          placeholder="https://your.domain/webhook"
-        />
-        <p className="text-[11px] text-muted-foreground mt-1">
-          方向是 <b>Telegram → 本程序</b>：填了它，通知里的「一键下单」按钮才点得动。
-          想让本程序把通知<b>发出去</b>到别的地方，请看左边的「通知通道」
-        </p>
-      </Field>
 
-      <div className="pt-2">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[13px] font-medium flex items-center gap-1.5">
-            <Webhook className="w-3.5 h-3.5 text-muted-foreground" />
-            Webhook 信息
-          </h3>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onFetch}
-            disabled={webhook.isFetching}
-          >
-            <Webhook className={cn("w-3.5 h-3.5", webhook.isFetching && "animate-pulse")} />
-            {webhook.isFetching ? "查询中..." : "查看 webhook 信息"}
-          </Button>
+      {polling ? (
+        // 长轮询模式下 webhook 那一套全是噪音:后端切过来的时候已经 deleteWebhook 了,
+        // 留着输入框和查询按钮只会让人以为"还得再配一次 webhook"。
+        <div className="rounded-2xl border border-border bg-muted/40 p-3 text-[11px] text-muted-foreground">
+          当前是长轮询模式，<b>不需要注册 webhook</b> —— 回调地址和 webhook 查询已折叠。
+          切过来的时候后端已经把原来的 webhook 注销了；要用回 webhook，先在上面切回去，再填公网地址注册。
         </div>
-
-        {webhook.isError ? (
-          <div className="border border-border rounded-2xl p-4 text-[12px] text-destructive flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-            <span>{(webhook.error as Error)?.message || "获取 webhook 信息失败"}</span>
-          </div>
-        ) : webhook.data ? (
-          <div className="border border-border rounded-2xl p-4 space-y-2 text-[12px]">
-            <InfoRow
-              label="URL"
-              value={
-                webhook.data.url ? (
-                  <code className="font-mono break-all text-foreground">{webhook.data.url}</code>
-                ) : (
-                  <Chip tone="warning">未设置</Chip>
-                )
-              }
+      ) : (
+        <>
+        <Field label="Telegram 回调地址">
+          <div className="flex gap-2">
+            <Input
+              value={form.webhookUrl || ""}
+              onChange={(e) => set("webhookUrl", e.target.value)}
+              placeholder="https://your.domain"
+              className="flex-1"
             />
-            <InfoRow
-              label="待处理更新"
-              value={
-                <span className="font-mono">
-                  {webhook.data.pending_update_count ?? 0}
-                </span>
-              }
-            />
-            {webhook.data.ip_address && (
-              <InfoRow
-                label="IP 地址"
-                value={<code className="font-mono">{webhook.data.ip_address}</code>}
-              />
-            )}
-            {webhook.data.max_connections != null && (
-              <InfoRow
-                label="最大连接数"
-                value={<span className="font-mono">{webhook.data.max_connections}</span>}
-              />
-            )}
-            {webhook.data.last_error_date ? (
-              <InfoRow
-                label="上次错误"
-                value={
-                  <div className="text-right">
-                    <Chip tone="danger">
-                      <AlertTriangle className="w-3 h-3" />
-                      {new Date(webhook.data.last_error_date * 1000).toLocaleString("zh-CN")}
-                    </Chip>
-                    {webhook.data.last_error_message && (
-                      <p className="mt-1 text-destructive break-words max-w-[280px]">
-                        {webhook.data.last_error_message}
-                      </p>
-                    )}
-                  </div>
-                }
-              />
-            ) : (
-              <InfoRow
-                label="错误状态"
-                value={
-                  <Chip tone="success">
-                    <CheckCircle2 className="w-3 h-3" />
-                    正常
-                  </Chip>
-                }
-              />
-            )}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => registerHook.mutate((form.webhookUrl || "").trim())}
+              disabled={registerHook.isPending || !(form.webhookUrl || "").trim()}
+            >
+              {registerHook.isPending ? "注册中…" : "注册 Webhook"}
+            </Button>
           </div>
-        ) : (
-          <p className="text-[12px] text-muted-foreground">
-            点击右上角按钮查询当前 Telegram Bot 的 webhook 状态
+          <p className="text-[11px] text-muted-foreground mt-1">
+            方向是 <b>Telegram → 本程序</b>：注册之后，通知里的「一键下单」按钮才点得动。
+            想让本程序把通知<b>发出去</b>到别的地方，请看左边的「通知通道」
           </p>
-        )}
-      </div>
+          {/* 光保存是不够的 —— 这个地址不在后端配置结构里,保存时会被丢掉,
+              必须点「注册」把它推给 Telegram。以前前端没有这个按钮,
+              于是 webhook 模式的一键下单从来就没通过。 */}
+          <p className="text-[11px] text-warning mt-1">
+            注意：填完必须点「注册 Webhook」。只按上面的「保存设置」不会生效。
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            Telegram 要求公网 HTTPS + 受信证书，端口只能是 443 / 80 / 88 / 8443。
+            没有域名和证书就用上面的长轮询模式。
+          </p>
+        </Field>
+
+        <div className="pt-2">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-[13px] font-medium flex items-center gap-1.5">
+              <Webhook className="w-3.5 h-3.5 text-muted-foreground" />
+              Webhook 信息
+            </h3>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onFetch}
+              disabled={webhook.isFetching}
+            >
+              <Webhook className={cn("w-3.5 h-3.5", webhook.isFetching && "animate-pulse")} />
+              {webhook.isFetching ? "查询中..." : "查看 webhook 信息"}
+            </Button>
+          </div>
+
+          {webhook.isError ? (
+            <div className="border border-border rounded-2xl p-4 text-[12px] text-destructive flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{(webhook.error as Error)?.message || "获取 webhook 信息失败"}</span>
+            </div>
+          ) : webhook.data ? (
+            <div className="border border-border rounded-2xl p-4 space-y-2 text-[12px]">
+              <InfoRow
+                label="URL"
+                value={
+                  webhook.data.url ? (
+                    <code className="font-mono break-all text-foreground">{webhook.data.url}</code>
+                  ) : (
+                    <Chip tone="warning">未设置</Chip>
+                  )
+                }
+              />
+              <InfoRow
+                label="待处理更新"
+                value={
+                  <span className="font-mono">
+                    {webhook.data.pending_update_count ?? 0}
+                  </span>
+                }
+              />
+              {webhook.data.ip_address && (
+                <InfoRow
+                  label="IP 地址"
+                  value={<code className="font-mono">{webhook.data.ip_address}</code>}
+                />
+              )}
+              {webhook.data.max_connections != null && (
+                <InfoRow
+                  label="最大连接数"
+                  value={<span className="font-mono">{webhook.data.max_connections}</span>}
+                />
+              )}
+              {webhook.data.last_error_date ? (
+                <InfoRow
+                  label="上次错误"
+                  value={
+                    <div className="text-right">
+                      <Chip tone="danger">
+                        <AlertTriangle className="w-3 h-3" />
+                        {new Date(webhook.data.last_error_date * 1000).toLocaleString("zh-CN")}
+                      </Chip>
+                      {webhook.data.last_error_message && (
+                        <p className="mt-1 text-destructive break-words max-w-[280px]">
+                          {webhook.data.last_error_message}
+                        </p>
+                      )}
+                    </div>
+                  }
+                />
+              ) : (
+                <InfoRow
+                  label="错误状态"
+                  value={
+                    <Chip tone="success">
+                      <CheckCircle2 className="w-3 h-3" />
+                      正常
+                    </Chip>
+                  }
+                />
+              )}
+            </div>
+          ) : (
+            <p className="text-[12px] text-muted-foreground">
+              点击右上角按钮查询当前 Telegram Bot 的 webhook 状态
+            </p>
+          )}
+        </div>
+        </>
+      )}
     </Section>
   );
 }

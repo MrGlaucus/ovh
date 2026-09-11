@@ -140,9 +140,9 @@ type State struct {
 	// 保存串行化锁。Save* 是"快照 + 全表覆盖",两个并发保存里
 	// 晚拍快照的可能先落库,把新数据覆盖掉 —— 必须让"拍快照到写完"整段串行。
 	// 和上面那些数据锁分开:数据锁保护内存读写(要短),这些保护落库顺序(会持有到 IO 结束)。
-	saveQueueMu      sync.Mutex
-	saveHistoryMu    sync.Mutex
-	saveServersMu    sync.Mutex
+	saveQueueMu   sync.Mutex
+	saveHistoryMu sync.Mutex
+	saveServersMu sync.Mutex
 
 	// 启动时哪张表没读出来。
 	//
@@ -153,8 +153,8 @@ type State struct {
 	//
 	// 所以:读失败的表一律禁止再写。宁可这次运行不落库,也不能拿空内存去覆盖磁盘上
 	// 那份还完好的数据。用户重启一次(或修好 schema)就能恢复。
-	loadFailedMu sync.RWMutex
-	loadFailed   map[string]string
+	loadFailedMu     sync.RWMutex
+	loadFailed       map[string]string
 	VPSSubscriptions []types.VPSSubscription
 	VPSCheckInterval int
 

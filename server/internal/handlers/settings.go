@@ -58,6 +58,10 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		// Telegram 那边仍在校验旧 secret → 所有回调直接 401。
 		newCfg.TgWebhookSecret = prev.TgWebhookSecret
 		newCfg.TgWebhookSecretRegistered = prev.TgWebhookSecretRegistered
+		// 收取方式同理:它由 /api/telegram/update-mode 单独切换,不在这张设置表单里。
+		// 不继承的话,用户在设置页按一次保存就会把长轮询模式悄悄重置成 webhook ——
+		// 表现是重启后交互式下单突然不工作了,而界面上什么都没变。
+		newCfg.TgUpdateMode = prev.TgUpdateMode
 
 		// 默认值兜底
 		if newCfg.Endpoint == "" {

@@ -252,14 +252,15 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 	}
 
 	pushTime := m.nowBeijing()
-	if traceID != "" || configTraceID != "" {
-		if traceID != "" && configTraceID != "" {
-			msg.WriteString("\n🆔 Trace ID:\n  订阅: " + traceID + "\n  配置: " + configTraceID)
-		} else if traceID != "" {
-			msg.WriteString("\n🆔 Trace ID: " + traceID)
-		} else {
-			msg.WriteString("\n🆔 Trace ID: " + configTraceID)
-		}
+
+	// 这条型号已经有几个任务在抢了。
+	//
+	// 补货常常连着来好几条通知,用户在手机上很容易对同一台机器按两次按钮 ——
+	// 抢到就是两笔真实订单、两次扣款。按钮那边有一次性 claim,但那只挡得住
+	// "同一颗按钮按两次",挡不住"两条通知各按一次"。
+	// 在这里直接把当前进行中的任务数摆出来,是最省事也最有效的提醒。
+	if n := m.activeQueueCount(planCode); n > 0 {
+		msg.WriteString(fmt.Sprintf("\n⚠️ 这个型号已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
 	}
 
 	if len(detectedTimes) > 0 {
@@ -269,25 +270,31 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 				earliest = t
 			}
 		}
-		delay := pushTime.Sub(earliest)
-		secs := int(delay.Seconds())
-		minutes := secs / 60
-		rem := secs % 60
-		msg.WriteString("\n⏰ 检测时间: " + earliest.Format("2006-01-02 15:04:05"))
-		msg.WriteString("\n📤 推送时间: " + pushTime.Format("2006-01-02 15:04:05"))
+		// 三行时间戳压成一行。抢购的时候用户要的是"哪个机房、多少钱、点哪个",
+		// 检测/推送/延迟三行调试信息把按钮挤到了屏幕外面。
+		secs := int(pushTime.Sub(earliest).Seconds())
+		lag := "<1秒"
 		switch {
-		case secs > 0 && minutes > 0:
-			msg.WriteString(fmt.Sprintf("\n⏱️ 推送延迟: %d分%d秒", minutes, rem))
+		case secs >= 60:
+			lag = fmt.Sprintf("%d分%d秒", secs/60, secs%60)
 		case secs > 0:
-			msg.WriteString(fmt.Sprintf("\n⏱️ 推送延迟: %d秒", rem))
-		default:
-			msg.WriteString("\n⏱️ 推送延迟: <1秒")
+			lag = fmt.Sprintf("%d秒", secs)
 		}
+		msg.WriteString("\n🕐 " + earliest.Format("15:04:05") + " 检测到，延迟 " + lag)
 	} else {
-		msg.WriteString("\n⏰ 推送时间: " + pushTime.Format("2006-01-02 15:04:05"))
+		msg.WriteString("\n🕐 " + pushTime.Format("15:04:05"))
 	}
 
-	msg.WriteString("\n\n💡 点击下方按钮可直接下单对应机房！")
+	// Trace ID 是排查用的,放最后,不要挡在机房列表和按钮中间
+	if traceID != "" || configTraceID != "" {
+		ids := traceID
+		if traceID != "" && configTraceID != "" {
+			ids = traceID + " / " + configTraceID
+		} else if traceID == "" {
+			ids = configTraceID
+		}
+		msg.WriteString("\n🆔 " + ids)
+	}
 
 	// 构建按钮（每行最多 2 个）
 	type btn struct {
@@ -561,4 +568,27 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 		m.nowBeijing().Format("2006-01-02 15:04:05"))
 	notify.Broadcast(m.state, msg, nil)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
+}
+
+// activeQueueCount 这个型号当前有几个进行中的抢购任务。
+//
+// 用来在上架通知里提醒"你已经在抢这台了"。补货往往连着来好几条通知,
+// 用户在手机上对同一台机器按两次按钮是很自然的动作,而那就是两笔真实订单。
+// 按钮自己的一次性 claim 只挡得住同一颗按钮按两次,挡不住两条通知各按一次。
+func (m *Monitor) activeQueueCount(planCode string) int {
+	if m.state == nil {
+		return 0
+	}
+	m.state.QueueMu.Lock()
+	defer m.state.QueueMu.Unlock()
+	n := 0
+	for _, it := range m.state.Queue {
+		if it.PlanCode != planCode {
+			continue
+		}
+		if it.Status == "running" || it.Status == "pending" || it.Status == "paused" {
+			n++
+		}
+	}
+	return n
 }

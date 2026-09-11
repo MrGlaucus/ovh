@@ -25,6 +25,25 @@ type Config struct {
 	// TgWebhookSecretRegistered secret 是否已经推给 Telegram（setWebhook 成功过）。
 	// false 时 webhook 处于兼容模式：不强制校验 secret，避免升级后老用户的按钮直接全挂。
 	TgWebhookSecretRegistered bool `json:"tgWebhookSecretRegistered,omitempty"`
+
+	// TgUpdateMode 从 Telegram 收取 update 的方式。两者互斥（这是 Telegram 的规定，
+	// 不是我们的选择）：设了 webhook 就不能 getUpdates，反之要先 deleteWebhook。
+	//
+	//	""/"webhook"  Telegram 推给我们。需要公网 HTTPS 域名 + 受信证书，
+	//	              端口只能 443/80/88/8443。
+	//	"polling"     我们主动去 getUpdates 拉。只要能出站访问 api.telegram.org 就行，
+	//	              家宽 / NAT 后面 / 没域名的机器都能用交互式下单。
+	//
+	// 空值等于 webhook —— 升级上来的老部署行为不变。
+	TgUpdateMode string `json:"tgUpdateMode,omitempty"`
+}
+
+// UpdateModePolling 长轮询模式的取值。
+const UpdateModePolling = "polling"
+
+// IsPollingMode 是否用长轮询收 update。
+func (c Config) IsPollingMode() bool {
+	return strings.TrimSpace(c.TgUpdateMode) == UpdateModePolling
 }
 
 // DefaultConfig 默认配置

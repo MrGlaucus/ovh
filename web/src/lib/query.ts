@@ -149,5 +149,6 @@ export const qk = {
     config: () => ["settings", "config"] as const,
     cacheInfo: () => ["settings", "cache-info"] as const,
     telegramWebhookInfo: () => ["settings", "telegram-webhook-info"] as const,
+    telegramUpdateMode: () => ["settings", "telegram-update-mode"] as const,
   },
 } as const;

@@ -95,6 +95,87 @@ func warnLegacyWebhook(state *app.State) {
 //
 // 处理办法:兼容模式照常收 Telegram 的消息(否则升级期间通知全断),
 // 但**一切会花钱的动作直接拒绝** —— 下单不是"少收一条通知"能类比的损失。
+// updateCtx 处理一条 Telegram update 的上下文。
+//
+// 为什么不直接用 *gin.Context:update 有两条来路 ——
+// webhook(Telegram 推给我们)和 long polling(我们去 getUpdates 拉)。
+// 后者压根没有 HTTP 请求上下文,而授权、幂等、限流、下单这一整套逻辑
+// 两边必须**完全一样**,不能各写一份(写两份就意味着哪天只在一边修了 bug)。
+// 所以把 gin 从处理链路里摘掉,只留下"状态码 + 响应体"这个抽象:
+// webhook 把它写回 HTTP 响应,poller 只拿它记日志。
+type updateCtx struct {
+	// legacyMode webhook 的 secret 还没注册(见 refuseInLegacyMode)。
+	// polling 永远是 false —— 那条路根本不存在"伪造来源"的问题。
+	legacyMode bool
+	status     int
+	body       gin.H
+}
+
+func (u *updateCtx) JSON(status int, body gin.H) {
+	u.status, u.body = status, body
+}
+
+// ProcessUpdate 处理一条 update。webhook 和 long polling 共用。
+//
+// legacy 只对 webhook 有意义;polling 传 false。
+func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]interface{}, legacy bool) *updateCtx {
+	u := &updateCtx{legacyMode: legacy, status: http.StatusOK, body: gin.H{"ok": true}}
+
+	// 1) 发送者授权 —— 必须排在幂等写入之前。
+	//
+	// 以前顺序是「幂等 → 授权」,于是未授权请求也会先往 telegram_updates 写一行。
+	// 兼容模式下(见下面 legacy 的说明)任何人都能走到这一步,于是可以:
+	//   · 无限插行撑爆磁盘(update_id 是任意 int64,清理只在 %50==0 时抽样触发)
+	//   · **投毒**:预占一段连续的 update_id,之后 Telegram 真发来的同号 update
+	//     被判成"重复投递"直接丢弃 —— 一键下单和文本下单静默失效,
+	//     日志里只有一行「忽略重复投递」。对抢购工具来说这是最坏的失败模式。
+	if !telegram.IsAuthorizedActor(state, actorChatID(data), actorUserID(data)) {
+		state.Logger.Warn("拒绝未授权的 Telegram 请求(未写入幂等表)", "telegram")
+		u.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
+		return u
+	}
+
+	// 2) update_id 幂等。
+	//
+	// 两条来路都需要它,原因不同但同样要命:
+	//   · webhook:Telegram 没收到 200 就会重投同一条 update
+	//   · polling:offset 是在**下一次** getUpdates 时才确认的,
+	//     处理完还没来得及推进 offset 就崩了/被自更新重启了,这条会重发一遍
+	// 没有这一步,一次网络抖动或一次版本升级就能重复下单。
+	if updateID := parseUpdateID(data["update_id"]); updateID > 0 && state.DB != nil {
+		claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
+		if err != nil {
+			state.Logger.Warn("update_id 幂等写入失败: "+err.Error(), "telegram")
+		} else if !claimed {
+			state.Logger.Info(fmt.Sprintf("忽略重复投递的 update_id=%d", updateID), "telegram")
+			u.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
+			return u
+		}
+		// 顺带清理超过保留期的旧记录（抽样触发，避免每条都删一次）
+		if updateID%50 == 0 {
+			before := float64(time.Now().Add(-time.Duration(telegram.UpdateIDRetentionDays) * 24 * time.Hour).Unix())
+			if n, err := state.DB.CleanupTelegramUpdates(before); err == nil && n > 0 {
+				state.Logger.Debug(fmt.Sprintf("已清理 %d 条过期 update_id", n), "telegram")
+			}
+		}
+	}
+
+	// 处理 callback_query（一键下单按钮）
+	if cb, ok := data["callback_query"].(map[string]interface{}); ok {
+		handleTelegramCallback(state, mon, u, cb)
+		return u
+	}
+
+	// 处理普通消息（文本下单）
+	if msg, ok := data["message"].(map[string]interface{}); ok {
+		handleTelegramMessage(state, mon, u, msg)
+		return u
+	}
+	return u
+}
+
+// TelegramWebhook webhook 入口:只负责"证明来自 Telegram" + 取出 body,
+// 真正的处理交给 ProcessUpdate(与 long polling 共用)。
 func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1) secret_token：证明请求真的来自 Telegram
@@ -107,8 +188,6 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		if legacy {
 			warnLegacyWebhook(state)
 		}
-		// 兼容模式标记进 context,下面的下单入口据此拒绝
-		c.Set("tgLegacyMode", legacy)
 
 		// 2) body 上限：防止超大 body 打爆内存
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, telegram.MaxTelegramBodyBytes)
@@ -125,53 +204,8 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			return
 		}
 
-		// 3) 发送者授权 —— 必须排在幂等写入之前。
-		//
-		// 以前顺序是「幂等 → 授权」,于是未授权请求也会先往 telegram_updates 写一行。
-		// 兼容模式下(见下面 legacy 的说明)任何人都能走到这一步,于是可以:
-		//   · 无限插行撑爆磁盘(update_id 是任意 int64,清理只在 %50==0 时抽样触发)
-		//   · **投毒**:预占一段连续的 update_id,之后 Telegram 真发来的同号 update
-		//     被判成"重复投递"直接丢弃 —— 一键下单和文本下单静默失效,
-		//     日志里只有一行「忽略重复投递」。对抢购工具来说这是最坏的失败模式。
-		authorized := telegram.IsAuthorizedActor(state, actorChatID(data), actorUserID(data))
-		if !authorized {
-			state.Logger.Warn("拒绝未授权的 Telegram 请求(未写入幂等表)", "telegram")
-			c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
-			return
-		}
-
-		// 4) update_id 幂等：Telegram 没收到 200 就会重投同一条 update，
-		//    没有这一步，一次网络抖动就会重复下单。
-		if updateID := parseUpdateID(data["update_id"]); updateID > 0 && state.DB != nil {
-			claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
-			if err != nil {
-				state.Logger.Warn("update_id 幂等写入失败: "+err.Error(), "telegram")
-			} else if !claimed {
-				state.Logger.Info(fmt.Sprintf("忽略重复投递的 update_id=%d", updateID), "telegram")
-				c.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
-				return
-			}
-			// 顺带清理超过保留期的旧记录（抽样触发，避免每条都删一次）
-			if updateID%50 == 0 {
-				before := float64(time.Now().Add(-time.Duration(telegram.UpdateIDRetentionDays) * 24 * time.Hour).Unix())
-				if n, err := state.DB.CleanupTelegramUpdates(before); err == nil && n > 0 {
-					state.Logger.Debug(fmt.Sprintf("已清理 %d 条过期 update_id", n), "telegram")
-				}
-			}
-		}
-
-		// 处理 callback_query（一键下单按钮）
-		if cb, ok := data["callback_query"].(map[string]interface{}); ok {
-			handleTelegramCallback(state, mon, c, cb)
-			return
-		}
-
-		// 处理普通消息（文本下单）
-		if msg, ok := data["message"].(map[string]interface{}); ok {
-			handleTelegramMessage(state, c, msg)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		u := ProcessUpdate(state, mon, data, legacy)
+		c.JSON(u.status, u.body)
 	}
 }
 
@@ -180,11 +214,11 @@ func TelegramWebhook(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 // 兼容模式(secret 未注册)时唯一的"鉴权"是请求体里的 chat_id,
 // 而那不是密钥。收通知可以将就,下单不行 —— 一单就是真实订单,
 // 占库存、已弃 14 天撤销期。
-func refuseInLegacyMode(state *app.State, c *gin.Context) bool {
-	if legacy, _ := c.Get("tgLegacyMode"); legacy == true {
+func refuseInLegacyMode(state *app.State, u *updateCtx) bool {
+	if u.legacyMode {
 		state.Logger.Error("兼容模式(webhook secret 未注册)下拒绝执行下单动作。"+
 			"请到设置页点一次「注册 Webhook」启用强校验", "telegram")
-		c.JSON(http.StatusForbidden, gin.H{
+		u.JSON(http.StatusForbidden, gin.H{
 			"ok":    false,
 			"error": "legacy_mode_order_refused",
 		})
@@ -220,14 +254,17 @@ func actorUserID(data map[string]interface{}) interface{} {
 }
 
 // handleTelegramCallback 处理「一键下单」按钮回调。
-func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Context, cb map[string]interface{}) {
-	if refuseInLegacyMode(state, c) {
+func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx, cb map[string]interface{}) {
+	if refuseInLegacyMode(state, u) {
 		return
 	}
 	cbData, _ := cb["data"].(string)
 	message, _ := cb["message"].(map[string]interface{})
 	chatID := getNested(message, "chat", "id")
 	messageID, _ := getNumOrFloat(message["message_id"])
+	// 记下这条消息当前的键盘,下单成功后把按过的那颗改成「已下单」。
+	// 回调里 Telegram 会把原 reply_markup 一起带回来,不用我们自己存。
+	telegram.StashKeyboard(chatID, int64(messageID), extractKeyboard(message))
 	fromUser, _ := cb["from"].(map[string]interface{})
 	userID, _ := getNumOrFloat(fromUser["id"])
 	state.Logger.Info(fmt.Sprintf("收到Telegram回调: user_id=%v, callback_data=%s...", userID, truncate(cbData, 50)), "telegram")
@@ -236,7 +273,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	if !telegram.IsAuthorizedActor(state, chatID, fromUser["id"]) {
 		state.Logger.Warn(fmt.Sprintf("拒绝未授权的 Telegram 回调: chat_id=%v, user_id=%v", chatID, userID), "telegram")
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "无权限", true)
-		c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
+		u.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
 		return
 	}
 
@@ -247,20 +284,20 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	}
 	if !telegram.AllowRate(rateKey) {
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "操作过于频繁，请稍后再试", true)
-		c.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
+		u.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
 		return
 	}
 
 	callbackObj, ok := decodeCallbackData(state, cbData)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Invalid callback data format"})
+		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Invalid callback data format"})
 		return
 	}
 
 	action := strOr(callbackObj, "a", "action")
 	if action != "add_to_queue" {
 		state.Logger.Warn("未知的action: "+action, "telegram")
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Unknown action: " + action})
+		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Unknown action: " + action})
 		return
 	}
 
@@ -279,7 +316,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	if buttonID == "" {
 		state.Logger.Warn("拒绝没有按钮 id 的下单回调(无法防重放)", "telegram")
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
+		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
 		return
 	}
 	planCode := strOr(callbackObj, "p", "planCode")
@@ -299,7 +336,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		row, ok, err := state.DB.ClaimTelegramButton(buttonID)
 		if err != nil {
 			state.Logger.Error("认领一键下单按钮失败: "+err.Error(), "telegram")
-			c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "claim_button_failed"})
+			u.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "claim_button_failed"})
 			return
 		}
 		if ok {
@@ -308,7 +345,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 				_ = state.DB.UnclaimTelegramButton(buttonID)
 				state.Logger.Warn("一键下单按钮已过期: "+buttonID, "telegram")
 				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该按钮已过期，请等待新的上架通知", true)
-				c.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_expired"})
+				u.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_expired"})
 				return
 			}
 			claimed = true
@@ -323,7 +360,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 			if _, exists, _ := state.DB.GetTelegramButton(buttonID); exists {
 				state.Logger.Warn("一键下单按钮已被使用过，拒绝重复下单: "+buttonID, "telegram")
 				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该按钮已使用过", true)
-				c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "button_already_used"})
+				u.JSON(http.StatusConflict, gin.H{"ok": false, "error": "button_already_used"})
 				return
 			}
 			// 库里没有 → 退回内存缓存（升级前发出、只存在内存里的老按钮）
@@ -339,7 +376,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 				// 这个分支,等于防重放形同虚设。
 				state.Logger.Warn("按钮 UUID 不存在,拒绝下单: "+buttonID, "telegram")
 				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
-				c.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_not_found"})
+				u.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_not_found"})
 				return
 			}
 		}
@@ -349,7 +386,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		if claimed {
 			_ = state.DB.UnclaimTelegramButton(buttonID)
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Missing planCode or datacenter"})
+		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Missing planCode or datacenter"})
 		return
 	}
 	if len(options) == 0 {
@@ -380,7 +417,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		state.Logger.Warn("Telegram 一键下单被拒绝：系统里没有任何 OVH 账户", "telegram")
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "未配置 OVH 账户", true)
 		telegram.SendReply(state, chatID, "❌ 未配置任何 OVH 账户，无法下单。请先在控制台添加账户。", int64(messageID))
-		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "no_account"})
+		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "no_account"})
 		return
 	}
 	accountID := acc.ID
@@ -437,7 +474,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		telegram.SendReply(state, chatID,
 			"⚠️ 入队失败：任务没能写进数据库，已撤销，未开始抢购。\n原因: "+err.Error()+"\n\n可以再按一次按钮重试。",
 			int64(messageID))
-		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save queue: " + err.Error()})
+		u.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save queue: " + err.Error()})
 		return
 	}
 
@@ -447,18 +484,22 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	}
 	state.Logger.Info(fmt.Sprintf("Telegram用户 %v 通过按钮添加到队列: %s@%s, 配置选项: %s, 账户: %s",
 		userID, planCode, dc, optsStr, accLabel), "telegram")
-	confirmMsg := fmt.Sprintf("✅ 已添加到抢购队列！\n\n型号: %s\n机房: %s\n配置: %s\n账户: %s\n\n系统将自动尝试下单。",
-		planCode, strings.ToUpper(dc), optsStr, accLabel)
-	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已添加到队列！", false)
+	confirmMsg := fmt.Sprintf(
+		"✅ 已加入抢购队列\n\n型号: %s\n机房: %s\n配置: %s\n账户: %s\n\n"+
+			"系统会一直重试到抢到为止。\n"+
+			"查看进度 /queue · 取消 /cancel %s",
+		planCode, strings.ToUpper(dc), optsStr, accLabel, shortID(item.ID))
+	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已加入队列，开始抢了", false)
 	telegram.SendReply(state, chatID, confirmMsg, int64(messageID))
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	// 把按过的那颗按钮标掉,免得用户翻回这条通知又按一次
+	// (服务端有一次性 claim 挡着,但用户只会收到一句"按钮已被使用",不知道是自己按过的)
+	telegram.MarkButtonPressed(state, chatID, int64(messageID), cbData,
+		"✅ "+strings.ToUpper(dc)+" 已下单")
+	u.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // handleTelegramMessage 处理文本下单消息。
-func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]interface{}) {
-	if refuseInLegacyMode(state, c) {
-		return
-	}
+func handleTelegramMessage(state *app.State, mon *monitor.Monitor, u *updateCtx, msg map[string]interface{}) {
 	text, _ := msg["text"].(string)
 	text = strings.TrimSpace(text)
 	chatID := getNested(msg, "chat", "id")
@@ -475,7 +516,7 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 	// 发送者授权
 	if !telegram.IsAuthorizedActor(state, chatID, fromUser["id"]) {
 		state.Logger.Warn(fmt.Sprintf("拒绝未授权的 Telegram 消息: chat_id=%v, user_id=%v", chatID, userID), "telegram")
-		c.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
+		u.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
 		return
 	}
 
@@ -486,14 +527,34 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 	}
 	if !telegram.AllowRate(rateKey) {
 		telegram.SendReply(state, chatID, "⚠️ 操作过于频繁，请稍后再试", int64(messageID))
-		c.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
+		u.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
+		return
+	}
+
+	// 命令排在花钱动作之前。命令只读或只做撤销,兼容模式下也该能用 ——
+	// 恰恰是那个模式最需要 /help 把"去注册 secret"这句话讲给用户听。
+	if handleCommand(state, mon, chatID, int64(messageID), text) {
+		u.JSON(http.StatusOK, gin.H{"ok": true, "handled": "command"})
+		return
+	}
+
+	// 到这里才是花钱的路径,兼容模式必须拦住
+	if refuseInLegacyMode(state, u) {
+		telegram.SendReply(state, chatID,
+			"⚠️ 当前 webhook 还没启用 secret 强校验，出于安全考虑暂不接受下单。\n"+
+				"请到控制台「设置 → Telegram」点一次「注册 Webhook」，或改用长轮询模式。", int64(messageID))
 		return
 	}
 
 	orderInfo := telegram.ParseOrderMessage(text)
 	if orderInfo == nil {
-		state.Logger.Debug("消息不是下单格式，忽略", "telegram")
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		// 以前这里是 Debug 一行日志然后静默丢掉 —— 用户发了东西,
+		// 屏幕上什么都没发生,他无从知道自己该发什么。
+		state.Logger.Debug("消息不是下单格式，回提示", "telegram")
+		telegram.SendReply(state, chatID,
+			"没看懂这条消息。\n\n下单格式：<型号> [机房] [数量] [配置]\n"+
+				"例：24sk602 gra 2\n\n发 /help 看完整说明。", int64(messageID))
+		u.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
 	state.Logger.Info(fmt.Sprintf("解析下单消息: planCode=%s, datacenter=%s, quantity=%d, options=%v",
@@ -521,7 +582,7 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 		reply = "❌ 下单失败\n\n" + result.Message
 	}
 	telegram.SendReply(state, chatID, reply, int64(messageID))
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	u.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // parseUpdateID 从 update JSON 里取 update_id（JSON 数字解出来可能是 float64 / json.Number）
@@ -612,6 +673,34 @@ func toStringSlice(v interface{}) []string {
 		}
 	case []string:
 		out = append(out, x...)
+	}
+	return out
+}
+
+// extractKeyboard 从 callback_query.message 里取出原始 inline_keyboard。
+// JSON 解出来是 []interface{} 套 map，这里转成 MarkButtonPressed 要的形状。
+func extractKeyboard(message map[string]interface{}) [][]map[string]interface{} {
+	markup, ok := message["reply_markup"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	rows, ok := markup["inline_keyboard"].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([][]map[string]interface{}, 0, len(rows))
+	for _, r := range rows {
+		cells, ok := r.([]interface{})
+		if !ok {
+			continue
+		}
+		row := make([]map[string]interface{}, 0, len(cells))
+		for _, c := range cells {
+			if b, ok := c.(map[string]interface{}); ok {
+				row = append(row, b)
+			}
+		}
+		out = append(out, row)
 	}
 	return out
 }

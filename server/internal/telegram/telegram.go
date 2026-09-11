@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -402,4 +403,142 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// MarkButtonPressed 把原消息上刚按下的那颗按钮标成已下单。
+//
+// 以前按完按钮，那条上架通知长得和没按过一模一样：几个机房按钮原样摆着，
+// 没有任何痕迹说明哪个已经下过单了。在手机上翻回几条消息之前的通知再按一次，
+// 是很自然的动作 —— 挡住它的只有服务端那道一次性 claim，
+// 用户得到的反馈是一句冷冰冰的「按钮已被使用」，而他根本不记得自己按过。
+//
+// 这里直接用回调里带回来的原始键盘改一颗按钮的文案，不重建整个键盘 ——
+// 其余机房的按钮要原样留着，用户很可能想多买几个机房。
+func MarkButtonPressed(state *app.State, chatID interface{}, messageID int64, pressedData, newText string) {
+	cfg := state.Config.Get()
+	if cfg.TgToken == "" || messageID <= 0 {
+		return
+	}
+	kb := rebuildKeyboard(state, chatID, messageID, pressedData, newText)
+	if kb == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"chat_id":      chatID,
+		"message_id":   messageID,
+		"reply_markup": map[string]interface{}{"inline_keyboard": kb},
+	}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest(http.MethodPost,
+		"https://api.telegram.org/bot"+cfg.TgToken+"/editMessageReplyMarkup",
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		// 编辑失败不影响下单本身,只是少了个视觉反馈
+		state.Logger.Debug("标记按钮已用失败: "+scrub(err.Error()), "telegram")
+		return
+	}
+	resp.Body.Close()
+}
+
+// storedKeyboard 由 handlers 在回调里塞进来的原始键盘(来自 callback_query.message)。
+// 用一个短生命周期的 map 传递,避免给 MarkButtonPressed 加一个巨大的参数。
+var (
+	kbMu    sync.Mutex
+	kbCache = map[string][][]map[string]interface{}{}
+)
+
+// StashKeyboard 记下这条消息当前的键盘,供随后的 MarkButtonPressed 使用。
+func StashKeyboard(chatID interface{}, messageID int64, kb [][]map[string]interface{}) {
+	if kb == nil {
+		return
+	}
+	kbMu.Lock()
+	kbCache[kbKey(chatID, messageID)] = kb
+	// 这个 map 只在"收到回调 → 标记按钮"之间活几毫秒,但异常路径可能不取走。
+	// 攒到一定量就整体清掉,不引入定时器。
+	if len(kbCache) > 256 {
+		kbCache = map[string][][]map[string]interface{}{
+			kbKey(chatID, messageID): kb,
+		}
+	}
+	kbMu.Unlock()
+}
+
+func kbKey(chatID interface{}, messageID int64) string {
+	return fmt.Sprintf("%v:%d", chatID, messageID)
+}
+
+// rebuildKeyboard 取出原键盘,把命中的那颗按钮改文案。
+func rebuildKeyboard(state *app.State, chatID interface{}, messageID int64, pressedData, newText string) [][]map[string]interface{} {
+	kbMu.Lock()
+	kb, ok := kbCache[kbKey(chatID, messageID)]
+	delete(kbCache, kbKey(chatID, messageID))
+	kbMu.Unlock()
+	if !ok || kb == nil {
+		return nil
+	}
+	hit := false
+	for _, row := range kb {
+		for _, b := range row {
+			if d, _ := b["callback_data"].(string); d == pressedData {
+				b["text"] = newText
+				hit = true
+			}
+		}
+	}
+	if !hit {
+		return nil
+	}
+	return kb
+}
+
+// BotCommands 注册给 Telegram 的命令列表。
+//
+// 注册之后用户在聊天框打 "/" 就会看到这个菜单,点一下就发出去 ——
+// 不用记、不用打字,在手机上尤其重要。
+// 这是让一个 bot 显得"有人管"最便宜的一件事,而以前一条都没注册过。
+var BotCommands = []map[string]string{
+	{"command": "help", "description": "怎么用 / 下单格式"},
+	{"command": "status", "description": "监控与队列总览"},
+	{"command": "queue", "description": "正在抢的任务"},
+	{"command": "cancel", "description": "取消任务（/cancel 任务号 或 all）"},
+	{"command": "subs", "description": "监控订阅列表"},
+	{"command": "recent", "description": "最近的抢购结果"},
+	{"command": "accounts", "description": "可用的 OVH 账户"},
+}
+
+// RegisterCommands 把命令菜单推给 Telegram。
+// 幂等,启动时调一次即可;失败只是少了个菜单,不影响任何功能,所以不返回错误。
+func RegisterCommands(state *app.State) {
+	cfg := state.Config.Get()
+	if strings.TrimSpace(cfg.TgToken) == "" {
+		return
+	}
+	payload := map[string]interface{}{"commands": BotCommands}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest(http.MethodPost,
+		"https://api.telegram.org/bot"+cfg.TgToken+"/setMyCommands",
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		state.Logger.Debug("注册 Telegram 命令菜单失败: "+scrub(err.Error()), "telegram")
+		return
+	}
+	defer resp.Body.Close()
+	var r struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, MaxTelegramBodyBytes))
+	_ = json.Unmarshal(respBody, &r)
+	if r.OK {
+		state.Logger.Info(fmt.Sprintf("已注册 %d 条 Telegram 命令菜单", len(BotCommands)), "telegram")
+		return
+	}
+	state.Logger.Debug("注册 Telegram 命令菜单被拒: "+r.Description, "telegram")
 }
