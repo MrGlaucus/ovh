@@ -89,6 +89,10 @@ export function useCreateQueueItem() {
       const dcs = payload.datacenters;
       let success = 0;
       let failed = 0;
+      // 单项失败原因必须带回去：以前只数个数，用户看到"N 个任务创建失败"
+      // 却不知道是账户不对、配置没选还是网络问题，只能反复重试。
+      // 后端拒绝空配置任务时的话术（"未指定硬件配置…"）就从这里透出。
+      let firstError = "";
       for (const dc of dcs) {
         for (let i = 0; i < qty; i++) {
           try {
@@ -102,12 +106,15 @@ export function useCreateQueueItem() {
               delaySeconds: payload.delaySeconds ?? 0,
             });
             success++;
-          } catch (e) {
+          } catch (e: any) {
             failed++;
+            if (!firstError) {
+              firstError = e?.response?.data?.error || e?.message || "创建失败";
+            }
           }
         }
       }
-      return { success, failed, total: dcs.length * qty };
+      return { success, failed, total: dcs.length * qty, firstError };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.queue.list() });

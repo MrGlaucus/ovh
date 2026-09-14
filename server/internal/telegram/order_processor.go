@@ -156,12 +156,23 @@ func ProcessOrder(state *app.State, accountID, planCode, datacenter string, quan
 		}
 	}
 	ordersToCreate := []types.QueueItem{}
+	skippedUnknownConfig := 0
 	state.Logger.Info(fmt.Sprintf("[Telegram下单] 账户=%s, 子公司=%s, planCode=%s", accLabel, sub, planCode), "telegram")
 	for _, ce := range configsToOrder {
 		configOptions := append([]string{}, ce.data.Options...)
 		state.Logger.Info(fmt.Sprintf("[Telegram下单] 处理配置: memory=%s, storage=%s, options=%v (数量: %d)",
 			ce.data.Memory, ce.data.Storage, configOptions, len(configOptions)), "telegram")
 		if len(configOptions) == 0 {
+			// 分段 FQN(含 addon 段)却匹配不出任何 addon = 配置身份无法核定。
+			// 建单等于签发一张"任意配置"的空白订单:执行侧会拒绝,用户却先收到
+			// "已创建任务"再被 Fatal 终止。这里直接跳过,和 purchase/queue 同一口径。
+			// 裸 planCode 机型(无 addon 段)整机唯一配置,options 为空属正常形态。
+			if strings.Contains(ce.data.FQN, ".") {
+				skippedUnknownConfig++
+				state.Logger.Warn(fmt.Sprintf("[Telegram下单] ⚠️ 配置身份未核定(FQN 含 addon 段但匹配不出 addon),跳过: %s",
+					ce.data.FQN), "telegram")
+				continue
+			}
 			state.Logger.Warn(fmt.Sprintf("[Telegram下单] ⚠️ 配置选项为空！memory=%s, storage=%s",
 				ce.data.Memory, ce.data.Storage), "telegram")
 		}
@@ -192,6 +203,16 @@ func ProcessOrder(state *app.State, accountID, planCode, datacenter string, quan
 					planCode, dc, item.Options, item.ID[:8]), "telegram")
 			}
 		}
+	}
+
+	if len(ordersToCreate) == 0 {
+		if skippedUnknownConfig > 0 {
+			return OrderResult{Success: false, Message: fmt.Sprintf(
+				"%s 的 %d 套配置身份无法核定(目录匹配不出 addon),未创建任何任务,避免用其他配置代下单。可稍后重试。",
+				planCode, skippedUnknownConfig)}
+		}
+		return OrderResult{Success: false, Message: fmt.Sprintf(
+			"%s 当前没有可下单的配置(可能无货,也可能 OVH 目录暂不可用)。", planCode)}
 	}
 
 	batchSize := 10

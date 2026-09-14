@@ -89,8 +89,65 @@ func TestMatchAddonsForSegment_PrefersExactPlanSuffix(t *testing.T) {
 		}
 	}
 
+	// 真实目录(2026-09 IE 实测):24sk202/-sgp/-syd 共享同一套 -24sk20 后缀的 addon,
+	// 默认项本身就是 ram-32g-ecc-2133-24sk20,目录里不存在 -24sk202 形式的后缀。
+	// 因此 family 里只有 -24sk20 时必须兜底接受 —— 否则 options 为空,价格校验会按
+	// 默认配置 FQN 报 not available,监控把有货机型误报成"检测到库存,暂不可下单"
+	// (与 24sk602@fra 同型事故)。
 	got = matchAddonsForSegment(addons[:1], segment, StandardizeConfig(segment), "24sk202")
-	if len(got) != 0 {
-		t.Fatalf("没有 24sk202 addon 时不得回退到 24sk20：%v", got)
+	if len(got) != 1 || got[0] != "ram-32g-ecc-2133-24sk20" {
+		t.Fatalf("24sk202 应兜底匹配同产品线的 -24sk20 addon：%v", got)
+	}
+}
+
+// 真实目录(2026-09 IE 实测):24sk602 全族的 addon 只带 -24sk60 产品线代号后缀,
+// availabilities 返回的段不带任何后缀。修复前这类 addon 被当成"其他机型专属"整族排除:
+// options=[] → 价格校验按默认配置 FQN 报 "24sk602.ram-128g-ecc-2400.softraid-2x4000sa
+// is not available in fra" → 监控把 fra 实际有货(1000nvme)的机型误报成"暂不可下单"。
+func TestMatchAddonsForSegment_ProductLineSuffix(t *testing.T) {
+	memory := []string{"ram-256g-ecc-2400-24sk60", "ram-128g-ecc-2400-24sk60"}
+	storage := []string{
+		"softraid-2x500nvme-24sk60",
+		"softraid-2x1000nvme-24sk60",
+		"softraid-2x4000sa-24sk60",
+		"softraid-2x8000sa-24sk60",
+	}
+	cases := []struct {
+		addons []string
+		seg    string
+		want   string
+	}{
+		{memory, "ram-128g-ecc-2400", "ram-128g-ecc-2400-24sk60"},
+		{memory, "ram-256g-ecc-2400", "ram-256g-ecc-2400-24sk60"},
+		{storage, "softraid-2x1000nvme", "softraid-2x1000nvme-24sk60"},
+		{storage, "softraid-2x4000sa", "softraid-2x4000sa-24sk60"},
+		{storage, "softraid-2x500nvme", "softraid-2x500nvme-24sk60"},
+	}
+	for _, c := range cases {
+		got := matchAddonsForSegment(c.addons, c.seg, StandardizeConfig(c.seg), "24sk602")
+		if len(got) != 1 || got[0] != c.want {
+			t.Errorf("段 %q → %v, 期望 [%s]", c.seg, got, c.want)
+		}
+	}
+}
+
+// 产品线兜底必须在"整族代号唯一且与 planCode 有前缀关系"时才生效。
+// 混存多个代号 / 无前缀关系时必须返回空:宁可匹配不到,也不能把别的产品线的
+// 硬件选项塞进 Options —— 它们会被 monitor / telegram 直接拿去下单。
+func TestMatchAddonsForSegment_ProductLineFallbackGuards(t *testing.T) {
+	// 混存两个产品线代号 → 不兜底
+	mixed := []string{"ram-64g-ecc-2133-24sk20", "ram-64g-ecc-2133-26sk50a"}
+	if got := matchAddonsForSegment(mixed, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"), "24sk602"); len(got) != 0 {
+		t.Errorf("混存产品线代号时不得兜底：%v", got)
+	}
+	// 唯一代号但不是 planCode 前缀 → 不兜底
+	other := []string{"ram-64g-ecc-2133-24sk20"}
+	if got := matchAddonsForSegment(other, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"), "26sk50a"); len(got) != 0 {
+		t.Errorf("代号与 planCode 无前缀关系时不得兜底：%v", got)
+	}
+	// 代号等于 planCode 本身 → 由精确后缀档命中,不依赖兜底
+	exact := []string{"ram-64g-ecc-2133-24sk20"}
+	if got := matchAddonsForSegment(exact, "ram-64g-ecc-2133", StandardizeConfig("ram-64g-ecc-2133"), "24sk20"); len(got) != 1 || got[0] != "ram-64g-ecc-2133-24sk20" {
+		t.Errorf("完整后缀应由精确档命中：%v", got)
 	}
 }

@@ -982,7 +982,9 @@ function DetailContent({
               onClose();
             }
             if (result.failed > 0) {
-              toast.error(`${result.failed} 个任务创建失败`);
+              toast.error(
+                `${result.failed} 个任务创建失败${result.firstError ? `：${result.firstError}` : ""}`
+              );
             }
           }}
         >

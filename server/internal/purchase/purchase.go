@@ -80,8 +80,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		recordTiming(timingKey, tl, "failed")
 		errMsg := err.Error()
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
-		recordFailure(state, item, errMsg)
-		return attemptOutcome(err)
+		return failOutcome(state, item, err, errMsg)
 	}
 	tl.mark("查库存")
 
@@ -97,6 +96,21 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			recordFailure(state, item, msg)
 			return Outcome{Fatal: true, Reason: msg}
 		}
+	}
+
+	// 空 options 是"任务没有锁定配置"：FQN 带 "." 说明这台机器由多套硬件组合构成
+	// （<planCode>.<addon1>.<addon2>...），没有 options 就分不清用户要的是哪一套。
+	// 以前执行侧会从"第一条有货 FQN"反推 addon 替用户下单 —— 用户选的配置下架、
+	// 另一套补货的窗口期里，同一批按钮会把订单静默换成另一套配置（实测：KS-6
+	// 标准配置最终买成 2×1TB NVMe 非标配）。无货可以重试，配置串了不可撤销，
+	// 所以宁可终止也不猜。裸 planCode 机型（FQN 无 addon 段）没有配置可选，
+	// options 为空是正常形态，不在此列。
+	if len(item.Options) == 0 && availabilityHasSegmentedFQN(availabilities) {
+		errMsg := fmt.Sprintf("任务未指定硬件配置（options 为空），而 %s 由多套硬件组合构成 —— "+
+			"为避免买错配置任务已终止；请重新选择具体配置后下单", item.PlanCode)
+		state.Logger.Error("PurchaseServer: "+errMsg, "purchase")
+		recordFailure(state, item, errMsg)
+		return Outcome{Fatal: true, Reason: errMsg}
 	}
 
 	apiDC := ovh.ConvertDisplayDCToAPIDC(item.Datacenter)
@@ -128,10 +142,6 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	}
 
 	foundAvailable := false
-	// 记下"实际可用的那条 FQN"。FQN 格式：<planCode>.<addon1>.<addon2>...
-	// 用户没显式指定 options 时，会从这个 FQN 推断 addon，让订单走"有货的那套配置"，
-	// 不再退化到 OVH 默认 addon（多半是 HDD / 最小内存）。
-	var availableFQN string
 	for _, av := range candidates {
 		if dcsRaw, ok := av["datacenters"].([]interface{}); ok {
 			for _, dcRaw := range dcsRaw {
@@ -145,9 +155,6 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 				// 以前被当成有货，会为永远下不了单的机型跑完整个下单流程、白刷 OVH 限流额度。
 				if dcName == apiDC && catalog.IsAvailableForOrder(availStr) {
 					foundAvailable = true
-					if fqn, ok := av["fqn"].(string); ok {
-						availableFQN = fqn
-					}
 					break
 				}
 			}
@@ -167,21 +174,14 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		return Outcome{DelayPending: true}
 	}
 
-	// 决定本次下单使用的硬件 options：
-	// - 用户显式指定了 options → 直接用（fail-fast 由后面的 eco/options 处理）
-	// - 用户没指定 → 从可用 FQN 推断 addon planCode，确保订单走"实际有货的那套配置"
+	// 本次下单使用的硬件 options 只认任务里锁定的配置。
+	//
+	// 这里曾经有一段"用户没指定 options 时从有货 FQN 反推 addon"的逻辑 ——
+	// 它是配置串号的最后一环：按钮里存的旧配置下架、另一套补货时，这段反推会把
+	// 订单静默换成"当时有货"的那套。配置身份由用户在 /buy / 下单对话框里选择，
+	// 各入队口（telegram / quick_order / AddQueueItem）已拒绝空配置任务，
+	// 执行侧上面也把"空 options + 分段 FQN"判了 Fatal，这里不再有反推的余地。
 	effectiveOptions := item.Options
-	if len(effectiveOptions) == 0 && availableFQN != "" {
-		parts := strings.Split(availableFQN, ".")
-		if len(parts) > 1 {
-			// 第一段是 base planCode，其余是 addon 段。注意这些段是"短前缀"
-			// （ram-128g-noecc-2933），不是 eco/options 里带机型后缀的完整 planCode
-			// （ram-128g-noecc-2933-rise），下面匹配 addon 时要允许前缀命中。
-			effectiveOptions = parts[1:]
-			state.Logger.Info(fmt.Sprintf("用户未指定硬件选项，从可用 FQN %s 推断 addon: %v",
-				availableFQN, effectiveOptions), "purchase")
-		}
-	}
 
 	// 多账户:购物车 subsidiary 跟着账户走,不再读全局 cfg
 	acc, _ := state.FindAccount(item.AccountID)
@@ -194,8 +194,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
-		recordFailure(state, item, err.Error())
-		return attemptOutcome(err)
+		return failOutcome(state, item, err, err.Error())
 	}
 	cartID, _ = cartResult["cartId"].(string)
 	tl.mark("建购物车")
@@ -230,8 +229,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		errMsg := err.Error()
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
-		recordFailure(state, item, errMsg)
-		return attemptOutcome(err)
+		return failOutcome(state, item, err, errMsg)
 	}
 	tl.mark("绑定购物车")
 	state.Logger.Info("购物车绑定成功", "purchase")
@@ -265,8 +263,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		if err != nil {
 			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
-			recordFailure(state, item, err.Error())
-			return attemptOutcome(err)
+			return failOutcome(state, item, err, err.Error())
 		}
 	}
 	if n, ok := numconv.ToInt64(itemResult["itemId"]); ok {
@@ -359,16 +356,13 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误(%s): %s", item.PlanCode, cfg.label, errMsg), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的基础商品ID: %d", itemID), "purchase")
-			recordFailure(state, item, errMsg)
-			return attemptOutcome(err)
+			return failOutcome(state, item, err, errMsg)
 		}
 	}
 
 	tl.mark("必需配置")
 
-	// 硬件选项处理。effectiveOptions 已经包含了：
-	//   - 用户显式 options（如果有），或
-	//   - 从可用 FQN 推断的 addon planCode（用户没指定时）
+	// 硬件选项处理。effectiveOptions 就是任务锁定的配置（可能为空 = 裸机型）。
 	if len(effectiveOptions) > 0 {
 		state.Logger.Info(fmt.Sprintf("📦 处理硬件选项（%d个）: %v", len(effectiveOptions), effectiveOptions), "purchase")
 		filtered := filterHardwareOptions(state, effectiveOptions, true)
@@ -381,8 +375,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 				// 拉 eco/options 失败 → 中止订单。否则会用基础 plan 默认存储（多半是 HDD）下到错误配置
 				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败: %s（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", err.Error(), len(filtered))
 				state.Logger.Error(errMsg, "purchase")
-				recordFailure(state, item, errMsg)
-				return attemptOutcome(err)
+				return failOutcome(state, item, err, errMsg)
 			}
 			state.Logger.Info(fmt.Sprintf("找到 %d 个可用的 Eco 硬件选项。", len(availableEcoOpts)), "purchase")
 
@@ -444,8 +437,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 					state.Logger.Error(fmt.Sprintf("添加 Eco 选项 %s 失败: %s", t.planCode, err.Error()), "purchase")
 					// 关键选项添加失败 → 整单失败。不能静默继续 checkout,否则会下到错误配置。
 					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败: %s（已取消下单避免下到错误配置）", t.planCode, err.Error())
-					recordFailure(state, item, errMsg)
-					return attemptOutcome(err)
+					return failOutcome(state, item, err, errMsg)
 				}
 				state.Logger.Info(fmt.Sprintf("成功添加 Eco 选项: %s", t.planCode), "purchase")
 			}
@@ -482,10 +474,11 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		tl.mark("下单")
 		recordTiming(timingKey, tl, "failed")
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s (%s)", item.PlanCode, errMsg, tl.String()), "purchase")
-		recordFailure(state, item, errMsg)
 		// checkout 这一步最要紧:补货瞬间大家都在下单,429 是常态。
-		// 把它记成一次"真正的失败尝试"会让任务在唯一有货的那一分钟里自己判死。
-		return attemptOutcome(err)
+		// 把它记成一次"真正的失败尝试"会让任务在唯一有货的那一分钟里自己判死；
+		// failOutcome 里 429/408 这类瞬时错误既不计重试额度也不写历史,
+		// 历史里留下的都是真业务失败的原因。
+		return failOutcome(state, item, err, errMsg)
 	}
 	tl.mark("下单")
 	recordTiming(timingKey, tl, "ordered")
@@ -651,6 +644,19 @@ func fqnSegmentMatchesOption(seg, opt string) bool {
 		return false
 	}
 	return s == o || strings.HasPrefix(o, s+"-") || strings.HasPrefix(s, o+"-")
+}
+
+// availabilityHasSegmentedFQN 判断这批可用性记录里是否存在"带 addon 段"的 FQN
+// （<planCode>.<addon1>[.<addon2>...]）。有 = 这台机器由多套硬件组合构成，
+// 下单必须锁定具体配置；全裸 planCode（无 "."）机型没有配置可选，
+// options 为空即"整个机型就是唯一下单形态"，不能拦。
+func availabilityHasSegmentedFQN(availabilities []map[string]interface{}) bool {
+	for _, av := range availabilities {
+		if fqn, _ := av["fqn"].(string); strings.Contains(fqn, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // fqnRelevantOptions 从用户提交的 options 里挑出真正参与 FQN 库存判定的硬件项。

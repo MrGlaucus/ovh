@@ -77,43 +77,49 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 					continue
 				}
 				dcSeen = true
-				if len(cfg.Options) > 0 {
-					options = append(options, cfg.Options...)
-					break
-				}
 				// 这条 FQN 在用户要的机房确实有货,却一个可下单 addon 都没匹配上 ——
 				// OptionsNote 说的就是这件事,照实转达比报"无可定价配置"准确得多
 				if cfg.OptionsNote != "" && optionsNote == "" {
 					optionsNote = cfg.OptionsNote
 				}
 			}
-			if len(options) == 0 {
-				// 目录没拉下来时 cfg.Options 恒为空,报"无可定价配置"会把 OVH 瞬断
-				// 误导成"这台机器没配置可买",几种情况必须分开说
-				err := "指定机房无可定价配置（" + body.PlanCode + "@" + body.Datacenter + "）"
-				switch {
-				case catalogMissingMsg != "":
-					// 原文已经是完整的人话(哪个子公司、哪个站点、为什么),不要再加前缀
-					err = catalogMissingMsg
-				case catalogErr != "":
-					err = "OVH 目录拉取失败，无法匹配可下单配置：" + catalogErr
-				case optionsNote != "":
-					err = optionsNote
-				case len(availByConfig) == 0:
-					// availByConfig 为空 = /dedicated/server/datacenter/availabilities 返回了空数组。
-					// 拿别的站点的 planCode 查同样是 HTTP 200 + [](实测 24rise01-v1 在 US 站点 n=0),
-					// 和"这台机器暂时没货"长得一样 —— 交给 classifyPlan 分辨到底是哪种。
-					if _, hint := catalog.ClassifyPlan(state, body.AccountID, body.PlanCode, "quick_order"); hint != "" {
-						err = hint
-					}
-				case !dcSeen:
-					// 机型有记录,但用户要的机房这一刻没有任何一条 FQN 可下单 = 单纯没货
-					err = "机型 " + body.PlanCode + " 在机房 " + body.Datacenter + " 当前无货"
+			// 调用方没有给出配置身份时必须拒绝，绝不替它挑一套配置。
+			//
+			// 以前这里会"取第一个有货配置的 options"回填（map 遍历顺序还是随机的）：
+			// 用户选的配置下架、另一套配置补货的窗口期里，同一批按钮/订阅会把订单
+			// 换成当时有货的那套（实测：KS-6 标准配置最终买成 2×1TB NVMe 非标配）。
+			// 无货可以重试，配置串了却不可撤销。
+			//
+			// 目录没拉下来时 cfg.Options 恒为空,报"无可定价配置"会把 OVH 瞬断
+			// 误导成"这台机器没配置可买",几种情况必须分开说
+			err := "指定机房无可定价配置（" + body.PlanCode + "@" + body.Datacenter + "）"
+			switch {
+			case catalogMissingMsg != "":
+				// 原文已经是完整的人话(哪个子公司、哪个站点、为什么),不要再加前缀
+				err = catalogMissingMsg
+			case catalogErr != "":
+				err = "OVH 目录拉取失败，无法匹配可下单配置：" + catalogErr
+			case optionsNote != "":
+				err = optionsNote
+			case len(availByConfig) == 0:
+				// availByConfig 为空 = /dedicated/server/datacenter/availabilities 返回了空数组。
+				// 拿别的站点的 planCode 查同样是 HTTP 200 + [](实测 24rise01-v1 在 US 站点 n=0),
+				// 和"这台机器暂时没货"长得一样 —— 交给 classifyPlan 分辨到底是哪种。
+				if _, hint := catalog.ClassifyPlan(state, body.AccountID, body.PlanCode, "quick_order"); hint != "" {
+					err = hint
 				}
-				state.Logger.Warn("[quick_order] "+err, "quick_order")
-				c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err})
-				return
+			case !dcSeen:
+				// 机型有记录,但用户要的机房这一刻没有任何一条 FQN 可下单 = 单纯没货
+				err = "机型 " + body.PlanCode + " 在机房 " + body.Datacenter + " 当前无货"
+			case dcSeen:
+				// 有货 + 目录正常：唯一原因是调用方没带配置身份，显式拒绝而不是用
+				// "当时有货"的配置代下单 —— 那是另一个订单，不是调用方要的那套配置。
+				err = "请求未指定硬件配置（options 为空），且 " + body.PlanCode + "@" + body.Datacenter +
+					" 当前有货：为避免把订单落到其他配置上，请显式选择配置后重试"
 			}
+			state.Logger.Warn("[quick_order] "+err, "quick_order")
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err})
+			return
 		}
 
 		priceResult := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, options)

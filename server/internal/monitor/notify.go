@@ -170,6 +170,10 @@ func (m *Monitor) writeNotificationServerSummary(msg *strings.Builder, planCode 
 				msg.WriteString("   配置类型：标准配置\n")
 			case profile.ConfigTypeKnown:
 				msg.WriteString("   配置类型：扩展硬件配置（非默认）\n")
+			default:
+				// 空 options / 目录未匹配到 addon 时不再贴"标准配置"标签
+				// (见 ConfigPriceProfileForOptions),照实说明识别不到。
+				msg.WriteString("   配置类型：未能识别（OVH 目录未匹配到该配置的 addon）\n")
 			}
 			if priceText != "" {
 				msg.WriteString("\n💳 费用\n")

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -62,6 +63,26 @@ func AddQueueItem(state *app.State) gin.HandlerFunc {
 			state.Logger.Warn(fmt.Sprintf("[queue] 拒绝任务(判定 %d): %s", verdict, hint), "queue")
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": hint})
 			return
+		}
+		// 配置必须锁定才能入队:options 为空时下单两难 —— OVH 会按默认配置下单,
+		// 而用户以为买的是页面上选的那套(实际发生过"选标准配置买成非标配置")。
+		// 探测一次 FQN:存在"<planCode>.<addon...>"形式的多配置组合才拒绝;
+		// 裸 planCode 机型(整个机型就是唯一配置)options 为空是正常形态。
+		// 探测失败(catalog 瞬断)不拦,执行侧 PurchaseServer 有同样的兜底判定。
+		if len(body.Options) == 0 {
+			segmented := false
+			for _, cfg := range catalog.CheckServerAvailabilityWithConfigs(state, body.PlanCode, body.AccountID) {
+				if strings.Contains(cfg.FQN, ".") {
+					segmented = true
+					break
+				}
+			}
+			if segmented {
+				state.Logger.Warn("[queue] 拒绝未指定配置的任务: "+body.PlanCode, "queue")
+				c.JSON(http.StatusBadRequest, gin.H{"status": "error",
+					"error": "未指定硬件配置（options 为空）：" + body.PlanCode + " 有多套硬件组合，为避免下错配置，请选择具体配置后再创建任务"})
+				return
+			}
 		}
 		if body.RetryInterval == 0 {
 			body.RetryInterval = 30
@@ -345,6 +366,12 @@ func PayPurchaseHistoryOrder(state *app.State) gin.HandlerFunc {
 		}
 		if err := purchase.PayOrderWithPreferredPaymentMethod(client, entry.OrderID); err != nil {
 			state.Logger.Error("历史订单默认付款请求失败 "+entry.OrderID+": "+err.Error(), "purchase")
+			// 账户没有可用支付方式 = 付款请求根本没发出，零风险：给明确指引即可，
+			// 别套"未确认完成、勿重复点击"的警告 —— 那是给"可能已扣款"场景用的。
+			if errors.Is(err, purchase.ErrNoUsablePaymentMean) {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
 			// 不能自动重试：超时或网络断开时，OVH 可能已经收到付款请求。
 			c.JSON(http.StatusBadGateway, gin.H{"error": "OVH 付款请求未确认完成：" + err.Error() + "。请先到 OVH 管理面板确认，勿重复点击。"})
 			return

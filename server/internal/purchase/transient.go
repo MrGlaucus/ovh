@@ -6,6 +6,9 @@ import (
 	"strings"
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
+
+	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // IsTransient 判断一次 OVH 调用的失败是不是"过一会再试就可能成功"。
@@ -76,4 +79,18 @@ func IsTransient(err error) bool {
 // 只告诉我们"这一下没打通"。
 func attemptOutcome(err error) Outcome {
 	return Outcome{Attempted: !IsTransient(err)}
+}
+
+// failOutcome 是"这一步失败了"的统一收尾:非瞬时错误才写抢购历史。
+//
+// 历史条目是按 TaskID 就地覆盖的(每个任务最多一条),以前连 408/429/5xx
+// 这类瞬时错误也无条件写 —— 无货轮询里偶发一次 408,就把这条任务此前
+// 有价值的失败原因覆盖成一句 408 HTML;用户看到的是"型号一直无货、
+// 队列没减少,历史里却全是抢购失败"。瞬时错误不构成"这单买不成"的结论,
+// 只留在日志里,历史保持干净。
+func failOutcome(state *app.State, item *types.QueueItem, err error, errMsg string) Outcome {
+	if !IsTransient(err) {
+		recordFailure(state, item, errMsg)
+	}
+	return attemptOutcome(err)
 }

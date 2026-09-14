@@ -228,6 +228,12 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 //     (ram-256g-ecc-2400-24sk60b → ram-256gb、ram-128g-on-die-...-25risel01-v1-ca →
 //     ram-128g-on-diel01-ca),这类只能靠裸前缀兜底。
 //
+// 还有一种更隐蔽的形态:EU 目录给同产品线机型共享一套 addon,后缀只到产品线代号
+// (24sk602 全族带 -24sk60、24sk202/-sgp/-syd 全族带 -24sk20),既不等于完整
+// planCode 也不是无后缀公共项 —— 靠 bestAddonWithPrefix 的产品线兜底识别(见
+// productLineFallback),否则整族被当成"其他机型"排除、options 全空
+// (实测 24sk602@fra 因此被误报"检测到库存,暂不可下单")。
+//
 // 绝对不能退回 strings.Contains:softraid-2x6000sa 会同时命中
 // hybridsoftraid-2x6000sa-2x512nvme(实测 US 92 条、EU/CA 各 119 条这样误配),
 // 而 Options 是 monitor / quick_order / telegram 直接拿去下单的 —— 误配就是买错配置。
@@ -235,6 +241,9 @@ func matchAddonsForSegment(addons []string, seg, segStd, planCode string) []stri
 	if len(addons) == 0 || (seg == "" && segStd == "") {
 		return nil
 	}
+	// 产品线兜底代号:整个 family 只带一个与 planCode 有前缀关系的产品线代号时,
+	// 该代号的 addon 就是本机型的合法选项(见 productLineFallback)。
+	lineCode := productLineFallback(addons, planCode)
 	// 第 1 档:原始码完全相等
 	for _, addon := range addons {
 		if addon == seg {
@@ -249,7 +258,7 @@ func matchAddonsForSegment(addons []string, seg, segStd, planCode string) []stri
 	// (…-26sk50a-v1 → …nvmea),正确项因此丢掉分隔符、反而落到比错误项更低的档,
 	// 实测就是这样把 €0 的 2x960NVMe 配成了 €24 的混合盘。
 	if seg != "" {
-		if best := bestAddonWithPrefix(addons, seg+"-", planCode); best != "" {
+		if best := bestAddonWithPrefix(addons, seg+"-", planCode, lineCode); best != "" {
 			return []string{best}
 		}
 	}
@@ -263,7 +272,7 @@ func matchAddonsForSegment(addons []string, seg, segStd, planCode string) []stri
 			}
 		}
 		if len(exact) > 0 {
-			if best := bestAddonWithPrefix(exact, "", planCode); best != "" {
+			if best := bestAddonWithPrefix(exact, "", planCode, lineCode); best != "" {
 				return []string{best}
 			}
 		}
@@ -274,19 +283,77 @@ func matchAddonsForSegment(addons []string, seg, segStd, planCode string) []stri
 				candidates = append(candidates, addon)
 			}
 		}
-		if best := bestAddonWithPrefix(candidates, "", planCode); best != "" {
+		if best := bestAddonWithPrefix(candidates, "", planCode, lineCode); best != "" {
 			return []string{best}
 		}
 	}
 	return nil
 }
 
-var addonPlanSuffixRE = regexp.MustCompile(`(?i)-\d+(?:sk|rise|sys|ks)[a-z0-9-]*`)
+var (
+	addonPlanSuffixRE = regexp.MustCompile(`(?i)-\d+(?:sk|rise|sys|ks)[a-z0-9-]*`)
+	// addonSiteSuffixRE 公开目录给同一机型附加的站点尾缀。归类产品线代号时要先剥掉,
+	// 否则 ram-64g-ecc-2133-24sk20-us 的代号会被算成 24sk20-us 而不等于 24sk20。
+	addonSiteSuffixRE = regexp.MustCompile(`(?i)-(?:us|ca|eu)$`)
+)
 
-// bestAddonWithPrefix 在当前 plan 的候选中优先选择最短项。若候选已包含其他机型后缀，
-// 绝不能把它当作当前 plan 的兜底；只有没有机型归属的公共 addon 才可退回使用。
-func bestAddonWithPrefix(addons []string, prefix, planCode string) string {
-	best, fallback := "", ""
+// addonPlanSuffixLine 把 addonPlanSuffixRE 的匹配片段规范成产品线代号:
+// 去掉前导 '-'、转小写、剥掉站点尾缀(-24sk60 → 24sk60,-24sk20-us → 24sk20)。
+func addonPlanSuffixLine(match string) string {
+	if match == "" {
+		return ""
+	}
+	return addonSiteSuffixRE.ReplaceAllString(strings.ToLower(strings.TrimPrefix(match, "-")), "")
+}
+
+// productLineFallback 当整个 family 的 addon 都只带同一个产品线代号后缀、且该代号是
+// planCode 的前缀(24sk60 之于 24sk602、24sk20 之于 24sk202/-sgp/-syd)时返回该代号;
+// 混存多个代号、代号等于 planCode 本身、或 addon 全部无代号时返回空。
+//
+// 为什么需要:"同产品线共享 addon"是 EU 目录的普遍形态,而 availabilities 返回的段
+// 不带任何后缀。只认完整 planCode 后缀(-24sk602)的过滤会把 -24sk60 当成"其他机型"
+// 整族排除 —— 实测 24sk602@fra 因此 options=[] ,价格校验按默认配置 FQN 报
+// "not available in fra",监控把一个有货机型误报成"检测到库存,暂不可下单"。
+//
+// 混存(同一 family 出现多个代号)时不兜底:宁可匹配为空,也不能把别的产品线的
+// 硬件选项塞进购物车 —— 它们会被 monitor / telegram 直接拿去下单。
+func productLineFallback(addons []string, planCode string) string {
+	planCode = strings.ToLower(strings.TrimSpace(planCode))
+	if planCode == "" {
+		return ""
+	}
+	code := ""
+	for _, addon := range addons {
+		base := addonPlanSuffixLine(addonPlanSuffixRE.FindString(addon))
+		if base == "" {
+			continue
+		}
+		if code == "" {
+			code = base
+			continue
+		}
+		if base != code {
+			return ""
+		}
+	}
+	if code == "" || code == planCode || !strings.HasPrefix(planCode, code) {
+		return ""
+	}
+	return code
+}
+
+// bestAddonWithPrefix 在当前 plan 的候选中优先选择最短项。三级过滤,顺序不能换:
+//
+//  1. 带当前 planCode 完整后缀的候选优先;
+//  2. 没有机型归属的公共 addon 次之;
+//  3. 产品线共享 addon 兜底 —— 仅当 lineCode 非空(整个 family 的 addon 只带同一个
+//     与 planCode 有前缀关系的产品线代号)时接受。若把这类 addon 也当成"别的机型"
+//     排除,整族会匹配为空(实测 24sk602@fra 因此误报"暂不可下单")。
+//
+// 除这三类以外的候选(其他机型的专属后缀)绝不能兜底 —— Options 是 monitor /
+// quick_order / telegram 直接拿去下单的,误配就是买错配置。
+func bestAddonWithPrefix(addons []string, prefix, planCode, lineCode string) string {
+	best, fallback, line := "", "", ""
 	for _, addon := range addons {
 		if prefix != "" && !strings.HasPrefix(addon, prefix) {
 			continue
@@ -297,7 +364,12 @@ func bestAddonWithPrefix(addons []string, prefix, planCode string) string {
 			}
 			continue
 		}
-		if addonPlanSuffixRE.MatchString(addon) {
+		if m := addonPlanSuffixRE.FindString(addon); m != "" {
+			if lineCode != "" && addonPlanSuffixLine(m) == lineCode {
+				if line == "" || len(addon) < len(line) {
+					line = addon
+				}
+			}
 			continue
 		}
 		if fallback == "" || len(addon) < len(fallback) {
@@ -307,7 +379,10 @@ func bestAddonWithPrefix(addons []string, prefix, planCode string) string {
 	if best != "" {
 		return best
 	}
-	return fallback
+	if fallback != "" {
+		return fallback
+	}
+	return line
 }
 
 // addonHasPlanSuffix 只接受完整 planCode。不能把 24sk202-sgp / 24sk202-syd

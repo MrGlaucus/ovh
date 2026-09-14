@@ -631,6 +631,12 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 				planCode = cached.PlanCode
 				dc = cached.Datacenter
 				options = cached.Options
+				// 老按钮的 ConfigInfo 里同样带 config_key（FQN）；能拿到就走精确身份匹配
+				if cached.ConfigInfo != nil {
+					if ck, _ := cached.ConfigInfo["config_key"].(string); strings.TrimSpace(ck) != "" {
+						configKey = strings.TrimSpace(ck)
+					}
+				}
 				state.Logger.Info("从内存缓存恢复按钮配置（旧按钮）: "+buttonID, "telegram")
 			} else {
 				// 库里没有、内存缓存也没有 → 拒绝。
@@ -705,9 +711,13 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 
 	// 通知发出后库存可能已变化；这里必须按最终选中的账户、机房和完整配置再次查询。
 	// 未通过时归还一次性按钮，不创建"明知无货"的抢购任务，用户可在补货消息仍有效时重试。
+	//
+	// 解析出的 resolvedOptions 是"选中配置对应的实时 options"：配置一旦选定就必须定死，
+	// 无货时明确拒绝，绝不允许换一套配置下单（旧版会因空快照/空匹配静默买成别的配置）。
 	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在实时检查库存", false)
 	configs := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
-	if !telegramOrderTargetAvailable(configs, configKey, dc, options) {
+	resolvedOptions, targetOK := resolveTelegramOrderOptions(configs, configKey, dc, options)
+	if !targetOK {
 		if claimed {
 			_ = state.DB.UnclaimTelegramButton(buttonID)
 		}
@@ -715,7 +725,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 			planCode, dc, configKey, options, accountID), "telegram")
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "库存已变化，未创建任务", true)
 		telegram.SendReply(state, chatID,
-			"⚠️ 当前机房或所选配置已经无货，未创建抢购任务。\n\n请等待下一条有货通知后再试。",
+			"⚠️ 所选配置（或机房）已经无货，未创建抢购任务，也不会用其他配置代下单。\n\n请等待下一条有货通知，或重新发送 /buy 选择当前可下单的配置。",
 			int64(messageID))
 		c.JSON(http.StatusConflict, gin.H{"ok": false, "error": "stock_no_longer_available"})
 		return
@@ -726,7 +736,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		AccountID:     accountID,
 		PlanCode:      planCode,
 		Datacenter:    dc,
-		Options:       options,
+		Options:       resolvedOptions,
 		Status:        "running",
 		CreatedAt:     types.NowISO(),
 		UpdatedAt:     types.NowISO(),
@@ -765,9 +775,9 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		return
 	}
 
-	optsStr := strings.Join(options, ", ")
+	optsStr := strings.Join(resolvedOptions, ", ")
 	if optsStr == "" {
-		optsStr = "无（默认配置）"
+		optsStr = "未指定"
 	}
 	state.Logger.Info(fmt.Sprintf("Telegram用户 %v 通过按钮添加到队列: %s@%s, 配置选项: %s, 账户: %s",
 		userID, planCode, dc, optsStr, accLabel), "telegram")
@@ -778,23 +788,48 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// telegramOrderTargetAvailable 按完整配置身份检查某个通知按钮是否仍可立即下单。
-// configKey 来自有货通知时 OVH 返回的 FQN；旧按钮缺少它时才退化为完整 options 集合匹配。
-func telegramOrderTargetAvailable(
+// resolveTelegramOrderOptions 按完整配置身份解析本次下单应使用的硬件 options。
+//
+// configKey 非空（新版按钮）：必须精确命中该账户目录里的 FQN，且目标机房有货。
+// 返回的是该 FQN 当前匹配出的 options，而不是按钮里存的旧快照 —— 旧快照在历史
+// 版本里可能因目录匹配缺陷为空（整族假"无货"），FQN 身份才是权威。
+//
+// configKey 为空（老按钮）：退化为完整 options 集合匹配。两侧都必须非空：
+// 空 options 不代表任何配置身份，以前 [] 对 [] 恒等，会把"未锁定配置"的点击
+// 匹配到任意一个有货配置上，再叠加上下游的配置回填就是买错配置。
+//
+// 返回 ok=false 表示无法确认该配置仍可下单 —— 调用方必须拒绝，
+// 绝不能改用其他配置下单。
+func resolveTelegramOrderOptions(
 	configs map[string]*catalog.ConfigAvailability,
 	configKey, datacenter string,
 	options []string,
-) bool {
+) ([]string, bool) {
 	if configKey != "" {
 		config := configs[configKey]
-		return config != nil && catalog.IsAvailableForOrder(config.Datacenters[datacenter])
+		if config == nil || !catalog.IsAvailableForOrder(config.Datacenters[datacenter]) {
+			return nil, false
+		}
+		// 裸 planCode 机型（FQN 无 addon 段）整机唯一配置，options 为空是正常形态
+		// （与 purchase / queue 的 availabilityHasSegmentedFQN 同一口径，不能拦）；
+		// 分段机型（FQN 含 "."）却匹配不出任何 addon 时配置身份无法核定，拒绝。
+		if len(config.Options) == 0 && strings.Contains(configKey, ".") {
+			return nil, false
+		}
+		return append([]string(nil), config.Options...), true
+	}
+	if len(options) == 0 {
+		return nil, false
 	}
 	for _, config := range configs {
-		if sameTelegramOptions(config.Options, options) && catalog.IsAvailableForOrder(config.Datacenters[datacenter]) {
-			return true
+		if len(config.Options) == 0 || !catalog.IsAvailableForOrder(config.Datacenters[datacenter]) {
+			continue
+		}
+		if sameTelegramOptions(config.Options, options) {
+			return append([]string(nil), config.Options...), true
 		}
 	}
-	return false
+	return nil, false
 }
 
 func sameTelegramOptions(left, right []string) bool {
@@ -825,7 +860,10 @@ func telegramButtonConfigKey(raw string) string {
 }
 
 type buyMenuCandidate struct {
-	AccountID   string   `json:"account_id"`
+	AccountID string `json:"account_id"`
+	// ConfigKey 是 OVH 的 FQN（配置的原始身份）。它必须逐级传到最终下单按钮，
+	// 让下单侧按 FQN 精确校验，而不是拿展示文案或 options 快照猜配置。
+	ConfigKey   string   `json:"config_key,omitempty"`
 	Options     []string `json:"options"`
 	Datacenters []string `json:"datacenters"`
 }
@@ -850,9 +888,13 @@ func validBuyMenuButton(row db.TelegramButtonRow, exists bool) error {
 	return nil
 }
 
-func saveBuyMenuButton(state *app.State, planCode, datacenter, accountID string, options []string, info buyMenuState) (string, error) {
+func saveBuyMenuButton(state *app.State, planCode, datacenter, accountID string, options []string, info buyMenuState, configKey string) (string, error) {
 	id := uuid.NewString()
 	payload := map[string]interface{}{"buy_menu": info}
+	if strings.TrimSpace(configKey) != "" {
+		// 与通知按钮同用一个字段名：下单侧 telegramButtonConfigKey 统一读取
+		payload["config_key"] = strings.TrimSpace(configKey)
+	}
 	if err := state.DB.UpsertTelegramButtonForAccount(id, accountID, planCode, datacenter, options, payload, float64(time.Now().Unix())); err != nil {
 		return "", err
 	}
@@ -900,13 +942,13 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 		return fmt.Errorf("未配置 OVH 账户")
 	}
 
-	rootID, err := saveBuyMenuButton(state, planCode, "", "", nil, buyMenuState{})
+	rootID, err := saveBuyMenuButton(state, planCode, "", "", nil, buyMenuState{}, "")
 	if err != nil {
 		return fmt.Errorf("创建配置菜单失败: %w", err)
 	}
 	groups := map[string]*buyMenuState{}
 	for _, account := range accounts {
-		for _, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
+		for configKey, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
 			dcs := make([]string, 0, len(config.Datacenters))
 			for dc, status := range config.Datacenters {
 				if catalog.IsAvailableForOrder(status) {
@@ -914,6 +956,12 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 				}
 			}
 			if len(dcs) == 0 {
+				continue
+			}
+			// 分段机型（FQN 含 "."）匹配不出 addon 时（目录瞬断 / 新增配置未收录），
+			// 候选点下去也只会被库存检查拒掉 —— 菜单承诺"仅展示当前可下单的配置"，
+			// 这类候选不进菜单；裸 planCode 机型（FQN 无 "."）不受影响。
+			if len(config.Options) == 0 && strings.Contains(configKey, ".") {
 				continue
 			}
 			sort.Strings(dcs)
@@ -927,11 +975,11 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 				group = &buyMenuState{Display: display, ParentID: rootID}
 				groups[key] = group
 			}
-			group.Candidates = append(group.Candidates, buyMenuCandidate{AccountID: account.ID, Options: config.Options, Datacenters: dcs})
+			group.Candidates = append(group.Candidates, buyMenuCandidate{AccountID: account.ID, ConfigKey: configKey, Options: config.Options, Datacenters: dcs})
 		}
 	}
 	if len(groups) == 0 {
-		return fmt.Errorf("%s 在已配置账户可见的所有机房都无货", planCode)
+		return fmt.Errorf("%s 当前没有可下单的配置（可能无货，也可能 OVH 目录暂不可用——可稍后重试 /buy）", planCode)
 	}
 
 	keys := make([]string, 0, len(groups))
@@ -942,7 +990,7 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 	keyboard := make([][]telegramMenuButton, 0, len(keys))
 	for _, key := range keys {
 		group := groups[key]
-		id, err := saveBuyMenuButton(state, planCode, "", "", nil, *group)
+		id, err := saveBuyMenuButton(state, planCode, "", "", nil, *group, "")
 		if err != nil {
 			return fmt.Errorf("保存配置选项失败: %w", err)
 		}
@@ -982,7 +1030,7 @@ func sendBuyDatacenterChoices(state *app.State, chatID interface{}, messageID in
 	line := make([]telegramMenuButton, 0, 2)
 	for _, dc := range dcs {
 		child := buyMenuState{Display: menu.Display, ParentID: configButtonID, Candidates: byDC[dc]}
-		id, err := saveBuyMenuButton(state, row.PlanCode, dc, "", nil, child)
+		id, err := saveBuyMenuButton(state, row.PlanCode, dc, "", nil, child, "")
 		if err != nil {
 			return fmt.Errorf("保存机房选项失败: %w", err)
 		}
@@ -1029,7 +1077,9 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 			continue
 		}
 		seen[account.ID] = struct{}{}
-		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true})
+		// 账户按钮是最终下单按钮：把该候选的 FQN 一并写入 ConfigInfo，
+		// 下单回调据此按 FQN 精确校验"这个账户目录里的这条配置"是否仍可下单。
+		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true}, candidate.ConfigKey)
 		if err != nil {
 			return fmt.Errorf("保存账户选项失败: %w", err)
 		}
@@ -1096,7 +1146,7 @@ func favoriteOrderKeyboard(state *app.State) ([][]telegramMenuButton, error) {
 	keyboard := make([][]telegramMenuButton, 0, (len(favorites)+1)/2)
 	line := make([]telegramMenuButton, 0, 2)
 	for _, favorite := range favorites {
-		id, err := saveBuyMenuButton(state, favorite.PlanCode, "", "", nil, buyMenuState{})
+		id, err := saveBuyMenuButton(state, favorite.PlanCode, "", "", nil, buyMenuState{}, "")
 		if err != nil {
 			return nil, fmt.Errorf("保存型号选项失败: %w", err)
 		}

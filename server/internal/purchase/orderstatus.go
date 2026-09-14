@@ -1,6 +1,7 @@
 package purchase
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -48,10 +49,98 @@ func FetchOrderStatus(client *ovhsdk.Client, orderID string) (string, error) {
 	return strings.TrimSpace(status), nil
 }
 
+// ErrNoUsablePaymentMean 账户里找不到"默认且有效"的已注册支付方式。
+// 付款按钮需要把这种"配置问题"和"请求结果未知"区分开：前者零风险、给明确指引；
+// 后者才需要"请到 OVH 面板确认、勿重复点击"的警告。
+var ErrNoUsablePaymentMean = errors.New("该账户没有已注册且有效的默认支付方式；请先到 OVH 管理面板添加支付方式或确认默认支付方式有效")
+
+// paymentMeanItem 一类支付方式里单个候选的详情（默认标记 + 状态）。
+type paymentMeanItem struct {
+	ID      int64
+	Default bool
+	State   string
+}
+
+// selectPreferredPaymentMean 从一类支付方式的候选里选出该用的那个：
+//   - 标记 default 且状态 valid 的，直接选（这就是 OVH 管理面板里的"默认支付方式"）；
+//   - 没有默认标记时，仅当恰好只有一个 valid 候选才选它（事实上的唯一选择）；
+//   - 其余情况返回 0，由调用方报错让用户去面板定默认 ——
+//     付款涉及资金，绝不擅自替用户在多张卡里挑一张。
+func selectPreferredPaymentMean(items []paymentMeanItem) int64 {
+	var onlyValid int64
+	validCount := 0
+	for _, it := range items {
+		if it.State != "valid" {
+			continue
+		}
+		if it.Default {
+			return it.ID
+		}
+		validCount++
+		onlyValid = it.ID
+	}
+	if validCount == 1 {
+		return onlyValid
+	}
+	return 0
+}
+
+// resolvePreferredPaymentMean 找出账户的默认支付方式，返回（类型, ID）。
+//
+// OVH 的 payWithRegisteredPaymentMean 必须显式带 paymentMean（类型）与
+// paymentMeanId（信用卡/PayPal/银行账户场景必填），不存在"无参用默认"的调用方式 ——
+// 这正是付款按钮最初必然 400 的根因。默认信息只能自己查：列该类型已注册的
+// 支付方式，再看详情里的 default/state 字段。顺序：信用卡 → PayPal
+// （最常用的两种自动扣款方式）。
+func resolvePreferredPaymentMean(client *ovhsdk.Client) (string, int64, error) {
+	candidates := []struct {
+		meanType string
+		listPath string
+	}{
+		{"creditCard", "/me/paymentMean/creditCard"},
+		{"paypal", "/me/paymentMean/paypal"},
+	}
+	var lastErr error
+	for _, c := range candidates {
+		var ids []int64
+		if err := client.Get(c.listPath, &ids); err != nil {
+			lastErr = err
+			continue
+		}
+		items := make([]paymentMeanItem, 0, len(ids))
+		for _, id := range ids {
+			var detail struct {
+				Default bool   `json:"default"`
+				State   string `json:"state"`
+			}
+			if err := client.Get(fmt.Sprintf("%s/%d", c.listPath, id), &detail); err != nil {
+				continue
+			}
+			items = append(items, paymentMeanItem{ID: id, Default: detail.Default, State: detail.State})
+		}
+		if id := selectPreferredPaymentMean(items); id != 0 {
+			return c.meanType, id, nil
+		}
+	}
+	if lastErr != nil {
+		return "", 0, fmt.Errorf("查询账户支付方式失败: %w", lastErr)
+	}
+	return "", 0, ErrNoUsablePaymentMean
+}
+
 // PayOrderWithPreferredPaymentMethod 使用该 OVH 账户已登记的默认支付方式支付一张已有订单。
-// 它不是购物车 checkout：订单创建后购物车已转换为订单，必须调用订单专用接口。
+// 它不是购物车 checkout（那边有 autoPayWithPreferredPaymentMethod 让 OVH 服务端自己解析默认）：
+// 订单创建后购物车已转换为订单，必须调用订单专用接口，且要显式带上解析出的
+// paymentMean + paymentMeanId —— 以前这里 body 传 nil，每次都被 OVH 参数校验 400 拒绝。
 func PayOrderWithPreferredPaymentMethod(client *ovhsdk.Client, orderID string) error {
-	if err := client.Post("/me/order/"+orderID+"/payWithRegisteredPaymentMean", nil, nil); err != nil {
+	meanType, meanID, err := resolvePreferredPaymentMean(client)
+	if err != nil {
+		return err
+	}
+	if err := client.Post("/me/order/"+orderID+"/payWithRegisteredPaymentMean", map[string]interface{}{
+		"paymentMean":   meanType,
+		"paymentMeanId": meanID,
+	}, nil); err != nil {
 		return fmt.Errorf("请求默认支付方式付款失败: %w", err)
 	}
 	return nil

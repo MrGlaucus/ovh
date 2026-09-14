@@ -437,7 +437,9 @@ function CreateQueueDialog({
       toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
     }
     if (result.failed > 0) {
-      toast.error(`${result.failed} 个任务创建失败`);
+      toast.error(
+        `${result.failed} 个任务创建失败${result.firstError ? `：${result.firstError}` : ""}`
+      );
     }
     if (result.success > 0) {
       reset();

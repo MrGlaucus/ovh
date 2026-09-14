@@ -292,6 +292,17 @@ func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, 
 	profile := ConfigPriceProfile{Currency: cat.currency, InstallationKnown: true}
 	installTotal := installationAmount(pc.pricings)
 	isDefault, typeKnown := true, true
+	if len(options) == 0 && len(pc.addonFamilies) > 0 {
+		// 空 options 对"有 addon 家族的分段机型"是"配置未知"而不是"标准配置":
+		// 以前对空列表直接跳过循环,isDefault/typeKnown 保持 vacuous 真值,
+		// 任何没匹配出 addon 的分段配置(目录拉取失败 / 目录未收录)都被标成
+		// "标准配置" —— 实测 KS-6 的 2×1TB NVMe 非标配置因此显示成"标准配置",
+		// 误导用户下单。安装费同理:只含基础机型、缺 addon 部分,不能当作完整金额。
+		// 裸 planCode 机型(无 addon 家族)整机唯一配置,options 恒为空,必须保持
+		// "标准配置"+安装费展示 —— 与 telegram/purchase/queue 的豁免口径一致。
+		typeKnown = false
+		profile.InstallationKnown = false
+	}
 	for _, option := range options {
 		family, isKnown := addonFamilyForOption(pc.addonFamilies, option)
 		if !isKnown {
