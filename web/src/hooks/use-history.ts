@@ -101,3 +101,17 @@ export function useClearHistory() {
     onError: (e: any) => toast.error(e.response?.data?.error || "清空失败"),
   });
 }
+
+/** 清除所有失败的抢购历史（成功记录保留，避免误伤待付款订单） */
+export function useClearFailedHistory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      (await api.delete<{ status: string; deleted: number }>("/purchase-history/failed")).data,
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: qk.history() });
+      toast.success(d.deleted > 0 ? `已清除 ${d.deleted} 条失败记录` : "没有失败记录需要清除");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || "清除失败记录失败"),
+  });
+}

@@ -1,4 +1,4 @@
-import { useAccounts, accountChipColor, findAccountByID } from "@/hooks/use-accounts";
+import { useAccounts, accountChipColorForId, findAccountByID } from "@/hooks/use-accounts";
 import { errorMessage } from "@/components/common/LoadFailed";
 import { cn } from "@/lib/utils";
 
@@ -63,7 +63,7 @@ export function AccountChip({ accountId, className }: { accountId: string; class
     <span
       className={cn(
         "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10.5px] font-medium whitespace-nowrap",
-        accountChipColor(acc.zone),
+        accountChipColorForId(acc.id),
         className
       )}
       title={`OVH 账户:${acc.name}(${acc.zone},${acc.endpoint})`}

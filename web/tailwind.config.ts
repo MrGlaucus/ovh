@@ -52,6 +52,10 @@ export default {
         },
         success: "hsl(var(--success))",
         warning: "hsl(var(--warning))",
+        // info 此前只有 globals.css 里的变量、没在这里映射，Chip/StatusDot 等
+        // 满世界的 bg-info/text-info 类全都没生成 —— 蓝色系状态（付款核验中、
+        // 交付中、延迟等）实际渲染出来是无色的。补上映射让设计意图生效。
+        info: "hsl(var(--info))",
         "button-primary": {
           DEFAULT: "hsl(var(--button-primary))",
           foreground: "hsl(var(--button-primary-foreground))",

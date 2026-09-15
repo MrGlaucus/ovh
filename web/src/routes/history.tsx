@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,6 +23,7 @@ import {
 import {
   useHistory,
   useClearHistory,
+  useClearFailedHistory,
   useRemoveHistoryItem,
   usePayHistoryOrder,
   useRefreshOrderStatus,
@@ -47,7 +48,9 @@ function orderStatusView(item: PurchaseHistory): {
     case "checking":
       return { label: "付款核验中", tone: "info", paid: true, closed: false, title: "OVH 已收到付款,正在核验" };
     case "delivering":
-      return { label: "已付款·交付中", tone: "success", paid: true, closed: false, title: "已付款,OVH 正在交付服务器" };
+      // 交付中≠已交付：都用绿色的话扫一遍列表分不出"还要等"和"已经到手"，
+      // 交付中用 info 蓝（浅蓝底），和终态绿色拉开。
+      return { label: "已付款·交付中", tone: "info", paid: true, closed: false, title: "已付款,OVH 正在交付服务器" };
     case "delivered":
       return { label: "已付款·已交付", tone: "success", paid: true, closed: true, title: "已付款并交付" };
     case "cancelling":
@@ -120,6 +123,7 @@ function getExpirationMs(item: PurchaseHistory): number {
 function HistoryPage() {
   const list = useHistory();
   const clear = useClearHistory();
+  const clearFailed = useClearFailedHistory();
   const remove = useRemoveHistoryItem();
   const pay = usePayHistoryOrder();
   const refreshStatus = useRefreshOrderStatus();
@@ -129,6 +133,7 @@ function HistoryPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmClearFailed, setConfirmClearFailed] = useState(false);
   const [deleteItem, setDeleteItem] = useState<PurchaseHistory | null>(null);
   const [paymentItem, setPaymentItem] = useState<PurchaseHistory | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -142,12 +147,21 @@ function HistoryPage() {
   const items = list.data || [];
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
-    return items.filter((i) => {
-      if (statusFilter !== "all" && i.status !== statusFilter) return false;
-      if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
-      return true;
-    });
+    const timeOf = (i: PurchaseHistory) => {
+      const t = parseStoredTime(i.purchaseTime).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    return items
+      .filter((i) => {
+        if (statusFilter !== "all" && i.status !== statusFilter) return false;
+        if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
+        return true;
+      })
+      // 后端按写入顺序返回（最早的在最前），展示一律最新的在最上 —— 打开页面
+      // 第一眼就是刚下完的那单，不用先滚到底。
+      .sort((a, b) => timeOf(b) - timeOf(a));
   }, [items, search, serverNames, statusFilter]);
+  const failedCount = useMemo(() => items.filter((i) => i.status === "failed").length, [items]);
 
   return (
     <div className="space-y-3 sm:space-y-6">
@@ -167,6 +181,15 @@ function HistoryPage() {
                 className={`w-4 h-4 ${list.isFetching || refreshStatus.isPending ? "animate-spin" : ""}`}
               />
               刷新状态
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmClearFailed(true)}
+              disabled={failedCount === 0 || clearFailed.isPending}
+              title="删除所有失败的抢购历史记录；成功记录（含待付款、交付中的订单）会保留"
+            >
+              <Eraser className="w-4 h-4" />
+              清除失败记录
             </Button>
             <Button variant="outline" onClick={() => setConfirmClear(true)} disabled={items.length === 0}>
               <Trash2 className="w-4 h-4" />
@@ -293,6 +316,27 @@ function HistoryPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteItem(null)}>取消</Button>
             <Button variant="destructive" disabled={remove.isPending} onClick={() => deleteItem && remove.mutate(deleteItem.id, { onSuccess: () => setDeleteItem(null) })}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirmClearFailed} onOpenChange={setConfirmClearFailed}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>清除所有失败记录？</DialogTitle>
+            <DialogDescription>
+              将删除 {failedCount} 条失败的抢购历史；成功记录（含待付款、交付中的订单）全部保留。此操作不可撤销。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmClearFailed(false)}>取消</Button>
+            <Button
+              variant="destructive"
+              disabled={clearFailed.isPending}
+              onClick={() => clearFailed.mutate(undefined, { onSuccess: () => setConfirmClearFailed(false) })}
+            >
+              确认清除
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

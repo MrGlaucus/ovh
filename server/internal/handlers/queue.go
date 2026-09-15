@@ -496,3 +496,42 @@ func ClearPurchaseHistory(state *app.State) gin.HandlerFunc {
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 	}
 }
+
+// stripFailedHistory 剔除失败记录，返回保留列表和被删条数。
+// 抽成纯函数是为了单测：handler 本身要一整个 State（库、日志）才能跑。
+func stripFailedHistory(entries []types.PurchaseHistoryEntry) ([]types.PurchaseHistoryEntry, int) {
+	kept := make([]types.PurchaseHistoryEntry, 0, len(entries))
+	deleted := 0
+	for _, entry := range entries {
+		if entry.Status == "failed" {
+			deleted++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept, deleted
+}
+
+// ClearFailedPurchaseHistory DELETE /api/purchase-history/failed
+//
+// 只删 failed 记录，成功单（尤其还没付款的）一律保留 —— 清空按钮一键全清，
+// 用户想清掉刷屏的失败记录又怕误伤待付款订单时没有别的选择。
+func ClearFailedPurchaseHistory(state *app.State) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		state.HistoryMu.Lock()
+		kept, deleted := stripFailedHistory(state.History)
+		state.History = kept
+		state.HistoryMu.Unlock()
+		if deleted == 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "success", "deleted": 0})
+			return
+		}
+		if err := state.SaveHistory(); err != nil {
+			state.Logger.Error("清除失败抢购历史后保存失败: "+err.Error(), "history")
+			c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "error": "失败记录已从当前列表移除，但没能写入数据库：" + err.Error()})
+			return
+		}
+		state.Logger.Info(fmt.Sprintf("已清除 %d 条失败抢购历史", deleted), "history")
+		c.JSON(http.StatusOK, gin.H{"status": "success", "deleted": deleted})
+	}
+}
