@@ -1091,7 +1091,9 @@ function QueueRow({
           </div>
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        {/* 手机上这行落在复选框正下方(p-3),与上方内容区(复选框 w-4 + gap-3)差 28px,
+            左对齐到 DC GRA 标签才和内容是一条线;桌面端在右侧独立成列,不需要缩进 */}
+        <div className="flex items-center gap-2 flex-shrink-0 pl-7 sm:pl-0">
           {chip}
           {item.status !== "completed" && item.status !== "failed" && (
             <Button variant="ghost" size="icon" onClick={onToggle} aria-label={item.status === "running" || item.status === "delaying" ? "暂停" : "恢复"}>
