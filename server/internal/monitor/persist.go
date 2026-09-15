@@ -43,6 +43,10 @@ func toDBSub(s *Subscription) types.Subscription {
 	if last == nil {
 		last = map[string]string{}
 	}
+	opts := s.Options
+	if opts == nil {
+		opts = []string{}
+	}
 	return types.Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
@@ -57,6 +61,7 @@ func toDBSub(s *Subscription) types.Subscription {
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
 		DelaySeconds:       s.DelaySeconds,
+		Options:            opts,
 	}
 }
 
@@ -80,6 +85,10 @@ func fromDBSub(s types.Subscription) *Subscription {
 	if last == nil {
 		last = map[string]string{}
 	}
+	opts := s.Options
+	if opts == nil {
+		opts = []string{}
+	}
 	return &Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
@@ -94,6 +103,7 @@ func fromDBSub(s types.Subscription) *Subscription {
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
 		DelaySeconds:       s.DelaySeconds,
+		Options:            opts,
 	}
 }
 

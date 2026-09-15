@@ -21,6 +21,7 @@ type monitorSubRow struct {
 	AutoOrderAccountID string `db:"auto_order_account_id"`
 	AutoPay            int    `db:"auto_pay"`
 	DelaySeconds       int    `db:"delay_seconds"`
+	OptionsJSON        string `db:"options"`
 }
 
 func rowToMonitorSub(r monitorSubRow) types.Subscription {
@@ -33,6 +34,11 @@ func rowToMonitorSub(r monitorSubRow) types.Subscription {
 	_ = json.Unmarshal([]byte(r.LastStatusJSON), &last)
 	hist := []types.SubscriptionHistoryEntry{}
 	_ = json.Unmarshal([]byte(r.HistoryJSON), &hist)
+	opts := []string{}
+	_ = json.Unmarshal([]byte(r.OptionsJSON), &opts)
+	if opts == nil {
+		opts = []string{}
+	}
 	return types.Subscription{
 		PlanCode:           r.PlanCode,
 		Datacenters:        dcs,
@@ -47,6 +53,7 @@ func rowToMonitorSub(r monitorSubRow) types.Subscription {
 		AutoOrderAccountID: r.AutoOrderAccountID,
 		AutoPay:            r.AutoPay == 1,
 		DelaySeconds:       r.DelaySeconds,
+		Options:            opts,
 	}
 }
 
@@ -60,6 +67,9 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 	if s.History == nil {
 		s.History = []types.SubscriptionHistoryEntry{}
 	}
+	if s.Options == nil {
+		s.Options = []string{}
+	}
 	dcsJSON, err := json.Marshal(s.Datacenters)
 	if err != nil {
 		return monitorSubRow{}, err
@@ -69,6 +79,10 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 		return monitorSubRow{}, err
 	}
 	histJSON, err := json.Marshal(s.History)
+	if err != nil {
+		return monitorSubRow{}, err
+	}
+	optsJSON, err := json.Marshal(s.Options)
 	if err != nil {
 		return monitorSubRow{}, err
 	}
@@ -92,6 +106,7 @@ func monitorSubToRow(s types.Subscription) (monitorSubRow, error) {
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            bi(s.AutoPay),
 		DelaySeconds:       s.DelaySeconds,
+		OptionsJSON:        string(optsJSON),
 	}, nil
 }
 
@@ -120,10 +135,10 @@ func (db *DB) UpsertMonitorSubscription(s types.Subscription) error {
 	_, err = db.NamedExec(`
 		INSERT INTO monitor_subscriptions
 		(plan_code, datacenters, notify_available, notify_unavailable, last_status,
-		 created_at, history, server_name, auto_order, quantity, auto_order_account_id, auto_pay, delay_seconds)
+		 created_at, history, server_name, auto_order, quantity, auto_order_account_id, auto_pay, delay_seconds, options)
 		VALUES
 		(:plan_code, :datacenters, :notify_available, :notify_unavailable, :last_status,
-		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id, :auto_pay, :delay_seconds)
+		 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id, :auto_pay, :delay_seconds, :options)
 		ON CONFLICT(plan_code) DO UPDATE SET
 		  datacenters        = excluded.datacenters,
 		  notify_available   = excluded.notify_available,
@@ -135,7 +150,8 @@ func (db *DB) UpsertMonitorSubscription(s types.Subscription) error {
 		  quantity               = excluded.quantity,
 		  auto_order_account_id  = excluded.auto_order_account_id,
 		  auto_pay               = excluded.auto_pay,
-		  delay_seconds          = excluded.delay_seconds
+		  delay_seconds          = excluded.delay_seconds,
+		  options                = excluded.options
 	`, r)
 	if err != nil {
 		return fmt.Errorf("upsert monitor sub %s: %w", s.PlanCode, err)
@@ -161,10 +177,10 @@ func (db *DB) ReplaceMonitorSubscriptions(subs []types.Subscription) error {
 		_, err = tx.NamedExec(`
 			INSERT INTO monitor_subscriptions
 			(plan_code, datacenters, notify_available, notify_unavailable, last_status,
-			 created_at, history, server_name, auto_order, quantity, auto_order_account_id, auto_pay, delay_seconds)
+			 created_at, history, server_name, auto_order, quantity, auto_order_account_id, auto_pay, delay_seconds, options)
 			VALUES
 			(:plan_code, :datacenters, :notify_available, :notify_unavailable, :last_status,
-			 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id, :auto_pay, :delay_seconds)
+			 :created_at, :history, :server_name, :auto_order, :quantity, :auto_order_account_id, :auto_pay, :delay_seconds, :options)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert monitor sub %s: %w", s.PlanCode, err)

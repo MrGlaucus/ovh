@@ -44,6 +44,8 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 			AutoPay bool `json:"autoPay"`
 			// DelaySeconds 补货后延迟 N 秒下单,0=跟随全局
 			DelaySeconds int `json:"delaySeconds"`
+			// Options 只盯这套配置(addon planCode 列表)。空/缺省 = 盯全部配置
+			Options []string `json:"options"`
 		}
 		_ = c.ShouldBindJSON(&body)
 		if body.PlanCode == "" {
@@ -89,7 +91,7 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 		region, subsidiary, regionWarning := mon.PreflightRegion(body.PlanCode, body.AutoOrderAccountID)
 
 		mon.AddSubscription(body.PlanCode, body.Datacenters, notifyAvailable, notifyUnavailable,
-			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID, body.AutoPay, body.DelaySeconds)
+			serverName, nil, nil, body.AutoOrder, body.Quantity, body.AutoOrderAccountID, body.AutoPay, body.DelaySeconds, body.Options)
 		mon.SaveToDB()
 
 		if !mon.Running() {
@@ -177,7 +179,7 @@ func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 				continue
 			}
 			mon.AddSubscription(pc, []string{}, notifyAvailable, notifyUnavailable,
-				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID, false, 0)
+				server.Name, nil, nil, body.AutoOrder, 1, body.AutoOrderAccountID, false, 0, []string{})
 			added++
 			state.Logger.Debug("批量添加订阅: "+pc+" ("+server.Name+")", "monitor")
 		}

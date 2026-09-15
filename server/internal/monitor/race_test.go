@@ -30,8 +30,8 @@ func TestSubscriptionConcurrentAccess(t *testing.T) {
 			slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))),
 	}
 	m := New(state)
-	m.AddSubscription("24sk102-us", []string{"bhs", "vin"}, true, true, "SK102", nil, nil, false, 0, "", false, 0)
-	m.AddSubscription("24adv01-v3", nil, true, false, "ADV1", nil, nil, true, 2, "acc-eu", false, 0)
+	m.AddSubscription("24sk102-us", []string{"bhs", "vin"}, true, true, "SK102", nil, nil, false, 0, "", false, 0, []string{"ram-64g-ecc-2133", "softraid-2x960nvme"})
+	m.AddSubscription("24adv01-v3", nil, true, false, "ADV1", nil, nil, true, 2, "acc-eu", false, 0, nil)
 
 	subs := func() []*Subscription {
 		m.subsMu.Lock()
@@ -116,7 +116,12 @@ func TestSubscriptionConcurrentAccess(t *testing.T) {
 				return
 			default:
 			}
-			m.AddSubscription("24sk102-us", []string{"bhs"}, i%2 == 0, true, "SK102", nil, nil, true, 1, "acc-us", false, 0)
+			// 两义交替:一半改成盯一套配置、一半清空,覆盖 Options 的更新分支
+			var opts []string
+			if i%2 == 0 {
+				opts = []string{"ram-64g-ecc-2133"}
+			}
+			m.AddSubscription("24sk102-us", []string{"bhs"}, i%2 == 0, true, "SK102", nil, nil, true, 1, "acc-us", false, 0, opts)
 		}
 	}()
 
@@ -134,7 +139,7 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 			slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))),
 	}
 	m := New(state)
-	m.AddSubscription("24adv01-v3", []string{"gra"}, true, false, "ADV1", nil, nil, false, 0, "", false, 0)
+	m.AddSubscription("24adv01-v3", []string{"gra"}, true, false, "ADV1", nil, nil, false, 0, "", false, 0, []string{"ram-64g-ecc-2133"})
 
 	live := m.subscriptions[0]
 	live.replaceLastStatus(map[string]string{"gra|x": "available"})
@@ -144,6 +149,7 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 	cp.LastStatus["gra|x"] = "unavailable"
 	cp.History[0].Datacenter = "rbx"
 	cp.Datacenters[0] = "bhs"
+	cp.Options[0] = "ram-128g"
 
 	if got := live.statusSnapshot()["gra|x"]; got != "available" {
 		t.Errorf("改副本污染了真身 LastStatus: %s", got)
@@ -153,6 +159,9 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 	}
 	if got := live.checkConfig().Datacenters[0]; got != "gra" {
 		t.Errorf("改副本污染了真身 Datacenters: %s", got)
+	}
+	if got := live.checkConfig().Options[0]; got != "ram-64g-ecc-2133" {
+		t.Errorf("改副本污染了真身 Options: %s", got)
 	}
 
 	// 真身继续推进,已经拿到手的副本不受影响

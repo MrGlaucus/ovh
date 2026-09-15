@@ -44,6 +44,9 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			AutoOrderAccountID *string   `json:"autoOrderAccountId"`
 			AutoPay            *bool     `json:"autoPay"`
 			DelaySeconds       *int      `json:"delaySeconds"`
+			// Options 只盯这套配置。指针区分「没传」(保留旧值)和「传空数组」
+			// (改成盯全部) —— 用户在界面上清空配置后必须能存进去,不传则不动旧值
+			Options *[]string `json:"options"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
@@ -60,6 +63,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		accountID := cur.AutoOrderAccountID
 		autoPay := cur.AutoPay
 		delaySeconds := cur.DelaySeconds
+		options := cur.Options
 
 		if body.Datacenters != nil {
 			datacenters = *body.Datacenters
@@ -85,6 +89,9 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 				delaySeconds = 0
 			}
 		}
+		if body.Options != nil {
+			options = *body.Options
+		}
 		if body.AutoOrderAccountID != nil {
 			accountID = *body.AutoOrderAccountID
 			// 空串是合法值:表示「触发时只通知、不下单」
@@ -107,7 +114,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 
 		// AddSubscription 对已存在的 planCode 是就地改配置,不会重置 LastStatus / History
 		mon.AddSubscription(planCode, datacenters, notifyAvailable, notifyUnavailable,
-			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay, delaySeconds)
+			cur.ServerName, nil, nil, autoOrder, quantity, accountID, autoPay, delaySeconds, options)
 		mon.SaveToDB()
 		state.Logger.Info("更新服务器订阅配置: "+planCode, "monitor")
 

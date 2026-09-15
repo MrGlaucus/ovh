@@ -145,6 +145,11 @@ func (db *DB) migrate() error {
 	if err := db.addColumnIfMissing("monitor_subscriptions", "delay_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// options:订阅"只盯哪套配置"的 addon 列表(JSON)。前端已能选择并提交,
+	// 但没有这列、行结构也没映射 —— 选了保存就丢,重新打开配置选择又是空的。
+	if err := db.addColumnIfMissing("monitor_subscriptions", "options", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	if err := db.addColumnIfMissing("vps_subscriptions", "auto_order_account_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}

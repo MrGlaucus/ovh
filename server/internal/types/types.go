@@ -311,6 +311,9 @@ type Subscription struct {
 	// DelaySeconds 补货后延迟多少秒才下单。0=立即下单。
 	// 每个订阅可独立配置，适配不同型号的抢购策略。
 	DelaySeconds int `json:"delaySeconds,omitempty"`
+	// Options 只盯这套配置(addon planCode 列表)。空 = 盯该型号全部配置。
+	// 通知和自动下单按配置逐套触发,不限定配置时多套同时补货会逐套各下一单。
+	Options []string `json:"options,omitempty"`
 }
 
 // VPSSubscription VPS 监控订阅

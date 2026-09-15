@@ -7,9 +7,14 @@ import (
 
 // autoOrderAccountID:auto_order 触发时用哪个账户下单;空 = 只通知不下单
 // delaySeconds:补货后延迟 N 秒下单,0=跟随全局 AUTO_ORDER_DELAY_SECONDS
+// options:只盯这套配置(addon planCode 列表);空 = 盯该型号全部配置
 func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyAvailable, notifyUnavailable bool,
 	serverName string, lastStatus map[string]string, history []HistoryEntry, autoOrder bool, quantity int,
-	autoOrderAccountID string, autoPay bool, delaySeconds int) {
+	autoOrderAccountID string, autoPay bool, delaySeconds int, options []string) {
+
+	if options == nil {
+		options = []string{}
+	}
 
 	m.subsMu.Lock()
 	defer m.subsMu.Unlock()
@@ -40,6 +45,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 			// 自动付款依附于自动下单:不下单就谈不上付款
 			s.AutoPay = autoPay && autoOrder
 			s.DelaySeconds = delaySeconds
+			s.Options = options
 			if s.History == nil {
 				s.History = []HistoryEntry{}
 			}
@@ -68,6 +74,7 @@ func (m *Monitor) AddSubscription(planCode string, datacenters []string, notifyA
 		AutoOrderAccountID: autoOrderAccountID,
 		AutoPay:            autoPay && autoOrder,
 		DelaySeconds:       delaySeconds,
+		Options:            options,
 	}
 	if autoOrder {
 		if quantity < 1 {
@@ -288,6 +295,7 @@ func (m *Monitor) SubscriptionConfig(planCode string) SubscriptionConfig {
 			AutoOrderAccountID: s.AutoOrderAccountID,
 			AutoPay:            s.AutoPay,
 			DelaySeconds:       s.DelaySeconds,
+			Options:            append([]string(nil), s.Options...),
 		}
 		s.mu.Unlock()
 		return cfg
@@ -307,6 +315,7 @@ type SubscriptionConfig struct {
 	AutoOrderAccountID string
 	AutoPay            bool
 	DelaySeconds       int
+	Options            []string
 }
 
 // ClearAccountRefs 把内存订阅里对某账户的引用清掉。

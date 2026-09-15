@@ -106,6 +106,11 @@ type Subscription struct {
 	AutoPay            bool              `json:"autoPay,omitempty"`            // 下单后自动付款(显式开关,默认关)
 	DelaySeconds       int               `json:"delaySeconds,omitempty"`       // 补货后延迟 N 秒下单,0=跟随全局
 
+	// Options 只盯这套配置(addon planCode 列表)。空 = 盯该型号的全部配置。
+	// 一条 planCode 底下常有多套内存/存储组合,而通知和自动下单是逐套触发的:
+	// 不限定配置时多套同时补货 = 多份通知、多单(自动下单会把每套都买一台)。
+	Options []string `json:"options,omitempty"`
+
 	// —— 本轮可用性查询的诊断信息 ——
 	// 只存内存、不落库(每轮检查都会重算,持久化没有意义)。
 	// 存在的理由:EU / US / CA 三个站点的库存视图彼此独立,拿错站点查 planCode
@@ -137,6 +142,7 @@ type subCheckConfig struct {
 	AutoOrderAccountID string
 	AutoPay            bool
 	DelaySeconds       int
+	Options            []string
 }
 
 func (s *Subscription) checkConfig() subCheckConfig {
@@ -144,6 +150,8 @@ func (s *Subscription) checkConfig() subCheckConfig {
 	defer s.mu.Unlock()
 	dcs := make([]string, len(s.Datacenters))
 	copy(dcs, s.Datacenters)
+	opts := make([]string, len(s.Options))
+	copy(opts, s.Options)
 	return subCheckConfig{
 		Datacenters:        dcs,
 		NotifyAvailable:    s.NotifyAvailable,
@@ -154,6 +162,7 @@ func (s *Subscription) checkConfig() subCheckConfig {
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
 		DelaySeconds:       s.DelaySeconds,
+		Options:            opts,
 	}
 }
 
@@ -236,6 +245,8 @@ func (s *Subscription) snapshot() *Subscription {
 	}
 	hist := make([]HistoryEntry, len(s.History))
 	copy(hist, s.History)
+	opts := make([]string, len(s.Options))
+	copy(opts, s.Options)
 	return &Subscription{
 		PlanCode:           s.PlanCode,
 		Datacenters:        dcs,
@@ -250,6 +261,7 @@ func (s *Subscription) snapshot() *Subscription {
 		AutoOrderAccountID: s.AutoOrderAccountID,
 		AutoPay:            s.AutoPay,
 		DelaySeconds:       s.DelaySeconds,
+		Options:            opts,
 
 		LastCheckAt:         s.LastCheckAt,
 		LastCheckAccountID:  s.LastCheckAccountID,

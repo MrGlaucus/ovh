@@ -422,7 +422,28 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 监控数据中心: %v", planCode, monitoredDCs), "monitor")
 	m.state.Logger.Info(fmt.Sprintf("订阅 %s - 当前发现 %d 个配置组合", planCode, len(currentAvailability)), "monitor")
 
+	// 订阅"只盯指定配置"的判据:本轮全部配置的 addon 并集 + 是否多配置机型。
+	// 并集用来识别用户选择里"与库存无关"的 addon(带宽/vRack 等不在 FQN 里);
+	// segmented 在目录故障(options 一家都没匹配到)时把多配置机型与裸机型区分开。
+	watchUnion := map[string]bool{}
+	segmented := false
+	for _, cd := range currentAvailability {
+		for _, o := range cd.Options {
+			watchUnion[o] = true
+		}
+		if strings.Contains(cd.FQN, ".") {
+			segmented = true
+		}
+	}
+
 	for configKey, configData := range currentAvailability {
+		// 只盯指定配置:不在范围内的配置直接跳过 —— 不进状态机、不发通知、不自动下单。
+		// 也不动它的旧 lastStatus:用户之后放宽范围时,该配置要么按旧状态继续参与状态机,
+		// 要么以"首次检查"进场,不会出现跳变被静默吞掉的情况。
+		if !subscriptionWantsConfig(cfg.Options, configData.Options, watchUnion, segmented) {
+			m.state.Logger.Debug(fmt.Sprintf("订阅 %s: 配置 %s 不在盯的范围内,跳过", planCode, configData.FQN), "monitor")
+			continue
+		}
 		memory := configData.Memory
 		storage := configData.Storage
 		configDisplay := catalog.FormatConfigDisplay(memory, storage)
@@ -842,6 +863,46 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// subscriptionWantsConfig 判断一套配置是否落在订阅"只盯"的范围内。
+//
+// want: 订阅里存的 addon 选择(用户在配置选择器里勾的那几项)。
+// 空 = 盯全部配置,一律匹配 —— 这是订阅的默认形态,老订阅的行为不变。
+//
+// cfgOptions: 这套配置自身的 addon 列表(catalog 从 FQN 的内存/存储段匹配出来的)。
+// union: 本轮该 planCode 全部配置的 addon 并集。
+// segmented: 本轮是否存在带段 FQN(planCode.memory.storage),即这个机型是不是多配置机型。
+//
+// 匹配口径:
+//   - want 里属于配置维度的项(出现在 union 里的)必须全部出现在 cfgOptions 里 ——
+//     勾了内存+存储就只盯这套组合;只勾了内存,则该内存的每种存储组合都算命中;
+//   - 不在 union 里的项(带宽/vRack/CPU 等不参与 FQN 的 addon)不参与判定,
+//     不能因为用户顺手勾了带宽就让配置匹配永远落空;
+//   - 一个配置维度的项都没命中时:目录正常(union 非空)说明用户勾的全是非配置维度 → 不限;
+//     目录故障(union 为空)且是多配置机型 → 宁可不触发也不按"全盯"下单,否则
+//     用户指定的配置会被临时故障放大成"每套配置都抢一台",正是这个功能要防的事。
+func subscriptionWantsConfig(want, cfgOptions []string, union map[string]bool, segmented bool) bool {
+	if len(want) == 0 {
+		return true
+	}
+	effective := 0
+	for _, w := range want {
+		if !union[w] {
+			continue
+		}
+		effective++
+		if !containsString(cfgOptions, w) {
+			return false
+		}
+	}
+	if effective > 0 {
+		return true
+	}
+	if len(union) > 0 {
+		return true
+	}
+	return !segmented
 }
 
 func copyMap(m map[string]interface{}) map[string]interface{} {
