@@ -439,9 +439,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		return
 	}
 	if action == "menu" {
-		// 上架通知的入口按钮：进入与 /buy 选完型号后相同的
-		// 「配置 → 机房 → 账户」选购链，每一步都按当前实时库存生成。
+		// 上架通知的机房按钮（带 d）进入该机房的配置选择；不带 d 的入口
+		// （配置页的「返回机房选择」，或改造前已发出的旧单颗按钮）
+		// 打开机房选择页。每一步都按点击那一刻的实时库存生成。
 		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
+		datacenter := strings.TrimSpace(strOr(callbackObj, "d", "datacenter"))
 		if planCode == "" {
 			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效，请等待新的通知", true)
 			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_plan_code"})
@@ -452,18 +454,28 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载配置", false)
-		ref, err := telegram.SendMessageWithRef(state, "🛒 正在加载配置选项…", nil)
+		placeholder := "🛒 正在加载配置选项…"
+		if datacenter == "" {
+			placeholder = "🛒 正在加载机房选项…"
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载选购菜单", false)
+		ref, err := telegram.SendMessageWithRef(state, placeholder, nil)
 		if err != nil {
-			telegram.SendReply(state, chatID, "❌ 无法加载配置选择："+err.Error(), int64(messageID))
-			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
+			telegram.SendReply(state, chatID, "❌ 无法加载选购菜单："+err.Error(), int64(messageID))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "buy_menu_unavailable"})
 			return
 		}
 		// 菜单在占位消息上就地编辑：通知消息本身继续承担下架编辑的职责。
-		if err := sendBuyConfigurationChoices(state, ref.ChatID, ref.MessageID, planCode); err != nil {
+		var menuErr error
+		if datacenter == "" {
+			menuErr = sendBuyDatacenterChoicesForPlan(state, ref.ChatID, ref.MessageID, planCode)
+		} else {
+			menuErr = sendBuyConfigurationChoicesForDatacenter(state, ref.ChatID, ref.MessageID, planCode, datacenter)
+		}
+		if menuErr != nil {
 			// 占位消息已发出，把它编辑成失败原因，不留一条永远"加载中"的消息。
-			_ = telegram.EditMessageText(state, ref.ChatID, ref.MessageID, "❌ 无法加载配置选择："+err.Error(), nil)
-			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
+			_ = telegram.EditMessageText(state, ref.ChatID, ref.MessageID, "❌ 无法加载选购菜单："+menuErr.Error(), nil)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "buy_menu_unavailable"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -889,6 +901,9 @@ type buyMenuState struct {
 	ParentID        string             `json:"parent_id,omitempty"`
 	Candidates      []buyMenuCandidate `json:"candidates"`
 	ExplicitOptions bool               `json:"explicit_options,omitempty"`
+	// NotifyEntry 标记该菜单节点来自上架通知链（而非 /buy 链）：
+	// 账户页的返回按钮据此指向「该机房的配置选择」而不是 /buy 的机房页。
+	NotifyEntry bool `json:"notify_entry,omitempty"`
 }
 
 type telegramMenuButton struct {
@@ -897,9 +912,10 @@ type telegramMenuButton struct {
 }
 
 // validBuyMenuButton 确保菜单状态仍在按钮生命周期内，且没有被最终下单按钮消费。
+// 文案同时引导两类入口的用户：上架通知链重新点击通知按钮，/buy 链重新发送 /buy。
 func validBuyMenuButton(row db.TelegramButtonRow, exists bool) error {
 	if !exists || row.UsedAt > 0 || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
-		return fmt.Errorf("菜单已失效，请重新发送 /buy")
+		return fmt.Errorf("菜单已失效，请重新发送 /buy，或重新点击上架通知里的按钮")
 	}
 	return nil
 }
@@ -929,6 +945,20 @@ func readBuyMenuState(row db.TelegramButtonRow) (buyMenuState, error) {
 
 func menuCallback(action, id string) string {
 	data, _ := json.Marshal(map[string]string{"a": action, "u": id})
+	return string(data)
+}
+
+// telegramPlanMenuCallback 组装「不带机房」的上架通知菜单回调：
+// 点击后重新打开该型号的机房选择页（改造前的旧单颗入口按钮与「返回机房选择」共用）。
+func telegramPlanMenuCallback(planCode string) string {
+	data, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode})
+	return string(data)
+}
+
+// telegramDatacenterMenuCallback 组装带机房的通知菜单回调（与通知里的机房按钮同款）：
+// 点击后进入该机房的配置选择。
+func telegramDatacenterMenuCallback(planCode, datacenter string) string {
+	data, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode, "d": datacenter})
 	return string(data)
 }
 
@@ -1014,6 +1044,127 @@ func sendBuyConfigurationChoices(state *app.State, chatID interface{}, messageID
 	}
 	keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回型号选择", CallbackData: menuCallback("bm", rootID)}})
 	return editBuyMenu(state, chatID, messageID, "选择配置：\n\n型号："+planCode+"\n\n仅展示当前可下单的配置。", keyboard)
+}
+
+// sendBuyConfigurationChoicesForDatacenter 按上架通知里点选的机房打开配置选择：
+// 对每个账户实时查询该机房下当前可下单的配置，配置按钮直接落到账户选择；
+// 底部保留「返回机房选择」回到该型号的机房选择页。
+// 每一步都按点击那一刻的实时库存生成，通知里的快照不参与下单决策。
+func sendBuyConfigurationChoicesForDatacenter(state *app.State, chatID interface{}, messageID int64, planCode, datacenter string) error {
+	if state.DB == nil {
+		return fmt.Errorf("数据库不可用")
+	}
+	state.AccountsMu.RLock()
+	accounts := append([]types.OVHAccount(nil), state.Accounts...)
+	state.AccountsMu.RUnlock()
+	if len(accounts) == 0 {
+		return fmt.Errorf("未配置 OVH 账户")
+	}
+
+	groups := map[string]*buyMenuState{}
+	for _, account := range accounts {
+		for configKey, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
+			status, ok := config.Datacenters[datacenter]
+			if !ok || !catalog.IsAvailableForOrder(status) {
+				continue
+			}
+			dcs := make([]string, 0, len(config.Datacenters))
+			for dc, st := range config.Datacenters {
+				if catalog.IsAvailableForOrder(st) {
+					dcs = append(dcs, dc)
+				}
+			}
+			// 分段机型（FQN 含 "."）匹配不出 addon 时（目录瞬断 / 新增配置未收录），
+			// 候选点下去也只会被库存检查拒掉 —— 菜单承诺"仅展示当前可下单的配置"，
+			// 这类候选不进菜单；裸 planCode 机型（FQN 无 "."）不受影响。
+			if len(config.Options) == 0 && strings.Contains(configKey, ".") {
+				continue
+			}
+			sort.Strings(dcs)
+			display := strings.Trim(strings.TrimSpace(config.Memory)+" · "+strings.TrimSpace(config.Storage), " ·")
+			if display == "" {
+				display = "默认配置"
+			}
+			key := display + "\x00" + strings.Join(config.Options, "\x00")
+			group := groups[key]
+			if group == nil {
+				// NotifyEntry：账户页的返回按钮指向本机房的配置选择。
+				group = &buyMenuState{Display: display, NotifyEntry: true}
+				groups[key] = group
+			}
+			group.Candidates = append(group.Candidates, buyMenuCandidate{AccountID: account.ID, ConfigKey: configKey, Options: config.Options, Datacenters: dcs})
+		}
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("%s 当前没有可下单的配置（可能刚被抢完，或 OVH 目录暂不可用——可稍后重试，或发送 /buy 查看全量配置）", monitor.DisplayDatacenterShortName(datacenter))
+	}
+
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	keyboard := make([][]telegramMenuButton, 0, len(keys))
+	for _, key := range keys {
+		group := groups[key]
+		// 配置按钮复用 dc 动作：机房在通知按钮上已经选定，
+		// 点击后按该配置 × 该机房的候选账户直接生成账户页。
+		id, err := saveBuyMenuButton(state, planCode, datacenter, "", nil, *group, "")
+		if err != nil {
+			return fmt.Errorf("保存配置选项失败: %w", err)
+		}
+		keyboard = append(keyboard, []telegramMenuButton{{Text: "🧩 " + group.Display, CallbackData: menuCallback("dc", id)}})
+	}
+	// 上一级是该型号的机房选择页：原地重建（实时库存），无需落库按钮。
+	keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: telegramPlanMenuCallback(planCode)}})
+	return editBuyMenu(state, chatID, messageID, "选择配置：\n\n机房："+monitor.DisplayDatacenterShortName(datacenter)+"\n\n仅展示该机房当前可下单的配置。", keyboard)
+}
+
+// sendBuyDatacenterChoicesForPlan 打开上架通知链的机房选择页：
+// 汇总该型号当前有货的全部机房（跨账户、跨配置的实时并集），点任一机房进入该机房的配置选择。
+// 机房是导航顶层，与通知上的机房按钮平级，页面本身不带返回。
+func sendBuyDatacenterChoicesForPlan(state *app.State, chatID interface{}, messageID int64, planCode string) error {
+	state.AccountsMu.RLock()
+	accounts := append([]types.OVHAccount(nil), state.Accounts...)
+	state.AccountsMu.RUnlock()
+	if len(accounts) == 0 {
+		return fmt.Errorf("未配置 OVH 账户")
+	}
+
+	dcSet := map[string]struct{}{}
+	for _, account := range accounts {
+		for _, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
+			for dc, status := range config.Datacenters {
+				if catalog.IsAvailableForOrder(status) {
+					dcSet[dc] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(dcSet) == 0 {
+		return fmt.Errorf("%s 当前没有可下单的机房（可能刚被抢完，或 OVH 目录暂不可用——可稍后重试，或发送 /buy 查看当前可下单的配置）", planCode)
+	}
+	dcs := make([]string, 0, len(dcSet))
+	for dc := range dcSet {
+		dcs = append(dcs, dc)
+	}
+	sort.Strings(dcs)
+	keyboard := make([][]telegramMenuButton, 0, (len(dcs)+1)/2)
+	line := make([]telegramMenuButton, 0, 2)
+	for _, dc := range dcs {
+		line = append(line, telegramMenuButton{
+			Text:         monitor.DisplayDatacenterShortName(dc),
+			CallbackData: telegramDatacenterMenuCallback(planCode, dc),
+		})
+		if len(line) == 2 {
+			keyboard = append(keyboard, line)
+			line = make([]telegramMenuButton, 0, 2)
+		}
+	}
+	if len(line) > 0 {
+		keyboard = append(keyboard, line)
+	}
+	return editBuyMenu(state, chatID, messageID, "选择机房：\n\n型号："+planCode+"\n\n仅展示当前可下单的机房。", keyboard)
 }
 
 func sendBuyDatacenterChoices(state *app.State, chatID interface{}, messageID int64, configButtonID string) error {
@@ -1104,7 +1255,13 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 	if len(keyboard) == 0 {
 		return fmt.Errorf("所选配置和机房没有仍可用的账户")
 	}
-	keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: menuCallback("bd", datacenterButtonID)}})
+	if menu.NotifyEntry {
+		// 通知链的上一级是「该机房的配置选择」：明文回调原地重建（实时库存）。
+		keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回配置选择", CallbackData: telegramDatacenterMenuCallback(row.PlanCode, row.Datacenter)}})
+	} else {
+		// /buy 链的上一级是该配置的机房选择页（落库按钮）。
+		keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: menuCallback("bd", datacenterButtonID)}})
+	}
 	return editBuyMenu(state, chatID, messageID, "选择下单账户：\n\n配置："+menu.Display+"\n机房："+monitor.DisplayDatacenterShortName(row.Datacenter), keyboard)
 }
 

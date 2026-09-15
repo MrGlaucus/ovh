@@ -219,9 +219,9 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 		Text         string `json:"text"`
 		CallbackData string `json:"callback_data"`
 	}
-	// 新格式通知（无机房按钮）的按钮是单颗选购入口，与机房状态无关：
-	// 编辑时始终保留，点进去的菜单按当时实时库存生成。
-	// 旧格式通知每机房一颗按钮，仍按"未下架保留、已下架移除"重建。
+	// 新格式通知的机房按钮不落库（回调明文含 planCode + 机房名），
+	// 编辑时按会话里的机房状态重建：未下架保留、已下架移除。
+	// 旧格式通知沿用落库按钮，同样按机房状态重建。
 	hasLegacyButtons := false
 	for _, dc := range snapshot.Datacenters {
 		if strings.TrimSpace(dc.ButtonID) != "" {
@@ -231,13 +231,19 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 	}
 	keyboard := [][]button{}
 	line := []button{}
-	if !hasLegacyButtons {
-		keyboard = append(keyboard, []button{{Text: telegramBuyMenuButtonText, CallbackData: telegramBuyMenuCallback(snapshot.Session.PlanCode)}})
-	}
 	for _, dc := range snapshot.Datacenters {
 		if dc.ClosedAt == 0 {
 			allClosed = false
 			if !hasLegacyButtons {
+				// 未下架机房保留按钮：回调按会话 planCode + 行里机房名重建。
+				line = append(line, button{
+					Text:         DisplayDatacenterShortName(dc.Datacenter) + " " + telegramBuyMenuButtonText,
+					CallbackData: telegramBuyMenuCallback(snapshot.Session.PlanCode, dc.Datacenter),
+				})
+				if len(line) == 2 {
+					keyboard = append(keyboard, line)
+					line = nil
+				}
 				continue
 			}
 			action := "add_to_queue"
@@ -314,14 +320,15 @@ func (m *Monitor) CompatibleOrderAccounts(referenceAccountID string) []types.OVH
 	return accounts
 }
 
-// telegramBuyMenuButtonText 是上架通知入口按钮的文案：
-// 点开后进入与 /buy 选完型号一致的「配置 → 机房 → 账户」选购链。
-const telegramBuyMenuButtonText = "🛒 选择配置下单"
+// telegramBuyMenuButtonText 是上架通知机房按钮的文案后缀：
+// 点开后进入该机房「配置 → 账户」的实时库存选购链。
+const telegramBuyMenuButtonText = "选择配置下单"
 
-// telegramBuyMenuCallback 组装上架通知入口按钮的回调数据。
-// 按钮与机房、账户都无关，planCode 明文即可：点击后每一步都会按实时库存重新校验。
-func telegramBuyMenuCallback(planCode string) string {
-	cb, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode})
+// telegramBuyMenuCallback 组装上架通知机房按钮的回调数据。
+// planCode 与机房名都很短，可安全放进 64 字节的 callback_data；
+// 点击后每一步都会按点击那一刻的实时库存重新校验，通知快照不参与下单决策。
+func telegramBuyMenuCallback(planCode, datacenter string) string {
+	cb, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode, "d": datacenter})
 	return string(cb)
 }
 
@@ -429,17 +436,28 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	_ = traceID
 	_ = configTraceID
 
-	// 下单按钮是一颗入口，而不是每个机房一颗：点击后进入与 /buy
-	// 选完型号完全相同的「配置 → 机房 → 账户」链，每一步都按点击那一刻的
-	// 实时库存生成。通知里的机房列表只用于展示，不参与下单决策，
+	// 下单按钮按机房逐颗排列（与旧格式一致）：点哪颗就是选哪个机房，
+	// 点开后的「配置 → 账户」链在点击那一刻按实时库存重新查询。
+	// 通知里的机房列表只用于展示与按钮排布，不参与下单决策，
 	// 因此也不再有"机房下架导致按钮失效"的问题。
 	type btn struct {
 		Text         string `json:"text"`
 		CallbackData string `json:"callback_data"`
 	}
-	keyboard := [][]btn{{
-		{Text: telegramBuyMenuButtonText, CallbackData: telegramBuyMenuCallback(planCode)},
-	}}
+	keyboard := [][]btn{}
+	row := []btn{}
+	for idx, dcInfo := range availableDCs {
+		dc, _ := dcInfo["dc"].(string)
+		callback := telegramBuyMenuCallback(planCode, dc)
+		if len(callback) > 64 {
+			m.state.Logger.Warn(fmt.Sprintf("上架通知机房按钮回调超长(%d字节)，TG 会拒绝该消息: dc=%s", len(callback), dc), "monitor")
+		}
+		row = append(row, btn{Text: DisplayDatacenterShortName(dc) + " " + telegramBuyMenuButtonText, CallbackData: callback})
+		if len(row) == 2 || idx == len(availableDCs)-1 {
+			keyboard = append(keyboard, row)
+			row = nil
+		}
+	}
 	return msg.String(), map[string]interface{}{"inline_keyboard": keyboard}
 }
 

@@ -74,13 +74,14 @@ func TestRenderTelegramNotificationUnavailableStrikesSingleDatacenterBlock(t *te
 	}
 }
 
-// 上架通知只带一颗选购入口按钮：点击后走与 /buy 相同的
-// 「配置 → 机房 → 账户」链，按钮与具体机房、账户都无关。
-func TestBuildAvailabilityAlertUsesBuyMenuEntryButton(t *testing.T) {
+// 上架通知按机房逐颗排列下单按钮（与旧格式一致）：
+// 点哪颗就是选哪个机房，点开后走该机房下「配置 → 账户」的实时库存链。
+func TestBuildAvailabilityAlertUsesPerDatacenterBuyMenuButtons(t *testing.T) {
 	m := renderTestMonitor(t)
 	dcs := []map[string]interface{}{
 		{"dc": "gra", "raw_status": "24H"},
 		{"dc": "fra", "raw_status": "72H"},
+		{"dc": "sbg", "raw_status": "24H"},
 	}
 	_, markup := m.buildAvailabilityAlert("24ska01", dcs, nil, "KS-5", "", "", "")
 
@@ -95,45 +96,41 @@ func TestBuildAvailabilityAlertUsesBuyMenuEntryButton(t *testing.T) {
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		t.Fatalf("unmarshal keyboard: %v", err)
 	}
-	if len(rows) != 1 || len(rows[0]) != 1 {
-		t.Fatalf("通知按钮必须是单颗入口，实际：%s", string(raw))
+	// 每行最多两颗：3 个机房 → 2+1。
+	if len(rows) != 2 || len(rows[0]) != 2 || len(rows[1]) != 1 {
+		t.Fatalf("3 个机房应排成 2+1 两颗一行，实际：%s", string(raw))
 	}
-	entry := rows[0][0]
-	if !strings.Contains(entry.Text, "选择配置下单") {
-		t.Errorf("入口按钮文案不对：%q", entry.Text)
+	seen := map[string]bool{}
+	for _, row := range rows {
+		for _, btn := range row {
+			if !strings.Contains(btn.CallbackData, `"a":"menu"`) || !strings.Contains(btn.CallbackData, `"p":"24ska01"`) {
+				t.Errorf("按钮回调应携带 menu 动作和 planCode，实际：%s", btn.CallbackData)
+			}
+			var cb map[string]string
+			if err := json.Unmarshal([]byte(btn.CallbackData), &cb); err != nil {
+				t.Fatalf("unmarshal callback: %v", err)
+			}
+			if want := DisplayDatacenterShortName(cb["d"]) + " " + telegramBuyMenuButtonText; btn.Text != want {
+				t.Errorf("按钮文案不对：%q，want %q", btn.Text, want)
+			}
+			seen[cb["d"]] = true
+		}
 	}
-	if !strings.Contains(entry.CallbackData, `"a":"menu"`) || !strings.Contains(entry.CallbackData, `"p":"24ska01"`) {
-		t.Errorf("入口按钮回调应携带 menu 动作和 planCode，实际：%s", entry.CallbackData)
+	for _, dc := range []string{"gra", "fra", "sbg"} {
+		if !seen[dc] {
+			t.Errorf("缺少机房 %s 的下单按钮", dc)
+		}
 	}
 	for _, dc := range dcs {
 		if _, ok := dc["notification_button_id"]; ok {
-			t.Errorf("新格式通知不再按机房落按钮：%v", dc)
+			t.Errorf("新格式通知不落机房按钮：%v", dc)
 		}
 	}
 }
 
-// 新格式通知（没有机房按钮）下架编辑时必须保留选购入口按钮：
-// 点进去的菜单按实时库存生成，不受这条通知的机房状态影响。
-func TestRenderTelegramNotificationUnavailableKeepsBuyMenuEntry(t *testing.T) {
-	entryCallback := func(t *testing.T, markup map[string]interface{}) string {
-		t.Helper()
-		raw, err := json.Marshal(markup["inline_keyboard"])
-		if err != nil {
-			t.Fatalf("marshal keyboard: %v", err)
-		}
-		var rows [][]struct {
-			Text         string `json:"text"`
-			CallbackData string `json:"callback_data"`
-		}
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			t.Fatalf("unmarshal keyboard: %v", err)
-		}
-		if len(rows) != 1 || len(rows[0]) != 1 {
-			t.Fatalf("下架编辑后应保留单颗入口按钮，实际：%s", string(raw))
-		}
-		return rows[0][0].CallbackData
-	}
-
+// 新格式通知下架编辑：按机房状态重建明文回调按钮（未下架保留、已下架移除），
+// 不依赖落库按钮。
+func TestRenderTelegramNotificationUnavailableRebuildsDatacenterButtons(t *testing.T) {
 	snapshot := db.TelegramNotificationSnapshot{
 		Session: db.TelegramNotificationSession{PlanCode: "24ska01", MessageText: "🎉 服务器上架通知\n\n📍 数据中心: 2 个机房有货\n   ✅ GRA (🇫🇷 法国·格拉沃利讷) — 24小时内有货\n   ✅ FRA (🇩🇪 德国·法兰克福) — 72小时内有货"},
 		Datacenters: []db.TelegramNotificationDatacenter{
@@ -145,17 +142,38 @@ func TestRenderTelegramNotificationUnavailableKeepsBuyMenuEntry(t *testing.T) {
 	if !strings.Contains(text, "🟡 部分机房已下架") {
 		t.Errorf("部分下架标题不对：%s", text)
 	}
-	if cb := entryCallback(t, markup); !strings.Contains(cb, `"a":"menu"`) || !strings.Contains(cb, `"p":"24ska01"`) {
-		t.Errorf("部分下架后入口按钮回调不对：%s", cb)
+	raw, err := json.Marshal(markup["inline_keyboard"])
+	if err != nil {
+		t.Fatalf("marshal keyboard: %v", err)
+	}
+	var rows [][]struct {
+		Text         string `json:"text"`
+		CallbackData string `json:"callback_data"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("unmarshal keyboard: %v", err)
+	}
+	if len(rows) != 1 || len(rows[0]) != 1 {
+		t.Fatalf("部分下架只保留未下架机房的按钮，实际：%s", string(raw))
+	}
+	if got := rows[0][0].Text; got != "🇩🇪 Fra 选择配置下单" {
+		t.Errorf("未下架机房按钮文案不对：%q", got)
+	}
+	if cb := rows[0][0].CallbackData; !strings.Contains(cb, `"a":"menu"`) || !strings.Contains(cb, `"p":"24ska01"`) || !strings.Contains(cb, `"d":"fra"`) {
+		t.Errorf("未下架机房按钮回调不对：%s", cb)
 	}
 
-	// 全部下架也保留入口：点开后菜单会按实时库存给出可下单的配置（或提示无货）。
+	// 全部下架后没有可点机房，键盘清空（无货的事实由下一次新通知反映）。
 	snapshot.Datacenters[1].ClosedAt = 240
 	text, markup = renderTelegramNotificationUnavailable(snapshot)
 	if !strings.Contains(text, "⚫ 服务器已下架") {
 		t.Errorf("全下架标题不对：%s", text)
 	}
-	if cb := entryCallback(t, markup); !strings.Contains(cb, `"a":"menu"`) {
-		t.Errorf("全下架后仍应保留入口按钮：%s", cb)
+	raw, err = json.Marshal(markup["inline_keyboard"])
+	if err != nil {
+		t.Fatalf("marshal keyboard: %v", err)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("所有机房都已下架，键盘必须清空，实际：%s", string(raw))
 	}
 }
