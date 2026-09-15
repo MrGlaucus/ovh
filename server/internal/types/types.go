@@ -210,6 +210,19 @@ type PriceInfo struct {
 	CurrencyCode string   `json:"currencyCode"`
 }
 
+// RefundInfo 抢购历史关联的退款记录摘要（OVH billing.Refund）。
+//
+// OVH 的退款单没有状态机（schema 里没有 status 字段），记录出现即"已退款"：
+// 用户手动在面板取消订单后，OVH 会生成一条带原订单号的退款记录。
+// 这里只存核对与展示必需的事实：单号、日期、金额、PDF 链接。
+type RefundInfo struct {
+	ID    string     `json:"id"`
+	Date  string     `json:"date,omitempty"`
+	Price *PriceInfo `json:"price,omitempty"`
+	// PDFURL 退款单 PDF 下载链接（OVH 返回原值，前端直接给用户）。
+	PDFURL string `json:"pdfUrl,omitempty"`
+}
+
 // PurchaseHistoryEntry 抢购历史
 type PurchaseHistoryEntry struct {
 	ID             string   `json:"id"`
@@ -244,6 +257,12 @@ type PurchaseHistoryEntry struct {
 	// DelaySeconds 下单时配置的延迟秒数(订阅级/自动下单带入),0=立即下单。
 	// 落库让历史页能回溯"这一单当时等了多久才开抢"。
 	DelaySeconds int `json:"delaySeconds,omitempty"`
+	// Refund 已确认的退款记录（GET /me/refund?orderId={orderId}）。
+	// 有值 = 已退款；nil = 未发现退款（可能没退，也可能只是还没查到）。
+	Refund *RefundInfo `json:"refund,omitempty"`
+	// RefundCheckedAt 上次查退款的时间。不退款是绝大多数订单的常态，
+	// 没有它后台每轮会把所有未退款成功单全查一遍；有它才能按小时节流。
+	RefundCheckedAt string `json:"refundCheckedAt,omitempty"`
 }
 
 // PhaseTiming 抢购链路上一个阶段的墙钟耗时

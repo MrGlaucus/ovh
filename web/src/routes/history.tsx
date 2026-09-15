@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser, RotateCcw } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser, RotateCcw, FileDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,6 +30,7 @@ import {
   type PurchaseHistory,
 } from "@/hooks/use-history";
 import { useServers } from "@/hooks/use-servers";
+import { describeOptionCodes } from "@/lib/option-groups";
 
 /**
  * 订单支付状态 → 标签。取值是 OVH 的 billing.order.OrderStatusEnum,三区一致。
@@ -94,6 +95,52 @@ function HistoryPrice({ item, strike }: { item: PurchaseHistory; strike: boolean
       {value}
       {currency ? ` ${currency}` : <span className="text-muted-foreground"> (币种未知)</span>}
     </span>
+  );
+}
+
+/**
+ * 退款信息（桌面列 / 手机卡片共用）：已退款 Chip + 金额 + 退款单 PDF 入口。
+ *
+ * OVH 的退款单没有状态机（schema 里连 status 字段都没有），记录出现即"已退款"；
+ * "钱到没到账"是支付渠道侧的几天~几十天时间差，API 看不到，不做假状态。
+ * 数据由后端刷新订单状态时顺带查 GET /me/refund?orderId= 落库。
+ */
+function RefundInfoView({ refund }: { refund?: PurchaseHistory["refund"] }) {
+  if (!refund) return <span className="text-muted-foreground">—</span>;
+  const value = refund.price?.withTax;
+  const currency = (refund.price?.currencyCode || "").trim();
+  const dateLabel = refund.date
+    ? parseStoredTime(refund.date).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+    : "";
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <Chip tone="default" title={`退款单 #${refund.id}${dateLabel ? ` · 退款日期 ${dateLabel}` : ""}`}>
+        <RotateCcw className="w-3 h-3" />
+        已退款
+      </Chip>
+      <span className="flex items-center gap-2 text-[11px] flex-wrap">
+        {value != null && (
+          <span className="font-mono text-muted-foreground">
+            {value}
+            {currency ? ` ${currency}` : ""}
+          </span>
+        )}
+        {/* 手机上摸不出 title，退款日期直接显示；桌面有 hover 就不占列宽 */}
+        {dateLabel && <span className="text-muted-foreground md:hidden">{dateLabel}</span>}
+        {refund.pdfUrl && (
+          <a
+            href={refund.pdfUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-0.5 text-info hover:underline"
+            title="下载退款单 PDF"
+          >
+            <FileDown className="w-3 h-3" />
+            PDF
+          </a>
+        )}
+      </span>
+    </div>
   );
 }
 
@@ -282,16 +329,17 @@ function HistoryPage() {
         <>
           {/* 桌面 / 平板:横向表格 */}
           <Card className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[680px] table-fixed">
+            <table className="w-full min-w-[760px] table-fixed">
               <thead>
                 <tr className="text-left text-[11px] font-medium text-muted-foreground border-b border-border">
-                  <th className="w-[31%] px-4 py-3">型号</th>
-                  <th className="w-[7%] px-3 py-3">机房</th>
-                  <th className="w-[19%] px-3 py-3">配置</th>
-                  <th className="w-[9%] px-3 py-3">价格</th>
-                  <th className="w-[15%] px-3 py-3">订单状态</th>
+                  <th className="w-[27%] px-4 py-3">型号</th>
+                  <th className="w-[6%] px-3 py-3">机房</th>
+                  <th className="w-[16%] px-3 py-3">配置</th>
+                  <th className="w-[8%] px-3 py-3">价格</th>
+                  <th className="w-[14%] px-3 py-3">订单状态</th>
+                  <th className="w-[11%] px-3 py-3">退款</th>
                   <th className="w-[10%] px-3 py-3">时间</th>
-                  <th className="w-[9%] px-4 py-3 text-right">操作</th>
+                  <th className="w-[8%] px-4 py-3 text-right">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -415,8 +463,10 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
         </div>
       </td>
       <td className={`px-3 py-3 whitespace-nowrap ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
+      {/* 配置列与抢购队列同款：addon code 能解析成人话就展示人话（如 64 GB · SOFTRAID 2× 480GB SSD），
+          认不出的原样保留；原始 code 留在 title 里供核对。 */}
       <td className={`px-3 py-3 text-muted-foreground truncate ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ") || "默认配置"}>
-        {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
+        {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
       </td>
       <td className="px-3 py-3"><HistoryPrice item={item} strike={isExpired} /></td>
       <td className="px-3 py-3">
@@ -438,6 +488,9 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
             </Chip>
           )}
         </div>
+      </td>
+      <td className="px-3 py-3">
+        <RefundInfoView refund={item.refund} />
       </td>
       <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
         {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
@@ -482,9 +535,11 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
             <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
           </Chip>
         </div>
-        <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`}>
-          {item.options && item.options.length > 0 ? item.options.join(", ") : "默认配置"}
+        <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ")}>
+          {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
         </div>
+        {/* 没退款就不占位 —— 手机卡片是堆叠布局，空占位纯浪费一屏 */}
+        {item.refund && <RefundInfoView refund={item.refund} />}
         <div className="flex items-center justify-between gap-2 text-[11px]">
           <span className="text-muted-foreground font-mono">{parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
           {item.price?.withTax != null && <HistoryPrice item={item} strike={isExpired} />}

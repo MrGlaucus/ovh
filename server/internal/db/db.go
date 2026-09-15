@@ -118,6 +118,10 @@ func (db *DB) migrate() error {
 		{"total_ms", "INTEGER NOT NULL DEFAULT 0"},
 		// delay_seconds:下单时配置的延迟秒数,历史页回溯"这单等了多久才开抢"
 		{"delay_seconds", "INTEGER NOT NULL DEFAULT 0"},
+		// refund / refund_checked_at:退款记录关联(GET /me/refund?orderId=)。
+		// refund 存 JSON(空串=未退款/未查到);checked_at 供按小时节流。
+		{"refund", "TEXT NOT NULL DEFAULT ''"},
+		{"refund_checked_at", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if err := db.addColumnIfMissing("history", c[0], c[1]); err != nil {
 			return err

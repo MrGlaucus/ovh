@@ -241,6 +241,9 @@ var usedEndpoints = []string{
 	// 账户级支付方式列表：OVH 按类型拆的固定路由，没有参数化形式
 	"GET /me/paymentMean/creditCard",
 	"GET /me/paymentMean/paypal",
+	// 退款单：orderId 过滤拉列表、refundId 拉详情（金额 + PDF 链接），订单退款关联用
+	"GET /me/refund",
+	"GET /me/refund/{refundId}",
 	"GET /me/subAccount",
 	"GET /me/task/contactChange",
 	"GET /me/task/contactChange/{id}",

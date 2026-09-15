@@ -9,26 +9,28 @@ import (
 )
 
 type historyRow struct {
-	ID             string         `db:"id"`
-	AccountID      string         `db:"account_id"`
-	TaskID         string         `db:"task_id"`
-	PlanCode       string         `db:"plan_code"`
-	Datacenter     string         `db:"datacenter"`
-	OptionsJSON    string         `db:"options"`
-	Status         string         `db:"status"`
-	OrderID        string         `db:"order_id"`
-	OrderURL       string         `db:"order_url"`
-	ErrorMessage   sql.NullString `db:"error_message"`
-	PurchaseTime   string         `db:"purchase_time"`
-	AttemptCount   int            `db:"attempt_count"`
-	ExpirationTime string         `db:"expiration_time"`
-	RetractionTime string         `db:"retraction_time"`
-	PriceJSON      sql.NullString `db:"price"`
-	OrderStatus    string         `db:"order_status"`
-	OrderStatusAt  string         `db:"order_status_at"`
-	TimingJSON     sql.NullString `db:"timing"`
-	TotalMs        int64          `db:"total_ms"`
-	DelaySeconds   int            `db:"delay_seconds"`
+	ID              string         `db:"id"`
+	AccountID       string         `db:"account_id"`
+	TaskID          string         `db:"task_id"`
+	PlanCode        string         `db:"plan_code"`
+	Datacenter      string         `db:"datacenter"`
+	OptionsJSON     string         `db:"options"`
+	Status          string         `db:"status"`
+	OrderID         string         `db:"order_id"`
+	OrderURL        string         `db:"order_url"`
+	ErrorMessage    sql.NullString `db:"error_message"`
+	PurchaseTime    string         `db:"purchase_time"`
+	AttemptCount    int            `db:"attempt_count"`
+	ExpirationTime  string         `db:"expiration_time"`
+	RetractionTime  string         `db:"retraction_time"`
+	PriceJSON       sql.NullString `db:"price"`
+	OrderStatus     string         `db:"order_status"`
+	OrderStatusAt   string         `db:"order_status_at"`
+	TimingJSON      sql.NullString `db:"timing"`
+	TotalMs         int64          `db:"total_ms"`
+	DelaySeconds    int            `db:"delay_seconds"`
+	RefundJSON      string         `db:"refund"`
+	RefundCheckedAt string         `db:"refund_checked_at"`
 }
 
 func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
@@ -56,27 +58,37 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 	if r.TimingJSON.Valid && r.TimingJSON.String != "" {
 		_ = json.Unmarshal([]byte(r.TimingJSON.String), &timing)
 	}
+	// 退款关联(见 purchase/refundstatus.go):非空即"已退款"
+	var refund *types.RefundInfo
+	if r.RefundJSON != "" {
+		var rf types.RefundInfo
+		if err := json.Unmarshal([]byte(r.RefundJSON), &rf); err == nil && rf.ID != "" {
+			refund = &rf
+		}
+	}
 	return types.PurchaseHistoryEntry{
-		ID:             r.ID,
-		AccountID:      r.AccountID,
-		TaskID:         r.TaskID,
-		PlanCode:       r.PlanCode,
-		Datacenter:     r.Datacenter,
-		Options:        opts,
-		Status:         r.Status,
-		OrderID:        r.OrderID,
-		OrderURL:       r.OrderURL,
-		ErrorMessage:   errMsg,
-		PurchaseTime:   r.PurchaseTime,
-		AttemptCount:   r.AttemptCount,
-		ExpirationTime: r.ExpirationTime,
-		RetractionTime: r.RetractionTime,
-		Price:          price,
-		OrderStatus:    r.OrderStatus,
-		OrderStatusAt:  r.OrderStatusAt,
-		Timing:         timing,
-		TotalMs:        r.TotalMs,
-		DelaySeconds:   r.DelaySeconds,
+		ID:              r.ID,
+		AccountID:       r.AccountID,
+		TaskID:          r.TaskID,
+		PlanCode:        r.PlanCode,
+		Datacenter:      r.Datacenter,
+		Options:         opts,
+		Status:          r.Status,
+		OrderID:         r.OrderID,
+		OrderURL:        r.OrderURL,
+		ErrorMessage:    errMsg,
+		PurchaseTime:    r.PurchaseTime,
+		AttemptCount:    r.AttemptCount,
+		ExpirationTime:  r.ExpirationTime,
+		RetractionTime:  r.RetractionTime,
+		Price:           price,
+		OrderStatus:     r.OrderStatus,
+		OrderStatusAt:   r.OrderStatusAt,
+		Timing:          timing,
+		TotalMs:         r.TotalMs,
+		DelaySeconds:    r.DelaySeconds,
+		Refund:          refund,
+		RefundCheckedAt: r.RefundCheckedAt,
 	}
 }
 
@@ -89,23 +101,24 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		return historyRow{}, err
 	}
 	row := historyRow{
-		ID:             h.ID,
-		AccountID:      h.AccountID,
-		TaskID:         h.TaskID,
-		PlanCode:       h.PlanCode,
-		Datacenter:     h.Datacenter,
-		OptionsJSON:    string(optsJSON),
-		Status:         h.Status,
-		OrderID:        h.OrderID,
-		OrderURL:       h.OrderURL,
-		PurchaseTime:   h.PurchaseTime,
-		AttemptCount:   h.AttemptCount,
-		ExpirationTime: h.ExpirationTime,
-		RetractionTime: h.RetractionTime,
-		OrderStatus:    h.OrderStatus,
-		OrderStatusAt:  h.OrderStatusAt,
-		TotalMs:        h.TotalMs,
-		DelaySeconds:   h.DelaySeconds,
+		ID:              h.ID,
+		AccountID:       h.AccountID,
+		TaskID:          h.TaskID,
+		PlanCode:        h.PlanCode,
+		Datacenter:      h.Datacenter,
+		OptionsJSON:     string(optsJSON),
+		Status:          h.Status,
+		OrderID:         h.OrderID,
+		OrderURL:        h.OrderURL,
+		PurchaseTime:    h.PurchaseTime,
+		AttemptCount:    h.AttemptCount,
+		ExpirationTime:  h.ExpirationTime,
+		RetractionTime:  h.RetractionTime,
+		OrderStatus:     h.OrderStatus,
+		OrderStatusAt:   h.OrderStatusAt,
+		TotalMs:         h.TotalMs,
+		DelaySeconds:    h.DelaySeconds,
+		RefundCheckedAt: h.RefundCheckedAt,
 	}
 	if len(h.Timing) > 0 {
 		if tj, err := json.Marshal(h.Timing); err == nil {
@@ -121,6 +134,13 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 			return row, err
 		}
 		row.PriceJSON = sql.NullString{String: string(priceJSON), Valid: true}
+	}
+	if h.Refund != nil {
+		refundJSON, err := json.Marshal(h.Refund)
+		if err != nil {
+			return row, err
+		}
+		row.RefundJSON = string(refundJSON)
 	}
 	return row, nil
 }
@@ -157,11 +177,11 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 			INSERT INTO history
 			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
 			 error_message, purchase_time, attempt_count, expiration_time, retraction_time, price,
-			 order_status, order_status_at, timing, total_ms, delay_seconds)
+			 order_status, order_status_at, timing, total_ms, delay_seconds, refund, refund_checked_at)
 			VALUES
 			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 			 :error_message, :purchase_time, :attempt_count, :expiration_time, :retraction_time, :price,
-			 :order_status, :order_status_at, :timing, :total_ms, :delay_seconds)
+			 :order_status, :order_status_at, :timing, :total_ms, :delay_seconds, :refund, :refund_checked_at)
 		`, r)
 		if err != nil {
 			return fmt.Errorf("insert history %s: %w", h.ID, err)

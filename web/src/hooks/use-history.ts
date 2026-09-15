@@ -35,6 +35,20 @@ export interface PurchaseHistory {
     tax?: number;
     currencyCode?: string;
   };
+  /**
+   * 已确认的退款记录（OVH billing.Refund）。有值 = 已退款。
+   * 后端在刷新订单状态时顺带查 GET /me/refund?orderId= 落库；
+   * OVH 退款单没有状态机，只有"有/没有"，到账时间差在支付渠道侧。
+   */
+  refund?: {
+    id: string;
+    date?: string;
+    price?: { withTax?: number; currencyCode?: string };
+    /** 退款单 PDF 链接（OVH 返回原值） */
+    pdfUrl?: string;
+  };
+  /** 上次查退款的时间（后端按小时节流用，一般不用展示） */
+  refundCheckedAt?: string;
 }
 
 /** 抢购历史 */

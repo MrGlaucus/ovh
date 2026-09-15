@@ -321,8 +321,9 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 
 // RefreshOrderStatuses POST /api/purchase-history/refresh-status
 //
-// 手动刷新所有未到终态订单的支付状态(GET /me/order/{id}/status)。
-// 后台每 10 分钟也会自动刷,这里是给"我刚付完款想马上看到"的场景。
+// 手动刷新所有未到终态订单的支付状态(GET /me/order/{id}/status),
+// 并给还没标记退款的成功单查退款记录(GET /me/refund?orderId=)。
+// 后台每 10 分钟也会自动刷,这里是给"我刚付完款/刚取消完想马上看到"的场景。
 func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 	// 手动刷新会对每条未终态订单各打一次 /me/order/{id},而 force=true 正是用来
 	// 跳过那个 2 分钟节流的 —— 等于把限流闸门交给用户的手速。
@@ -351,6 +352,9 @@ func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 		mu.Unlock()
 
 		n := purchase.RefreshOrderStatuses(state, true)
+		// 顺带查退款：手动刷新正是"我刚在面板取消完订单,想立刻知道退了没"的场景,
+		// 退款查询跳过按小时节流(见 RefreshRefundStatuses 的 force 语义)。
+		n += purchase.RefreshRefundStatuses(state, true)
 		c.JSON(http.StatusOK, gin.H{"success": true, "updated": n})
 	}
 }

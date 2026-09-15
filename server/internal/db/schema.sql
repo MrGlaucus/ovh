@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS history (
   expiration_time TEXT NOT NULL DEFAULT '',
   retraction_time TEXT NOT NULL DEFAULT '',   -- 撤销权截止日(billing.Order.retractionDate),与 expiration_time 语义不同
   price           TEXT,                       -- JSON nullable (PriceInfo)
-  delay_seconds   INTEGER NOT NULL DEFAULT 0  -- 下单时配置的延迟秒数,0=立即
+  delay_seconds   INTEGER NOT NULL DEFAULT 0, -- 下单时配置的延迟秒数,0=立即
+  refund            TEXT NOT NULL DEFAULT '', -- JSON RefundInfo;非空=已查到退款记录(OVH billing.Refund)
+  refund_checked_at TEXT NOT NULL DEFAULT ''  -- 上次查退款的时间(节流用,不退款是常态)
 );
 CREATE INDEX IF NOT EXISTS idx_history_status        ON history(status);
 CREATE INDEX IF NOT EXISTS idx_history_purchase_time ON history(purchase_time DESC);
