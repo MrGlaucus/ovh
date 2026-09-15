@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ovh-buy/server/internal/types"
 )
@@ -70,5 +71,68 @@ func TestGuardedTransportDoesNotSendWhenIPIsUnverified(t *testing.T) {
 	}
 	if base.calls.Load() != 0 {
 		t.Fatalf("OVH base transport was called despite blocked IP state")
+	}
+}
+
+// withCountingIPService 与 withIPService 相同,但统计探测请求次数,
+// 用于验证失败态负缓存真的少发了探测。
+func withCountingIPService(t *testing.T, ip string) (*atomic.Int32, string) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, "fl=582f232\nip="+ip+"\n")
+	}))
+	old := serviceURL
+	serviceURL = srv.URL
+	t.Cleanup(func() { serviceURL = old; srv.Close() })
+	return &calls, srv.URL
+}
+
+// 失败结论必须进负缓存:没有它,出口不匹配时每个签名请求都要复检,
+// 监控一轮 N 个请求 = N 次串行探测,「检查可能停滞」就是这么来的。
+func TestGateFailureIsNegativelyCached(t *testing.T) {
+	calls, proxyURL := withCountingIPService(t, "198.51.100.10")
+	gate := NewGate()
+	acc := types.OVHAccount{ID: "a", ProxyURL: proxyURL, ExpectedOutboundIP: "198.51.100.11"}
+
+	if s := gate.Ensure(acc, false); s.Allowed() || s.State != "mismatch" {
+		t.Fatalf("expected mismatch, got %#v", s)
+	}
+	if s := gate.Ensure(acc, false); s.Allowed() || s.State != "mismatch" {
+		t.Fatalf("expected cached mismatch, got %#v", s)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("negative cache missed: probe called %d times, want 1", got)
+	}
+}
+
+// force 路径(后台 30 秒复检 / 手动检测)必须穿透负缓存:恢复要快。
+func TestGateForcedCheckBypassesNegativeCache(t *testing.T) {
+	calls, proxyURL := withCountingIPService(t, "198.51.100.10")
+	gate := NewGate()
+	acc := types.OVHAccount{ID: "a", ProxyURL: proxyURL, ExpectedOutboundIP: "198.51.100.11"}
+
+	_ = gate.Ensure(acc, false)
+	_ = gate.Ensure(acc, true)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("forced check must bypass negative cache: probe called %d times, want 2", got)
+	}
+}
+
+// 负缓存过期后下一个请求必须立即真实探测,恢复不被拖慢。
+func TestGateNegativeCacheExpires(t *testing.T) {
+	calls, proxyURL := withCountingIPService(t, "198.51.100.10")
+	gate := NewGate()
+	acc := types.OVHAccount{ID: "a", ProxyURL: proxyURL, ExpectedOutboundIP: "198.51.100.11"}
+
+	_ = gate.Ensure(acc, false)
+	old := FailedTTL
+	FailedTTL = 20 * time.Millisecond
+	t.Cleanup(func() { FailedTTL = old })
+	time.Sleep(30 * time.Millisecond)
+	_ = gate.Ensure(acc, false)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expired negative cache must re-probe: probe called %d times, want 2", got)
 	}
 }

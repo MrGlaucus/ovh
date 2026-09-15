@@ -16,9 +16,22 @@ import (
 )
 
 const (
-	TTL     = 30 * time.Second
+	// TTL 成功结论(verified)的复用窗口。
+	TTL = 30 * time.Second
+	// timeout 单次出口 IP 探测的总超时。
 	timeout = 10 * time.Second
 )
+
+// FailedTTL 失败结论(mismatch / failed)的负缓存窗口。
+//
+// 失败态不能像成功态那样缓 30 秒(恢复会被拖慢),但完全不缓存同样有问题:
+// 不匹配期间每个签名请求都要重新探测一次,且同账户单飞串行 —— 监控一轮
+// N 个请求就是 N 次串行探测(超时型故障每次 10 秒),整轮被拖到分钟级,
+// 前端只看到"检查可能停滞"。缓 5 秒(约一个监控间隔):一轮最多付一次探测;
+// 恢复仍然快 —— 后台 30 秒强制复检与手动检测走 force 不受限,
+// 窗口过期后的第一个请求也会立即真实探测。
+// 写成变量以便测试收紧窗口(同 serviceURL 的模式)。
+var FailedTTL = 5 * time.Second
 
 // serviceURL is fixed in production; package-local tests replace it with an httptest endpoint.
 var serviceURL = "https://www.cloudflare.com/cdn-cgi/trace"
@@ -104,6 +117,8 @@ func (g *Gate) Status(a types.OVHAccount) Status {
 
 // Ensure verifies when forced, missing, or older than TTL. It is single-flight
 // per account so concurrent purchase requests cannot stampede the IP service.
+// A fresh failed result is negatively cached for FailedTTL: during that window
+// callers get the failure immediately instead of queueing another probe.
 func (g *Gate) Ensure(a types.OVHAccount, force bool) Status {
 	// 直连账户没有代理出口绑定：不调用第三方查询、不做拦截。
 	if strings.TrimSpace(a.ProxyURL) == "" {
@@ -117,6 +132,11 @@ func (g *Gate) Ensure(a types.OVHAccount, force bool) Status {
 			g.statuses[a.ID] = s
 		}
 		if !force && s.Allowed() && time.Since(s.CheckedAt) < TTL {
+			g.mu.Unlock()
+			return s
+		}
+		if !force && !s.Allowed() && !s.CheckedAt.IsZero() && time.Since(s.CheckedAt) < FailedTTL {
+			// 新鲜的失败结论直接复用,不再排队探测:见 FailedTTL 的说明。
 			g.mu.Unlock()
 			return s
 		}

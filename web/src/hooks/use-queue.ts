@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
 import { toast } from "sonner";
+import { clampOrderPlan, MAX_ORDER_QUANTITY, MAX_ORDER_FANOUT } from "@/lib/order-limits";
+import { errorMessage } from "@/components/common/LoadFailed";
 
 export type QueueStatus = "pending" | "running" | "delaying" | "paused" | "completed" | "failed";
 
@@ -61,7 +63,10 @@ export function usePurchaseTimings() {
   return useQuery({
     queryKey: ["queue", "timings"],
     queryFn: async () =>
-      (await api.get<{ timings: Record<string, PurchaseTiming> }>("/queue/timings")).data.timings,
+      // ?? {} 不能省:queryFn 返回 undefined 会被 react-query 当成错误抛出,
+      // 整个 timings 查询翻进 isError,页面顶部弹一条"耗时读取失败"的横幅 ——
+      // 而真实情况只是这一轮还没有任何计时数据。
+      (await api.get<{ timings: Record<string, PurchaseTiming> }>("/queue/timings")).data?.timings ?? {},
     refetchInterval: 5000,
   });
 }
@@ -85,13 +90,22 @@ export function useCreateQueueItem() {
       autoPay?: boolean;
       delaySeconds?: number;
     }) => {
-      const qty = Math.max(1, payload.quantity ?? 1);
       const dcs = payload.datacenters;
+      // 上界以前完全没有:填 9999 × 5 个机房 = 近 5 万次串行 POST。
+      // 后端 EnqueueItems 也会拒,但那是在发出几百个请求之后 —— 这里先收住。
+      const plan = clampOrderPlan(dcs.length, payload.quantity ?? 1);
+      const qty = plan.quantity;
+      if (plan.clamped) {
+        toast.warning(
+          `每个机房最多 ${MAX_ORDER_QUANTITY} 台、单次最多 ${MAX_ORDER_FANOUT} 个任务，` +
+            `已按 ${qty} 台/机房（共 ${plan.total} 个任务）创建`
+        );
+      }
       let success = 0;
       let failed = 0;
       // 单项失败原因必须带回去：以前只数个数，用户看到"N 个任务创建失败"
-      // 却不知道是账户不对、配置没选还是网络问题，只能反复重试。
-      // 后端拒绝空配置任务时的话术（"未指定硬件配置…"）就从这里透出。
+      // 却不知道是账户不对、配置没选还是网络问题，只能反复重试。撞上队列
+      // 总量闸门时也靠它说清楚。后端拒绝空配置任务的话术（"未指定硬件配置…"）从这里透出。
       let firstError = "";
       for (const dc of dcs) {
         for (let i = 0; i < qty; i++) {
@@ -108,12 +122,11 @@ export function useCreateQueueItem() {
             success++;
           } catch (e: any) {
             failed++;
-            if (!firstError) {
-              firstError = e?.response?.data?.error || e?.message || "创建失败";
-            }
+            if (!firstError) firstError = errorMessage(e);
           }
         }
       }
+      if (failed > 0 && firstError) toast.error(`有任务没能创建：${firstError}`);
       return { success, failed, total: dcs.length * qty, firstError };
     },
     onSuccess: () => {
@@ -151,6 +164,20 @@ export function useBatchUpdateQueueStatus() {
 }
 
 /** 删除单个任务 */
+/** 改单条任务的重试间隔。处理器每轮都读任务上的值，所以下一轮就生效 */
+export function useUpdateQueueInterval() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, retryInterval }: { id: string; retryInterval: number }) =>
+      (await api.put(`/queue/${id}/interval`, { retryInterval })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.queue.list() });
+      toast.success("重试间隔已更新");
+    },
+    onError: (e: any) => toast.error(e.response?.data?.error || "修改失败"),
+  });
+}
+
 export function useRemoveQueueItem() {
   const qc = useQueryClient();
   return useMutation({

@@ -150,13 +150,13 @@ function HistoryPage() {
   }, [items, search, serverNames, statusFilter]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3 sm:space-y-6">
       <PageHeader
         icon={Clock}
         title="抢购历史"
         description="查看服务器购买历史记录"
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               variant="outline"
               onClick={() => refreshStatus.mutate()}
@@ -177,8 +177,10 @@ function HistoryPage() {
       />
 
       <Card>
-        <CardContent className="p-5">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <CardContent className="p-3 sm:p-5">
+          {/* 手机端两个控件并排:搜索框和状态下拉各占一整行时白吃 ~70px,
+              而「所有状态」这种下拉本来就不需要整行宽 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
             <div className="relative">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
               <Input

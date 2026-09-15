@@ -16,6 +16,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/proxy"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 // VerifyConfig 检查 Telegram 是否可用:Token / Chat ID 是否填写 + bot 是否能 getMe + chat 是否可访问。
@@ -429,21 +430,27 @@ func ParseOrderMessage(text string) *OrderInfo {
 		return result
 	}
 
-	// 找包含逗号的部分 = options
+	// 找包含分隔符的部分 = options
+	// 半角逗号之外,全角逗号/顿号/分号也算(options 的实际切分见 types.SplitList):
+	// 中文输入法默认打出来的是「，」,只认半角的话
+	// `ram-64g，softraid-2x960ssd` 会被当成**一个**配置项发给 OVH,
+	// 匹配不上任何 addon,而且不报错:单照下,只是配置悄悄没了。
 	optionsStart := -1
 	for i, p := range remaining {
-		if strings.Contains(p, ",") {
+		if strings.ContainsAny(p, ",，、;；") {
 			optionsStart = i
 			break
 		}
 	}
 	if optionsStart >= 0 {
 		optsText := strings.Join(remaining[optionsStart:], " ")
-		for _, o := range strings.Split(optsText, ",") {
-			o = strings.TrimSpace(o)
-			if o != "" {
-				result.Options = append(result.Options, o)
+		for _, o := range types.SplitList(optsText) {
+			// 写成 -1 / +2 / 3.5 这种:意图显然是数量,只是写得不合法。
+			// 发给 OVH 只会换回一句用户看不懂的英文报错;数量有默认值,忽略即可。
+			if isMalformedQuantity(o) {
+				continue
 			}
+			result.Options = append(result.Options, o)
 		}
 		remaining = remaining[:optionsStart]
 	}
@@ -473,16 +480,45 @@ func ParseOrderMessage(text string) *OrderInfo {
 	return result
 }
 
+// isMalformedQuantity 带符号或带小数点的数字,比如 -1 / +2 / 3.5。
+// 这种写法只可能是在写数量(addon planCode 不长这样),只是写得不合法。
+// 裸的正整数不算 —— 那个由调用方按位置决定是数量还是配置。
+func isMalformedQuantity(s string) bool {
+	if s == "" {
+		return false
+	}
+	signed := s[0] == '+' || s[0] == '-'
+	if signed {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	dot := false
+	digits := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			digits = true
+		case c == '.':
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits && (signed || dot)
+}
+
 // parsePositiveInt 只接受纯十进制 ASCII 数字字符串，
 // 不接受 "-1" / "+5" / " 3" 等带符号或空白的版本（strconv.Atoi 会通过）。
-// MaxOrderQuantity 一条聊天消息能指定的最大数量。
-// 没有上限时 "planCode 4000000000" 会让 order_processor 先把 40 亿个
-// QueueItem append 进一个切片 —— 进程当场 OOM 被杀。
-const MaxOrderQuantity = 20
-
-// MaxOrderFanout 一条消息最多创建多少个抢购任务。
-// 不指定机房时任务数 = 配置数 × 有货机房数 × 数量,很容易远超用户直觉。
-const MaxOrderFanout = 60
+// MaxOrderQuantity / MaxOrderFanout 下单规模上限。
+// 定义挪到了 types —— 它们是产品级约束,不是 TG 专有的:
+// 网页端那条入队路径原来完全没有上界(见 types 里的说明)。
+// 这里留别名,TG 侧的引用不用改。
+const (
+	MaxOrderQuantity = types.MaxOrderQuantity
+	MaxOrderFanout   = types.MaxOrderFanout
+)
 
 // clampQuantity 把数量夹到 [1, MaxOrderQuantity]
 func clampQuantity(n int) int {

@@ -27,6 +27,8 @@ import (
 //   - 5xx(OVH 自己挂了/网关超时)
 //   - 408 请求超时
 //   - 传输层错误:超时、连接被重置、DNS 解析失败、EOF
+//   - 出口 IP 闸门阻断(账户出口 IP 未确认):代理没挂对/出口 IP 变了,
+//     是用户侧环境问题而不是"这单买不成" —— 修好代理后请求立即恢复
 //
 // 不算 transient 的是 4xx 业务拒绝(参数错、无权限、无货、机型不在本区目录),
 // 那些重试多少次都是同一个答案,该计数就得计数。
@@ -66,6 +68,12 @@ func IsTransient(err error) bool {
 		"service unavailable",
 		"bad gateway",
 		"gateway timeout",
+		// 出口 IP 闸门阻断(GuardedTransport 在请求出网前返回,没有 HTTP 响应,
+		// 上面那些状态码/传输层特征全部命中不了)。判成 transient 的语义:
+		// 代理/出口 IP 是用户侧环境配置,修好后重试立刻恢复;不该写抢购历史、
+		// 不该计 FailureCount —— 否则代理配错一次,任务就会被 MaxRetries 判死,
+		// 历史里还会留下一条与"这单买不成"毫无关系的环境错误。
+		"携带账户鉴权的 ovh 请求已阻断",
 	} {
 		if strings.Contains(s, needle) {
 			return true

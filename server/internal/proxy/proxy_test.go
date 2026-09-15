@@ -73,16 +73,16 @@ func TestInitEmptyDisables(t *testing.T) {
 
 func TestIsLoopback(t *testing.T) {
 	cases := map[string]bool{
-		"127.0.0.1":    true,
-		"127.0.0.2":    true, // 整个 127/8 都是回环
-		"::1":          true,
-		"[::1]":        true,
-		"localhost":    true,
-		"LOCALHOST":    true,
-		"192.168.1.1":  false,
-		"10.0.0.1":     false,
+		"127.0.0.1":      true,
+		"127.0.0.2":      true, // 整个 127/8 都是回环
+		"::1":            true,
+		"[::1]":          true,
+		"localhost":      true,
+		"LOCALHOST":      true,
+		"192.168.1.1":    false,
+		"10.0.0.1":       false,
 		"eu.api.ovh.com": false,
-		"":             false,
+		"":               false,
 	}
 	for host, want := range cases {
 		if got := isLoopback(host); got != want {

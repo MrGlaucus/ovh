@@ -1,6 +1,7 @@
 package purchase
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -54,6 +55,13 @@ func FetchOrderStatus(client *ovhsdk.Client, orderID string) (string, error) {
 // 后者才需要"请到 OVH 面板确认、勿重复点击"的警告。
 var ErrNoUsablePaymentMean = errors.New("该账户没有已注册且有效的默认支付方式；请先到 OVH 管理面板添加支付方式或确认默认支付方式有效")
 
+// ErrOrderNotPayableOnline 订单本身不能用"本工具可自动使用的已注册支付方式"付款：
+// 订单可用列表为空，或只含本工具不自动使用的余额类方式（fidelityAccount/ovhAccount——
+// 花预付费余额涉及资金去向，留给用户在面板上自己选择）。
+// 与 ErrNoUsablePaymentMean 区分：那个是账户缺配置、换个方式仍有救；这个是订单侧限制，
+// 重试无用，只能去 OVH 管理面板处理。
+var ErrOrderNotPayableOnline = errors.New("该订单不支持用已注册支付方式在线支付，请到 OVH 管理面板完成付款")
+
 // paymentMeanItem 一类支付方式里单个候选的详情（默认标记 + 状态）。
 type paymentMeanItem struct {
 	ID      int64
@@ -85,55 +93,168 @@ func selectPreferredPaymentMean(items []paymentMeanItem) int64 {
 	return 0
 }
 
-// resolvePreferredPaymentMean 找出账户的默认支付方式，返回（类型, ID）。
+// resolvePreferredPaymentMean 解析本单付款该用的（paymentMean, paymentMeanId）。
 //
-// OVH 的 payWithRegisteredPaymentMean 必须显式带 paymentMean（类型）与
-// paymentMeanId（信用卡/PayPal/银行账户场景必填），不存在"无参用默认"的调用方式 ——
-// 这正是付款按钮最初必然 400 的根因。默认信息只能自己查：列该类型已注册的
-// 支付方式，再看详情里的 default/state 字段。顺序：信用卡 → PayPal
-// （最常用的两种自动扣款方式）。
-func resolvePreferredPaymentMean(client *ovhsdk.Client) (string, int64, error) {
-	candidates := []struct {
-		meanType string
-		listPath string
-	}{
-		{"creditCard", "/me/paymentMean/creditCard"},
-		{"paypal", "/me/paymentMean/paypal"},
+// 正确顺序（OVH 官方文档 "Pay Purchase Order"）：
+//  1. GET /me/order/{orderId}/availableRegisteredPaymentMean 拿"这张订单允许哪些方式"；
+//  2. 从中按优先级挑一个本工具支持的方式，paymentMean 用列表里的原值传回 OVH；
+//  3. 需要 ID 的方式（creditCard/paypal/bankAccount）再从账户级列表解析"默认且有效"的 ID。
+//
+// 此前跳过第 1 步、直接拿账户默认去付款，被订单拒绝 403 "This order can't be paid
+// with …" —— 账户里注册了某种支付方式 ≠ 这张订单允许用这种方式支付。
+//
+// 订单级列表查询失败（端点缺失/权限不足）时回退纯账户默认解析（旧行为），
+// 不把"可能本来能付"的订单卡死在解析阶段。
+func resolvePreferredPaymentMean(client *ovhsdk.Client, orderID string) (string, int64, error) {
+	avail, err := fetchAvailablePaymentMeans(client, orderID)
+	if err != nil {
+		return resolveAccountDefaultFallback(client)
 	}
-	var lastErr error
-	for _, c := range candidates {
-		var ids []int64
-		if err := client.Get(c.listPath, &ids); err != nil {
-			lastErr = err
+	if len(avail) == 0 {
+		return "", 0, ErrOrderNotPayableOnline
+	}
+	member, accountType, ok := pickPayableMean(avail)
+	if !ok {
+		return "", 0, fmt.Errorf("%w（该订单当前仅支持：%s）", ErrOrderNotPayableOnline, strings.Join(avail, " / "))
+	}
+	id, err := resolveDefaultMeanID(client, accountType)
+	if err != nil {
+		return "", 0, err
+	}
+	return member, id, nil
+}
+
+// parseAvailableMeans 宽容解析订单可用支付方式响应。官方示例是对象数组
+// [{"paymentMean":"bankAccount"}]；历史文档同时提示数组里可能混有 null
+// （表示该方式不可用），部分区域也有直接给字符串数组的实现 —— 三种形态一起兼容。
+func parseAvailableMeans(raw []json.RawMessage) []string {
+	var means []string
+	for _, r := range raw {
+		var obj struct {
+			PaymentMean *string `json:"paymentMean"`
+		}
+		if json.Unmarshal(r, &obj) == nil && obj.PaymentMean != nil {
+			if s := strings.TrimSpace(*obj.PaymentMean); s != "" {
+				means = append(means, s)
+			}
 			continue
 		}
-		items := make([]paymentMeanItem, 0, len(ids))
-		for _, id := range ids {
-			var detail struct {
-				Default bool   `json:"default"`
-				State   string `json:"state"`
-			}
-			if err := client.Get(fmt.Sprintf("%s/%d", c.listPath, id), &detail); err != nil {
-				continue
-			}
-			items = append(items, paymentMeanItem{ID: id, Default: detail.Default, State: detail.State})
-		}
-		if id := selectPreferredPaymentMean(items); id != 0 {
-			return c.meanType, id, nil
+		var s string
+		if json.Unmarshal(r, &s) == nil && strings.TrimSpace(s) != "" {
+			means = append(means, strings.TrimSpace(s))
 		}
 	}
-	if lastErr != nil {
-		return "", 0, fmt.Errorf("查询账户支付方式失败: %w", lastErr)
+	return means
+}
+
+// fetchAvailablePaymentMeans 查这张订单可用哪些已注册支付方式。
+// 这是付款前必须的第一步：payWithRegisteredPaymentMean 的 paymentMean 必须来自
+// 此列表（OVH 文档原文："Payment method fetched when listing available payment
+// methods"），拿别处来的值会被订单拒绝 403。
+func fetchAvailablePaymentMeans(client *ovhsdk.Client, orderID string) ([]string, error) {
+	var raw []json.RawMessage
+	if err := client.Get("/me/order/"+orderID+"/availableRegisteredPaymentMean", &raw); err != nil {
+		return nil, err
+	}
+	return parseAvailableMeans(raw), nil
+}
+
+// payableMeanPriority 本工具允许自动付款的方式，按优先级排（信用卡 → PayPal → 银行扣款）。
+// normalized 是归一化匹配（官方枚举同时存在 "creditCard"/"CREDIT_CARD" 两种写法）；
+// accountType 对应账户级列表路由的类型段（/me/paymentMean/creditCard 等固定路径）。
+// 余额类（fidelityAccount/ovhAccount）刻意不在列：自动花预付费余额超出
+// "用默认支付方式付款"的语义，留给用户到面板自己决定。
+var payableMeanPriority = []struct {
+	normalized  string
+	accountType string
+}{
+	{"creditcard", "creditCard"},
+	{"paypal", "paypal"},
+	{"bankaccount", "bankAccount"},
+}
+
+// normalizeMeanName 抹平支付方式名的写法差异（大小写 + 下划线）。
+func normalizeMeanName(s string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "_", "")
+}
+
+// pickPayableMean 从订单可用列表里按优先级挑一个本工具能自动付款的方式。
+// 返回订单列表里的原值（传回 OVH 的 paymentMean 必须用列表原值，大小写敏感）
+// 与对应的账户级类型（用于解析默认 ID）。ok=false 表示没有可自动使用的方式。
+func pickPayableMean(avail []string) (member, accountType string, ok bool) {
+	for _, want := range payableMeanPriority {
+		for _, v := range avail {
+			if normalizeMeanName(v) == want.normalized {
+				return v, want.accountType, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// resolveDefaultMeanID 在一类支付方式里解析"默认且有效"的 ID。
+//
+// 账户级路由按类型拆成固定路径（/me/paymentMean/creditCard、/me/paymentMean/paypal），
+// 没有 "/me/paymentMean/{type}" 的参数化形式 —— 所以列表查询必须用显式字面量：
+// 拼接写法在漂移扫描里会产出 {paymentMeanType} 模板，匹配不到官方任何路由。
+func resolveDefaultMeanID(client *ovhsdk.Client, meanType string) (int64, error) {
+	var ids []int64
+	switch meanType {
+	case "creditCard":
+		if err := client.Get("/me/paymentMean/creditCard", &ids); err != nil {
+			return 0, fmt.Errorf("查询账户 creditCard 支付方式失败: %w", err)
+		}
+	case "paypal":
+		if err := client.Get("/me/paymentMean/paypal", &ids); err != nil {
+			return 0, fmt.Errorf("查询账户 paypal 支付方式失败: %w", err)
+		}
+	default:
+		return 0, fmt.Errorf("不支持的支付方式类型: %s", meanType)
+	}
+	basePath := "/me/paymentMean/" + meanType
+	items := make([]paymentMeanItem, 0, len(ids))
+	for _, id := range ids {
+		var detail struct {
+			Default bool   `json:"default"`
+			State   string `json:"state"`
+		}
+		if err := client.Get(fmt.Sprintf("%s/%d", basePath, id), &detail); err != nil {
+			continue
+		}
+		items = append(items, paymentMeanItem{ID: id, Default: detail.Default, State: detail.State})
+	}
+	if id := selectPreferredPaymentMean(items); id != 0 {
+		return id, nil
+	}
+	return 0, ErrNoUsablePaymentMean
+}
+
+// resolveAccountDefaultFallback 订单级列表拿不到时的兜底：只按账户默认解析，
+// 顺序信用卡 → PayPal（最常用的两种自动扣款方式）。
+func resolveAccountDefaultFallback(client *ovhsdk.Client) (string, int64, error) {
+	var hardErr error
+	for _, meanType := range []string{"creditCard", "paypal"} {
+		id, err := resolveDefaultMeanID(client, meanType)
+		if err == nil {
+			return meanType, id, nil
+		}
+		// 查询失败（网络/权限）比"没有默认"更值得原样上报：前者重试可能成功。
+		if !errors.Is(err, ErrNoUsablePaymentMean) && hardErr == nil {
+			hardErr = err
+		}
+	}
+	if hardErr != nil {
+		return "", 0, hardErr
 	}
 	return "", 0, ErrNoUsablePaymentMean
 }
 
-// PayOrderWithPreferredPaymentMethod 使用该 OVH 账户已登记的默认支付方式支付一张已有订单。
+// PayOrderWithPreferredPaymentMethod 使用订单允许、且账户已登记的默认支付方式支付一张已有订单。
 // 它不是购物车 checkout（那边有 autoPayWithPreferredPaymentMethod 让 OVH 服务端自己解析默认）：
 // 订单创建后购物车已转换为订单，必须调用订单专用接口，且要显式带上解析出的
 // paymentMean + paymentMeanId —— 以前这里 body 传 nil，每次都被 OVH 参数校验 400 拒绝。
 func PayOrderWithPreferredPaymentMethod(client *ovhsdk.Client, orderID string) error {
-	meanType, meanID, err := resolvePreferredPaymentMean(client)
+	meanType, meanID, err := resolvePreferredPaymentMean(client, orderID)
 	if err != nil {
 		return err
 	}
@@ -144,6 +265,17 @@ func PayOrderWithPreferredPaymentMethod(client *ovhsdk.Client, orderID string) e
 		return fmt.Errorf("请求默认支付方式付款失败: %w", err)
 	}
 	return nil
+}
+
+// IsOrderPaymentRefused 判断 OVH 是否确定性拒绝用该支付方式支付这张订单
+// （403 "This order can't be paid with …"）。这类拒绝发生在订单侧、没有任何资金动作，
+// 属于"零风险"错误：调用方应给明确指引，而不是套"可能已扣款、勿重复点击"的警告。
+func IsOrderPaymentRefused(err error) bool {
+	var apiErr *ovhsdk.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == 403 && strings.Contains(apiErr.Message, "can't be paid with")
 }
 
 // RefreshOrderStatuses 把所有还没到终态的成功订单刷一遍状态。

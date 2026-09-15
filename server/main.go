@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -256,6 +260,7 @@ func main() {
 		api.DELETE("/queue/:id", handlers.RemoveQueueItem(state))
 		api.PUT("/queue/batch-status", handlers.UpdateAllQueueStatuses(state))
 		api.PUT("/queue/:id/status", handlers.UpdateQueueStatus(state))
+		api.PUT("/queue/:id/interval", handlers.UpdateQueueInterval(state))
 
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))
@@ -326,6 +331,9 @@ func main() {
 
 		// Server control - basic
 		sc := api.Group("/server-control")
+		// :service_name 会被直接拼进 OVH 的请求路径,先在组上统一挡一道 ——
+		// 名字里带 # 或 ? 会让请求被静默发到另一个端点,见 ValidateServiceName
+		sc.Use(handlers.ValidateServiceName())
 		{
 			sc.GET("/list", handlers.ListMyServers(state))
 			// 服务器本地别名:纯本地显示用,不下发 OVH
@@ -333,6 +341,10 @@ func main() {
 			sc.PUT("/:service_name/alias", handlers.SetServerAlias(state))
 			sc.DELETE("/:service_name/alias", handlers.DeleteServerAlias(state))
 			sc.GET("/order-mapping", handlers.GetOrderMapping(state))
+			// 14 天无理由撤单:GET 判断这台机器还能不能退(依据 OVH 的 retractionDate,
+			// 不是自己算 14 天),POST 真正提交申请(不可逆,要求 confirm:true)
+			sc.GET("/:service_name/retraction", handlers.GetRetraction(state))
+			sc.POST("/:service_name/retraction", handlers.PostRetraction(state))
 			sc.POST("/:service_name/reboot", handlers.Reboot(state))
 			sc.GET("/:service_name/templates", handlers.GetOSTemplates(state))
 			sc.POST("/:service_name/install", handlers.InstallOS(state))
@@ -342,6 +354,11 @@ func main() {
 			sc.POST("/:service_name/tasks/:task_id/schedule", handlers.ScheduleTaskTimeslot(state))
 
 			// boot/monitoring
+			// 一键救援:改 netboot → 设收信邮箱 → 重启,三步合一。
+			// 手动做要在 OVH 后台点四步,而漏掉最后的重启是最常见的错误。
+			sc.GET("/:service_name/rescue", handlers.GetRescueStatus(state))
+			sc.POST("/:service_name/rescue", handlers.EnterRescue(state))
+			sc.POST("/:service_name/rescue/exit", handlers.ExitRescue(state))
 			sc.GET("/:service_name/boot", handlers.GetBootConfig(state))
 			sc.PUT("/:service_name/boot/:boot_id", handlers.SetBootConfig(state))
 			sc.GET("/:service_name/monitoring", handlers.GetMonitoringStatus(state))
@@ -454,6 +471,9 @@ func main() {
 
 		// VPS control(已购 VPS 管理)
 		vc := api.Group("/vps-control")
+		// :service_name 会被直接拼进 OVH 的请求路径,先在组上统一挡一道 ——
+		// 名字里带 # 或 ? 会让请求被静默发到另一个端点,见 ValidateServiceName
+		vc.Use(handlers.ValidateServiceName())
 		{
 			vc.GET("/list", handlers.ListVps(state))
 			vc.GET("/:service_name/info", handlers.GetVpsInfo(state))
@@ -593,8 +613,6 @@ func main() {
 			console.Error("⚠️  并且监听所有网卡(LISTEN_HOST 为空):同网段任何人都能用默认密钥操作你的 OVH 账户")
 		}
 	}
-	console.Info("Listening", "addr", addr, "auth", enableAuth, "ui", hasUI(), "dataDir", paths.DataDir)
-
 	srv := &http.Server{Addr: addr, Handler: r}
 
 	// 端口真正 Listen 成功之后才标记"这一版能跑" —— 此时数据库已打开、路由已注册、
@@ -604,16 +622,27 @@ func main() {
 	// 自己 Listen 而不是用 ListenAndServe + sleep:后者只能靠"睡几秒应该起来了"猜,
 	// 猜早了端口还没占上就宣布健康,猜晚了这几秒里被重启一次就会被误判成启动失败。
 	// 拿到 listener 就是确凿的成功信号,没有窗口。
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenWithRetry(addr, state)
 	if err != nil {
-		console.Error("listen", "err", err)
+		// 这里失败就是整个程序没起来。以前 "Listening"/"Server started" 两行
+		// 打在 Listen **之前**,于是端口被占时日志上写着启动成功、实际进程已经退出 ——
+		// 自更新失败最难查的就是这一点。
+		console.Error("启动失败:端口没能绑上", "addr", addr, "err", err)
+		state.Logger.Error("启动失败,端口 "+addr+" 没能绑上: "+err.Error(), "system")
+		state.Logger.Flush()
 		os.Exit(1)
 	}
+	console.Info("Listening", "addr", addr, "auth", enableAuth, "ui", hasUI(), "dataDir", paths.DataDir)
+	state.Logger.Info("已监听 "+addr+",开始对外服务", "system")
 	updater.MarkHealthy(state)
 
 	// 自更新完成后走这里:先停止接受新请求并等在途请求收尾,再关数据库,最后换进程映像。
 	// 顺序不能反 —— 先 exec 的话,新进程会发现端口还被自己占着。
 	gracefulRestart = func(exe string) {
+		// 必须在 Shutdown 之前置位:Shutdown 会让主 goroutine 里的 Serve 立刻返回,
+		// 而主 goroutine 要靠这个标记知道"别退出,等我 exec"。
+		restartPending.Store(true)
+
 		state.Logger.Info("[更新] 正在优雅关闭以完成重启", "version")
 		state.Logger.Flush()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -624,16 +653,155 @@ func main() {
 		if err := sqliteDB.Close(); err != nil {
 			console.Warn("close sqlite", "err", err)
 		}
+
+		// 走到这一步再记一笔并落盘:以前日志停在"正在优雅关闭"就没有了,
+		// 根本分不清是没走到 exec、还是 exec 失败了。
+		state.Logger.Info("[更新] 准备用新二进制替换进程映像: "+exe, "version")
+		state.Logger.Flush()
+
 		if err := updater.Restart(exe); err != nil {
-			console.Error("restart", "err", err)
-			os.Exit(1)
+			// execve 失败(权限丢了、挂载带 noexec、ETXTBSY 等)不是没救:退一步起个新进程再退出。
+			// 比直接死掉强得多:这台机器上跑的正是抢购,停机就是错过补货。
+			state.Logger.Error("[更新] 替换进程映像失败: "+err.Error()+"，改用启动新进程的方式", "version")
+			state.Logger.Flush()
+			if serr := updater.Spawn(exe); serr != nil {
+				state.Logger.Error("[更新] 启动新进程也失败: "+serr.Error()+"。请手动重启程序", "version")
+				state.Logger.Flush()
+				console.Error("restart", "err", err, "spawn", serr)
+				os.Exit(1)
+			}
+			state.Logger.Info("[更新] 新进程已拉起,当前进程退出", "version")
+			state.Logger.Flush()
+			os.Exit(0)
 		}
 	}
+
+	// —— 优雅退出 ——
+	//
+	// Docker 重建容器(compose down、compose up -d 拉新镜像、重启策略)发的是
+	// SIGTERM,而 Go 默认收到它就当场终止:defer 不会执行,于是
+	//   - sqliteDB.Close() 不跑
+	//   - Logger 是内存缓冲的,没落盘的那批日志直接丢;排查问题时最需要的恰恰是最后几句
+	//   - 在途请求被硬切,包括已经走到结账那几秒的下单
+	// "拉新镜像重建"是这个项目最常见的运维动作,不该每次都这么收场。
+	//
+	// 自更新有它自己的收尾路径(gracefulRestart),两者不能同时跑 ——
+	// 用 restartPending 区分。
+	shutdownDone := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		// Shutdown 会让 Serve 立刻返回,而收尾还在这个 goroutine 里跑着。
+		// main 直接返回 = 进程退出,数据库可能还没关上 —— 和不处理信号没区别。
+		if shutdownPending.Load() {
+			select {
+			case <-shutdownDone:
+			case <-time.After(30 * time.Second):
+				console.Warn("shutdown", "err", "收尾超过 30 秒,强制退出")
+			}
+			state.Logger.Flush()
+			os.Exit(0)
+		}
+
+		if restartPending.Load() {
+			return // 自更新已经在收尾,别插一脚
+		}
+		shutdownPending.Store(true)
+		console.Info("shutdown", "signal", sig.String())
+		gracefulShutdown(srv, sqliteDB, state.Logger, console, sig.String(), 15*time.Second)
+		close(shutdownDone)
+	}()
 
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		console.Error("server run", "err", err)
 		os.Exit(1)
 	}
+
+	// Serve 返回了。如果是自更新触发的 Shutdown,**绝对不能从 main 返回** ——
+	// main 返回就是进程退出,而 exec 还排在另一个 goroutine 里(它得先等
+	// Shutdown 收尾、再关数据库)。
+	//
+	// 这正是之前"自更新后进程直接没了"的原因:Shutdown 让 Serve 立刻返回,
+	// 主 goroutine 跑完 main 就退出了,gracefulRestart 还卡在 sqliteDB.Close(),
+	// syscall.Exec 从来没执行过。日志上表现为"正在优雅关闭以完成重启"之后再无下文。
+	if restartPending.Load() {
+		// exec 成功 → 进程映像被替换,下面这行永远等不到
+		// exec 失败 → gracefulRestart 里自行 os.Exit
+		// 兜底加个上限:万一两条路都没走到,别让用户对着一个挂死的进程干等。
+		time.Sleep(60 * time.Second)
+		state.Logger.Error("[更新] 等了 60 秒仍未完成重启,放弃并退出。请手动启动程序", "version")
+		state.Logger.Flush()
+		os.Exit(1)
+	}
+}
+
+// restartPending 标记"这次 Serve 退出是自更新计划内的"。
+var restartPending atomic.Bool
+
+// gracefulShutdown 退出前的收尾:停止接受新请求 → 等在途请求收尾 → 日志落盘 → 关数据库。
+//
+// 抽成独立函数是为了能测。这里真正要保证的是两件**可观察**的事 ——
+// 缓冲区里的日志写进了文件、数据库正常关闭。这两件在收到 SIGTERM 时
+// 原本一件都不会发生(Go 默认当场终止,defer 不执行)。
+//
+// 顺序不能反:先 Flush 再 Close。日志写的是文件不是网络,但把"正在关库"
+// 这句留到关完再刷,万一 Close 卡住,最有用的那条线索就丢了。
+func gracefulShutdown(srv *http.Server, sqlDB io.Closer, lg *logger.Logger, console *slog.Logger, reason string, wait time.Duration) {
+	lg.Info("收到 "+reason+",正在优雅退出", "system")
+
+	// 给在途请求留出收尾时间。抢购链路最长的一步是结账,实测几秒内。
+	// 超时也要继续往下走,不能因为一个卡住的请求把整个退出流程拖死。
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	if srv != nil {
+		if err := srv.Shutdown(ctx); err != nil {
+			if console != nil {
+				console.Warn("shutdown", "err", err)
+			}
+			lg.Warn("优雅退出:仍有请求未在期限内收尾,继续关闭 - "+err.Error(), "system")
+		}
+	}
+	lg.Info("优雅退出:请求已收尾,正在关闭数据库", "system")
+	lg.Flush()
+	if sqlDB != nil {
+		if err := sqlDB.Close(); err != nil {
+			if console != nil {
+				console.Warn("close sqlite", "err", err)
+			}
+			lg.Error("关闭数据库失败: "+err.Error(), "system")
+			lg.Flush()
+		}
+	}
+}
+
+// shutdownPending 标记"这次 Serve 退出是收到退出信号后计划内的"。
+// 与 restartPending 分开:两条路径的收尾动作不同(一个要 exec,一个要退出),
+// 共用一个标记会让自更新在收到 SIGTERM 时走错分支。
+var shutdownPending atomic.Bool
+
+// listenWithRetry 绑端口,短暂重试。
+//
+// 自更新是 execve:旧进程的监听 fd 虽然在 Shutdown 里关了,但内核回收晚,
+// 以及仍处于 TIME_WAIT 的连接,都可能让紧接着的 bind 撞上
+// "address already in use"。这是个几百毫秒的窗口,重试几次就过去了 ——
+// 而不重试的话,自更新会以"新版本起不来"收场,然后被回滚。
+//
+// 真的是别的进程占着端口,重试几秒也还是失败,那时候才该报错退出。
+func listenWithRetry(addr string, state *app.State) (net.Listener, error) {
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		lastErr = err
+		if i == 0 {
+			state.Logger.Warn("端口 "+addr+" 暂时绑不上,重试中: "+err.Error(), "system")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return nil, lastErr
 }
 
 // mountEmbeddedUI 把嵌入的前端挂到根路径。

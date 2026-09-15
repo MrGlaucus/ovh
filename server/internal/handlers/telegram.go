@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -740,38 +741,22 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		Status:        "running",
 		CreatedAt:     types.NowISO(),
 		UpdatedAt:     types.NowISO(),
-		RetryInterval: 30,
+		RetryInterval: state.Config.RetryInterval(),
 		RetryCount:    0,
 		LastCheckTime: 0,
 		FromTelegram:  true,
 	}
-	state.QueueMu.Lock()
-	state.Queue = append(state.Queue, item)
-	state.QueueMu.Unlock()
-	if err := state.SaveQueue(); err != nil {
-		// 落库失败 → 把内存里这条也撤掉,再归还按钮。
-		//
-		// 以前只归还按钮、不撤内存:任务还在队列里跑着,而按钮又可以再按一次 ——
-		// 用户按第二次就是同一台机器的第二条任务,抢到就是两笔真实订单、两次扣款。
-		// 而且下面照样回"✅ 已添加到抢购队列",用户完全不知道出过事。
-		// 撤销 + 归还按钮 + 明确告知,三件事必须一起做,重试才是安全的。
-		state.Logger.Error("Telegram 入队后保存失败: "+err.Error(), "telegram")
-		state.QueueMu.Lock()
-		for i := range state.Queue {
-			if state.Queue[i].ID == item.ID {
-				state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
-				break
-			}
-		}
-		state.QueueMu.Unlock()
+	// 入队 + 落库统一走 EnqueueItems:失败会自动撤回内存里的那条,
+	// 这里只需要把按钮归还、告诉用户
+	if err := state.EnqueueItems([]types.QueueItem{item}, false); err != nil {
 		if claimed {
 			_ = state.DB.UnclaimTelegramButton(buttonID)
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "入队失败，请重试", true)
+		state.Logger.Error("一键下单落库失败,已撤回: "+err.Error(), "telegram")
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "没能保存，请重试", true)
 		telegram.SendReply(state, chatID,
-			"⚠️ 入队失败：任务没能写进数据库，已撤销，未开始抢购。\n原因: "+err.Error()+"\n\n可以再按一次按钮重试。",
-			int64(messageID))
-		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save queue: " + err.Error()})
+			"❌ 任务没能写进数据库，已撤回（避免出现重启就消失的假任务）：\n"+err.Error(), int64(messageID))
+		c.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save_failed"})
 		return
 	}
 
@@ -1347,9 +1332,10 @@ func renderTelegramQueueList(state *app.State) string {
 			account = "已删除账户"
 		}
 		// 每项独立成块，避免多条任务挤在一起难以核对；配置始终使用可读文本。
-		fmt.Fprintf(&msg, "\n\n━━━━━━━━━━━━━━━━\n%s · %s\n📍 机房：%s\n🧩 配置：%s\n👤 账户：%s\n🔁 重试：%d 次 · 最近检查：%s",
+		fmt.Fprintf(&msg, "\n\n━━━━━━━━━━━━━━━━\n%s · %s\n📍 机房：%s\n🧩 配置：%s\n👤 账户：%s\n🔁 重试：%d 次 · 间隔：%d 秒 · 最近检查：%s",
 			queueStatusLabel(item.Status), displayTelegramPlan(state, item.PlanCode), monitor.DisplayDatacenterShortName(item.Datacenter),
-			formatTelegramQueueOptions(item.Options), shortTelegramText(account, 40), item.RetryCount, formatTelegramUnixTime(item.LastCheckTime))
+			formatTelegramQueueOptions(item.Options), shortTelegramText(account, 40), item.RetryCount,
+			types.ClampRetryInterval(item.RetryInterval, state.Config.RetryInterval()), formatTelegramUnixTime(item.LastCheckTime))
 	}
 	if len(items) > limit {
 		fmt.Fprintf(&msg, "\n\n其余 %d 项未展开，请前往控制台查看。", len(items)-limit)
@@ -1360,6 +1346,51 @@ func renderTelegramQueueList(state *app.State) string {
 func matchesTelegramCommand(text, command string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	return text == "/"+command || strings.HasPrefix(text, "/"+command+"@")
+}
+
+// matchTelegramCommandArgs 匹配形如 "/interval"、"/iv 60"、"/interval@bot 60" 的命令,
+// 返回命令词之后的参数。无参数命令用 matchesTelegramCommand;这个给 /interval
+// 这类"看一眼 / 顺手改"的两用命令。
+func matchTelegramCommandArgs(text string, commands ...string) ([]string, bool) {
+	fields := strings.Fields(strings.ToLower(text))
+	if len(fields) == 0 {
+		return nil, false
+	}
+	head := fields[0]
+	// 群组里命令形如 /interval@botname
+	if i := strings.Index(head, "@"); i >= 0 {
+		head = head[:i]
+	}
+	for _, cmd := range commands {
+		if head == "/"+cmd {
+			return fields[1:], true
+		}
+	}
+	return nil, false
+}
+
+// renderTelegramIntervalText /interval 看或改新建任务的默认重试间隔。
+// 只改默认值:已经在跑的任务各自带着自己的间隔,要改单个任务去网页「抢购队列」里点秒数改。
+func renderTelegramIntervalText(state *app.State, args []string) string {
+	cur := state.Config.RetryInterval()
+	quick := state.Config.QuickOrderRetryInterval()
+	if len(args) == 0 {
+		return fmt.Sprintf("⏱ 新任务默认重试间隔：%d 秒\n📡 监控自动下单间隔：%d 秒\n\n"+
+			"改默认值：/interval <秒>（%d ~ %d）\n单个任务的间隔到网页「抢购队列」里点秒数改。",
+			cur, quick, types.MinRetryInterval, types.MaxRetryInterval)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(args[0]))
+	if err != nil || n < types.MinRetryInterval || n > types.MaxRetryInterval {
+		return fmt.Sprintf("⚠️ 间隔要是 %d ~ %d 之间的整数秒，例如 /interval 60",
+			types.MinRetryInterval, types.MaxRetryInterval)
+	}
+	cfg := state.Config.Get()
+	cfg.DefaultRetryInterval = n
+	if err := state.Config.Set(cfg); err != nil {
+		return "❌ 保存失败：" + err.Error()
+	}
+	state.Logger.Info(fmt.Sprintf("Telegram 把默认重试间隔从 %d 改为 %d 秒", cur, n), "telegram")
+	return fmt.Sprintf("✅ 默认重试间隔已改为 %d 秒（之前 %d 秒）。\n只影响之后新建的任务。", n, cur)
 }
 
 // handleTelegramMessage 处理文本下单消息。
@@ -1418,6 +1449,11 @@ func handleTelegramMessage(state *app.State, c *gin.Context, msg map[string]inte
 			return
 		}
 		telegram.SendReply(state, chatID, "暂无关注型号。请先在网页「服务器列表」点击星标关注型号。", int64(messageID))
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	if args, ok := matchTelegramCommandArgs(text, "interval", "iv"); ok {
+		telegram.SendReply(state, chatID, renderTelegramIntervalText(state, args), int64(messageID))
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}

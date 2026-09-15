@@ -149,50 +149,6 @@ func DisplayDatacenterShortName(dc string) string {
 	return v
 }
 
-// writeNotificationServerSummary 统一补货/下架通知的机型、配置和费用区块。
-// 对外型号（serverName）优先，planCode 仅作为下单识别码；Trace ID 只保留在服务端日志。
-func (m *Monitor) writeNotificationServerSummary(msg *strings.Builder, planCode string, configInfo map[string]interface{}, serverName, priceText, priceError string) {
-	if serverName != "" {
-		msg.WriteString("🖥️ " + serverName + "\n")
-	}
-	msg.WriteString("型号代码：" + planCode + "\n")
-
-	if configInfo != nil {
-		display, _ := configInfo["display"].(string)
-		if display != "" {
-			msg.WriteString("\n🧩 配置：" + display + "\n")
-		}
-
-		profile, err := catalog.ConfigPriceProfileForOptions(m.state, accountIDFromConfig(configInfo), planCode, optionsFromConfig(configInfo))
-		if err == nil {
-			switch {
-			case profile.ConfigTypeKnown && profile.IsDefaultConfig:
-				msg.WriteString("   配置类型：标准配置\n")
-			case profile.ConfigTypeKnown:
-				msg.WriteString("   配置类型：扩展硬件配置（非默认）\n")
-			default:
-				// 空 options / 目录未匹配到 addon 时不再贴"标准配置"标签
-				// (见 ConfigPriceProfileForOptions),照实说明识别不到。
-				msg.WriteString("   配置类型：未能识别（OVH 目录未匹配到该配置的 addon）\n")
-			}
-			if priceText != "" {
-				msg.WriteString("\n💳 费用\n")
-				msg.WriteString("   月付：" + priceText + "\n")
-				if profile.InstallationKnown {
-					msg.WriteString("   安装费：" + formatOneTimeMoney(profile.Currency, profile.InstallationTotal) + "\n")
-				}
-			}
-		} else if priceText != "" {
-			msg.WriteString("\n💳 月付：" + priceText + "\n")
-		}
-	} else if priceText != "" {
-		msg.WriteString("\n💳 月付：" + priceText + "\n")
-	}
-	if priceText == "" && priceError != "" {
-		msg.WriteString("\n⚠️ 价格暂不可用：" + priceError + "\n")
-	}
-}
-
 func (m *Monitor) saveTelegramAvailabilitySession(planCode string, configInfo map[string]interface{}, message string, ref telegram.MessageRef, dcs []map[string]interface{}) {
 	if m.state.DB == nil {
 		return
@@ -223,30 +179,6 @@ func (m *Monitor) saveTelegramAvailabilitySession(planCode string, configInfo ma
 	}
 	if err := m.state.DB.CreateTelegramNotificationSession(session, rows); err != nil {
 		m.state.Logger.Warn("保存 Telegram 通知关联失败: "+err.Error(), "monitor")
-	}
-}
-
-func (m *Monitor) writeNotificationTiming(msg *strings.Builder, detectedTime string, pushTime time.Time) {
-	if detectedTime == "" {
-		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
-		return
-	}
-	detected, err := time.Parse(time.RFC3339Nano, detectedTime)
-	if err != nil {
-		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
-		return
-	}
-	delay := pushTime.Sub(detected)
-	secs := int(delay.Seconds())
-	msg.WriteString("🔎 检测时间：" + detected.Format("2006-01-02 15:04:05") + "\n")
-	msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05") + "\n")
-	switch {
-	case secs > 60:
-		msg.WriteString(fmt.Sprintf("⏱️ 推送延迟：%d分%d秒\n", secs/60, secs%60))
-	case secs > 0:
-		msg.WriteString(fmt.Sprintf("⏱️ 推送延迟：%d秒\n", secs))
-	default:
-		msg.WriteString("⏱️ 推送延迟：<1秒\n")
 	}
 }
 
@@ -306,16 +238,27 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 		}
 		escapedLine := html.EscapeString(dc.LineText)
 		duration := humanDuration(time.Duration((dc.ClosedAt - dc.OpenedAt) * float64(time.Second)))
-		replacement := "  • <s>" + strings.TrimPrefix(escapedLine, "  • ") + "</s>\n    ⚫ 已下架 · 在库时长：" + duration
+		var replacement string
+		if strings.HasPrefix(escapedLine, "   ✅ ") {
+			// 多机房列表:整行划掉,行首图标保留
+			replacement = "   ✅ <s>" + strings.TrimPrefix(escapedLine, "   ✅ ") + "</s>\n    ⚫ 已下架 · 在库时长：" + duration
+		} else {
+			// 单机房是"数据中心 / 可用性"两行一块,整块划掉,不留孤行
+			lines := strings.Split(escapedLine, "\n")
+			for i := range lines {
+				lines[i] = "<s>" + lines[i] + "</s>"
+			}
+			replacement = strings.Join(lines, "\n") + "\n    ⚫ 已下架 · 在库时长：" + duration
+		}
 		text = strings.Replace(text, escapedLine, replacement, 1)
 	}
 	if len(line) > 0 {
 		keyboard = append(keyboard, line)
 	}
 	if allClosed {
-		text = strings.Replace(text, "🟢 服务器现货", "⚫ 服务器已下架", 1)
+		text = strings.Replace(text, "🎉 服务器上架通知", "⚫ 服务器已下架", 1)
 	} else {
-		text = strings.Replace(text, "🟢 服务器现货", "🟡 部分机房已下架", 1)
+		text = strings.Replace(text, "🎉 服务器上架通知", "🟡 部分机房已下架", 1)
 	}
 	return text, map[string]interface{}{"inline_keyboard": keyboard}
 }
@@ -422,28 +365,59 @@ func (m *Monitor) CompatibleOrderAccounts(referenceAccountID string) []types.OVH
 	return accounts
 }
 
-func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
+// buildAvailabilityAlert 拼出上架通知的正文和按钮。
+//
+// 从 SendAvailabilityAlertGrouped 里拆出来，是为了能在测试里直接看到
+// 用户真正会收到的那段文字 —— 通知的排版是这个工具的门面，
+// 以前只能靠真的触发一次补货才看得见。
+// 注意它有副作用：会把按钮 UUID 写进 telegram_order_buttons。
+func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[string]interface{},
 	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
-	accountID ...string) {
+	accountID ...string) (string, map[string]interface{}) {
 
 	var msg strings.Builder
-	msg.WriteString("🟢 服务器现货\n\n")
-	priceText := ""
-	if configInfo != nil {
-		priceText, _ = configInfo["cached_price"].(string)
-	}
-	m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, priceErrorMessage)
+	msg.WriteString("🎉 服务器上架通知\n\n")
 
-	msg.WriteString(fmt.Sprintf("\n📍 可下单机房（%d 个）\n", len(availableDCs)))
+	// 产品名称:型号名 + CPU。
+	// 光一个 planCode(24sk602)对着手机看不出是什么机器,
+	// 而抢购那一刻用户要在几秒内判断"这是不是我要的那台"。
+	msg.WriteString("📦 产品名称: " + m.productName(planCode, serverName) + "\n")
+
+	memory, _ := configInfo["memory"].(string)
+	storage, _ := configInfo["storage"].(string)
+	if memory != "" {
+		msg.WriteString("💾 内存: " + memory + "\n")
+	}
+	if storage != "" {
+		msg.WriteString("💿 存储: " + storage + "\n")
+	}
+
+	// 机房 + 可用性。
+	// 单个机房时按"数据中心 / 可用性"两行摊开;多个机房时列成一张表 ——
+	// 每个机房的可用性可能不一样(waw 是 1H-low、gra 是 72H),
+	// 合并成一句"N 个机房有货"会把这个差别抹掉,而它直接决定先抢哪个。
+	//
+	// notification_line 是通知生命周期的锚:下架时按它把对应行划掉,
+	// 所以两种布局都要把行文本存进 dcInfo。单机房时把两行一起存,
+	// 下架渲染时整块划掉,不会留下"可用性"孤行。
 	var detectedTimes []time.Time
-	for _, dcInfo := range availableDCs {
-		dc, _ := dcInfo["dc"].(string)
-		line := "  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")"
-		if dt, ok := dcInfo["duration_text"].(string); ok && dt != "" {
-			line += " - ⏱️ 上次无货→本次有货: " + strings.TrimPrefix(dt, "历时 ")
-		}
+	if len(availableDCs) == 1 {
+		dc, _ := availableDCs[0]["dc"].(string)
+		line := "📍 数据中心: " + dcLine(dc)
+		avail := "✅ 可用性: " + availWording(availableDCs[0])
 		msg.WriteString(line + "\n")
-		dcInfo["notification_line"] = line
+		msg.WriteString(avail + "\n")
+		availableDCs[0]["notification_line"] = line + "\n" + avail
+	} else {
+		msg.WriteString(fmt.Sprintf("📍 数据中心: %d 个机房有货\n", len(availableDCs)))
+		for _, dcInfo := range availableDCs {
+			dc, _ := dcInfo["dc"].(string)
+			line := "   ✅ " + dcLine(dc) + " — " + availWording(dcInfo)
+			msg.WriteString(line + "\n")
+			dcInfo["notification_line"] = line
+		}
+	}
+	for _, dcInfo := range availableDCs {
 		if dtStr, ok := dcInfo["detected_time"].(string); ok && dtStr != "" {
 			if t, err := time.Parse(time.RFC3339Nano, dtStr); err == nil {
 				detectedTimes = append(detectedTimes, t)
@@ -451,37 +425,49 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 
+	// 价格。月费和安装费分开写:安装费是一次性的,混在一起会让人以为月付这么多。
+	priceText, _ := configInfo["cached_price"].(string)
+	installText, _ := configInfo["install_price"].(string)
+	switch {
+	case priceText != "":
+		msg.WriteString("💰 价格: " + priceText + "\n")
+	case priceErrorMessage != "":
+		// 价格查不到必须明说。留空会被读成"免费"或"还没加载",
+		// 而这两种理解都会让用户按下一个他不知道要花多少钱的按钮。
+		msg.WriteString("💰 价格: 未获取到（" + priceErrorMessage + "）\n")
+	default:
+		msg.WriteString("💰 价格: 未获取到\n")
+	}
+	if installText != "" {
+		msg.WriteString("💵 安装费: " + installText + "\n")
+	}
+
+	// 这个型号已经有几个任务在抢。
+	// 补货常连着来好几条通知,对同一台机器按两次就是两笔真实订单,
+	// 而按钮的一次性 claim 只挡得住同一颗按钮按两次。
+	if n := m.activeQueueCount(planCode); n > 0 {
+		msg.WriteString(fmt.Sprintf("\n⚠️ 这个型号已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
+	}
+
 	pushTime := m.nowBeijing()
+	detected := pushTime
+	if len(detectedTimes) > 0 {
+		detected = detectedTimes[0]
+		for _, t := range detectedTimes[1:] {
+			if t.Before(detected) {
+				detected = t
+			}
+		}
+	}
+	msg.WriteString("\n🕐 检测时间: " + detected.Format("2006-01-02 15:04:05") + "\n")
+	// 推送延迟只在明显偏大时才提 —— 正常情况下它是噪音,
+	// 但延迟到分钟级说明通道有问题,那时候用户必须知道自己看到的是旧消息。
+	if lag := pushTime.Sub(detected); lag >= 30*time.Second {
+		msg.WriteString(fmt.Sprintf("⚠️ 这条通知延迟了 %.0f 秒才发出\n", lag.Seconds()))
+	}
 	// Trace ID 仅用于服务端日志排障，不再暴露给通知接收者。
 	_ = traceID
 	_ = configTraceID
-
-	if len(detectedTimes) > 0 {
-		earliest := detectedTimes[0]
-		for _, t := range detectedTimes[1:] {
-			if t.Before(earliest) {
-				earliest = t
-			}
-		}
-		delay := pushTime.Sub(earliest)
-		secs := int(delay.Seconds())
-		minutes := secs / 60
-		rem := secs % 60
-		msg.WriteString("\n⏰ 检测时间: " + earliest.Format("2006-01-02 15:04:05"))
-		msg.WriteString("\n📤 推送时间: " + pushTime.Format("2006-01-02 15:04:05"))
-		switch {
-		case secs > 0 && minutes > 0:
-			msg.WriteString(fmt.Sprintf("\n⏱️ 推送延迟: %d分%d秒", minutes, rem))
-		case secs > 0:
-			msg.WriteString(fmt.Sprintf("\n⏱️ 推送延迟: %d秒", rem))
-		default:
-			msg.WriteString("\n⏱️ 推送延迟: <1秒")
-		}
-	} else {
-		msg.WriteString("\n⏰ 推送时间: " + pushTime.Format("2006-01-02 15:04:05"))
-	}
-
-	msg.WriteString("\n\n💡 点击下方按钮可直接下单对应机房！")
 
 	// 构建按钮（每行最多 2 个）
 	type btn struct {
@@ -546,6 +532,16 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
+	return msg.String(), replyMarkup
+}
+
+// SendAvailabilityAlertGrouped 拼好通知并广播出去。
+func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
+	accountID ...string) {
+
+	msgText, replyMarkup := m.buildAvailabilityAlert(planCode, availableDCs, configInfo,
+		serverName, priceErrorMessage, traceID, configTraceID, accountID...)
 
 	configDesc := ""
 	if configInfo != nil {
@@ -554,9 +550,9 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
-	result := notify.BroadcastWithResult(m.state, msg.String(), replyMarkup)
+	result := notify.BroadcastWithResult(m.state, msgText, replyMarkup)
 	if result.Telegram != nil {
-		m.saveTelegramAvailabilitySession(planCode, configInfo, msg.String(), *result.Telegram, availableDCs)
+		m.saveTelegramAvailabilitySession(planCode, configInfo, msgText, *result.Telegram, availableDCs)
 	}
 	if result.Delivered > 0 {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
@@ -575,9 +571,20 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	}
 
 	var msg strings.Builder
-	msg.WriteString("⚪ 服务器已下架\n\n")
-	m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, "", "")
-	msg.WriteString(fmt.Sprintf("\n📍 已下架机房（%d 个）\n", len(unavailableDCs)))
+	msg.WriteString("📦 服务器下架通知\n\n")
+	if serverName != "" {
+		msg.WriteString("服务器: " + serverName + "\n")
+	}
+	msg.WriteString("型号: " + planCode + "\n")
+	if configInfo != nil {
+		display, _ := configInfo["display"].(string)
+		memory, _ := configInfo["memory"].(string)
+		storage, _ := configInfo["storage"].(string)
+		msg.WriteString("配置: " + display + "\n")
+		msg.WriteString("├─ 内存: " + memory + "\n")
+		msg.WriteString("└─ 存储: " + storage + "\n")
+	}
+	msg.WriteString(fmt.Sprintf("\n已下架机房 (%d 个):\n", len(unavailableDCs)))
 	for _, dcInfo := range unavailableDCs {
 		dc, _ := dcInfo["dc"].(string)
 		msg.WriteString("  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")")
@@ -589,7 +596,7 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	// Trace ID 仅用于服务端日志排障，不再暴露给通知接收者。
 	_ = traceID
 	_ = configTraceID
-	msg.WriteString("\n⏰ 推送时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
+	msg.WriteString("\n⏰ 时间: " + m.nowBeijing().Format("2006-01-02 15:04:05"))
 
 	configDesc := ""
 	if configInfo != nil {
@@ -614,42 +621,102 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 	_ = traceID
 	_ = configTraceID
 
-	priceText := ""
-	if configInfo != nil {
-		priceText, _ = configInfo["cached_price"].(string)
-	}
-
 	switch changeType {
 	case "available":
-		msg.WriteString("🟢 服务器现货\n\n")
+		msg.WriteString("🎉 服务器上架通知！\n\n")
+		if serverName != "" {
+			msg.WriteString("服务器: " + serverName + "\n")
+		}
+		msg.WriteString("型号: " + planCode + "\n")
+		msg.WriteString("数据中心: " + datacenter + "\n")
+		if configInfo != nil {
+			display, _ := configInfo["display"].(string)
+			memory, _ := configInfo["memory"].(string)
+			storage, _ := configInfo["storage"].(string)
+			msg.WriteString("配置: " + display + "\n")
+			msg.WriteString("├─ 内存: " + memory + "\n")
+			msg.WriteString("└─ 存储: " + storage + "\n")
+		}
+		priceText, _ := configInfo["cached_price"].(string)
 		if priceText == "" {
-			// 用 30 秒超时保护，否则 OVH 价格 API 卡住会阻塞通知。
-			priceText, _ = m.getPriceWithTimeout(planCode, datacenter, configInfo, 30*time.Second)
+			// 兜底也走公开目录的月付条目:购物车询价返回的是首期账单总额
+			// (月费 + 一次性安装费),贴成"月付"会多算一份安装费。
+			priceText = m.monthlyPriceText(planCode, accountIDFromConfig(configInfo), optionsFromConfig(configInfo))
 		}
-		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, "")
-		msg.WriteString("\n📍 可下单机房：" + dcDisplayCN(datacenter) + "\n")
-		msg.WriteString("状态：" + status + "\n")
+		if priceText != "" {
+			msg.WriteString("\n💰 价格: " + priceText + "\n")
+		}
+		msg.WriteString("状态: " + status + "\n")
 		if durationText != "" {
-			msg.WriteString("上次无货至本次有货：" + strings.TrimPrefix(durationText, "历时 ") + "\n")
+			msg.WriteString("⏱️ 上次无货→本次有货: " + strings.TrimPrefix(durationText, "历时 ") + "\n")
 		}
-		m.writeNotificationTiming(&msg, detectedTime, pushTime)
-		msg.WriteString("\n💡 点击下方按钮可直接下单。")
+		if detectedTime != "" {
+			if t, err := time.Parse(time.RFC3339Nano, detectedTime); err == nil {
+				delay := pushTime.Sub(t)
+				secs := int(delay.Seconds())
+				minutes := secs / 60
+				rem := secs % 60
+				msg.WriteString("⏰ 检测时间: " + t.Format("2006-01-02 15:04:05") + "\n")
+				msg.WriteString("📤 推送时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
+				switch {
+				case secs > 0 && minutes > 0:
+					msg.WriteString(fmt.Sprintf("⏱️ 推送延迟: %d分%d秒\n", minutes, rem))
+				case secs > 0:
+					msg.WriteString(fmt.Sprintf("⏱️ 推送延迟: %d秒\n", rem))
+				default:
+					msg.WriteString("⏱️ 推送延迟: <1秒\n")
+				}
+			}
+		} else {
+			msg.WriteString("⏰ 推送时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
+		}
+		msg.WriteString("\n\n💡 快去抢购吧！")
 	case "price_check_failed":
-		msg.WriteString("🟡 检测到库存，暂不可下单\n\n")
-		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, priceText, "")
-		msg.WriteString("\n📍 机房：" + dcDisplayCN(datacenter) + "\n")
-		msg.WriteString("⚠️ 价格校验未通过，已跳过自动下单")
-		if priceCheckError != "" {
-			msg.WriteString("：" + priceCheckError)
+		msg.WriteString("📦 服务器可用性通知\n\n")
+		if serverName != "" {
+			msg.WriteString("服务器: " + serverName + "\n")
 		}
-		msg.WriteString("\n⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05"))
+		msg.WriteString("型号: " + planCode + "\n")
+		msg.WriteString("数据中心: " + datacenter + "\n")
+		if configInfo != nil {
+			display, _ := configInfo["display"].(string)
+			memory, _ := configInfo["memory"].(string)
+			storage, _ := configInfo["storage"].(string)
+			msg.WriteString("配置: " + display + "\n")
+			msg.WriteString("├─ 内存: " + memory + "\n")
+			msg.WriteString("└─ 存储: " + storage + "\n")
+		}
+		if priceText, ok := configInfo["cached_price"].(string); ok && priceText != "" {
+			msg.WriteString("\n💰 价格: " + priceText + "\n")
+		}
+		msg.WriteString("\n状态: 可用性显示有货\n")
+		msg.WriteString("时间: " + pushTime.Format("2006-01-02 15:04:05") + "\n")
+		msg.WriteString("\n")
+		msg.WriteString("⚠️ 特别说明：\n")
+		if priceCheckError != "" {
+			msg.WriteString(fmt.Sprintf("（价格校验未通过: %s，已跳过自动下单）", priceCheckError))
+		} else {
+			msg.WriteString("（价格校验未通过，已跳过自动下单）")
+		}
 	default:
-		msg.WriteString("⚪ 服务器已下架\n\n")
-		m.writeNotificationServerSummary(&msg, planCode, configInfo, serverName, "", "")
-		msg.WriteString("\n📍 机房：" + dcDisplayCN(datacenter) + "\n")
-		msg.WriteString("⏰ 推送时间：" + pushTime.Format("2006-01-02 15:04:05"))
+		msg.WriteString("📦 服务器下架通知\n\n")
+		if serverName != "" {
+			msg.WriteString("服务器: " + serverName + "\n")
+		}
+		msg.WriteString("型号: " + planCode + "\n")
+		if configInfo != nil {
+			display, _ := configInfo["display"].(string)
+			memory, _ := configInfo["memory"].(string)
+			storage, _ := configInfo["storage"].(string)
+			msg.WriteString("配置: " + display + "\n")
+			msg.WriteString("├─ 内存: " + memory + "\n")
+			msg.WriteString("└─ 存储: " + storage + "\n")
+		}
+		msg.WriteString("\n数据中心: " + datacenter + "\n")
+		msg.WriteString("状态: 已无货\n")
+		msg.WriteString("⏰ 时间: " + pushTime.Format("2006-01-02 15:04:05"))
 		if durationText != "" {
-			msg.WriteString("\n本次上架持续：" + strings.TrimPrefix(durationText, "历时 "))
+			msg.WriteString("\n⏱️ 本次上架持续: " + strings.TrimPrefix(durationText, "历时 "))
 		}
 	}
 
@@ -673,4 +740,83 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 		m.nowBeijing().Format("2006-01-02 15:04:05"))
 	notify.Broadcast(m.state, msg, nil)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
+}
+
+// activeQueueCount 这个型号当前有几个进行中的抢购任务。
+//
+// 用来在上架通知里提醒"你已经在抢这台了"。补货往往连着来好几条通知,
+// 用户在手机上对同一台机器按两次按钮是很自然的动作,而那就是两笔真实订单。
+// 按钮自己的一次性 claim 只挡得住同一颗按钮按两次,挡不住两条通知各按一次。
+func (m *Monitor) activeQueueCount(planCode string) int {
+	if m.state == nil {
+		return 0
+	}
+	m.state.QueueMu.Lock()
+	defer m.state.QueueMu.Unlock()
+	n := 0
+	for _, it := range m.state.Queue {
+		if it.PlanCode != planCode {
+			continue
+		}
+		if it.Status == "running" || it.Status == "pending" || it.Status == "paused" {
+			n++
+		}
+	}
+	return n
+}
+
+// productName 通知抬头那一行。
+//
+// 光一个 planCode(24sk602)在手机上看不出是什么机器,而抢购那一刻用户
+// 要在几秒内判断"这是不是我要的那台"。所以把型号名和 CPU 拼出来。
+// 目录没加载到时退回 planCode —— 不编,也不留空。
+func (m *Monitor) productName(planCode, serverName string) string {
+	name := strings.TrimSpace(serverName)
+	cpu := ""
+	if m.state != nil {
+		m.state.ServerPlansMu.RLock()
+		for _, p := range m.state.ServerPlans {
+			if p.PlanCode == planCode {
+				if name == "" {
+					name = strings.TrimSpace(p.Name)
+				}
+				cpu = strings.TrimSpace(p.CPU)
+				break
+			}
+		}
+		m.state.ServerPlansMu.RUnlock()
+	}
+	switch {
+	case name != "" && cpu != "":
+		return name + " | " + cpu
+	case name != "":
+		return name
+	default:
+		return planCode
+	}
+}
+
+// dcLine "waw (波兰华沙)"。拿不到中文名就只写代码。
+func dcLine(dc string) string {
+	code := strings.ToUpper(dc)
+	cn := strings.TrimSpace(dcDisplayCN(dc))
+	// dcDisplayCN 拿不到时会退回大写代码,那种情况别写成 "WAW (WAW)"
+	if cn == "" || strings.EqualFold(cn, dc) {
+		return code
+	}
+	return code + " (" + cn + ")"
+}
+
+// availWording 这个机房的可用性该怎么说。
+//
+// 取的是 OVH 原样返回的值(1H-low / 72H …),它才带着"多久能交付、库存高低"
+// 这两个决定要不要立刻下单的信息。没有原值时退回"有货"——
+// 那是归一化之后仅剩的事实,不要编一个更具体的说法出来。
+func availWording(dcInfo map[string]interface{}) string {
+	if raw, ok := dcInfo["raw_status"].(string); ok && raw != "" {
+		if w := AvailabilityCN(raw); w != "" {
+			return w
+		}
+	}
+	return "有货"
 }

@@ -10,11 +10,10 @@ import {
   Plus,
   AlertTriangle,
   Pencil,
-  User,
   HelpCircle,
   MapPin,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -52,6 +51,9 @@ import { useServers } from "@/hooks/use-servers";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OVH_DATACENTERS } from "@/lib/datacenters";
 import { toast } from "sonner";
+import { describeOptionCodes, groupOptions, type OptionGroupKey } from "@/lib/option-groups";
+import { OptionGroupSection } from "@/components/common/OptionGroupSection";
+import { splitList } from "@/lib/split-list";
 
 /** 服务器监控订阅 */
 export const Route = createFileRoute("/monitor")({
@@ -97,13 +99,13 @@ function MonitorPage() {
     status.isPending ? "…" : status.isError || v === undefined ? "—" : v;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3 sm:space-y-6">
       <PageHeader
         icon={Bell}
         title="服务器监控"
         description="自动监控服务器可用性变化并推送通知"
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" onClick={() => list.refetch()} disabled={list.isFetching}>
               <RefreshCw className={`w-4 h-4 ${list.isFetching ? "animate-spin" : ""}`} />
               刷新
@@ -332,6 +334,17 @@ function SubRow({
                 : "监控所有数据中心"}
             </p>
             <div className="flex gap-1.5 flex-wrap items-center">
+              {/* 盯全部配置 vs 只盯一套,是「会不会一次触发好几单」的分水岭,
+                  必须在列表上一眼看得出来 */}
+              {sub.options && sub.options.length > 0 ? (
+                <Chip tone="default" title={sub.options.join("\n")}>
+                  只盯 {describeOptionCodes(sub.options)}
+                </Chip>
+              ) : (
+                <Chip tone="default" title="该型号的每套内存/存储组合都会各自触发通知与自动下单">
+                  盯全部配置
+                </Chip>
+              )}
               {sub.notifyAvailable && <Chip tone="success">有货提醒</Chip>}
               {sub.notifyUnavailable && <Chip tone="warning">无货提醒</Chip>}
               {sub.autoOrder && sub.autoOrderAccountId ? (
@@ -535,6 +548,29 @@ function AddSubscriptionDialog({
   const [autoPay, setAutoPay] = useState(false);
   // 下单延迟:0=立即下单
   const [delaySeconds, setDelaySeconds] = useState(0);
+  // 只盯哪一套配置。空 = 盯全部配置(老行为)。
+  // 后端引擎一直支持,以前前端没接 —— 于是网页建的订阅永远是「盯全部」,
+  // 而通知和自动下单是按配置逐套触发的:三套配置同时补货就是三份通知、三单。
+  const [picked, setPicked] = useState<Partial<Record<OptionGroupKey, string>>>({});
+  // 型号不在目录里(手输的冷门机型 / 目录没拉到)时退回手填,跟下单弹窗同一套策略
+  const [extraOptions, setExtraOptions] = useState("");
+  const matchedServer = useMemo(
+    () => (servers.data || []).find((server) => server.planCode === planCode.trim()),
+    [servers.data, planCode],
+  );
+  const grouped = useMemo(
+    () => (matchedServer ? groupOptions(matchedServer.availableOptions) : null),
+    [matchedServer]
+  );
+  const defaultValueSet = useMemo(
+    () => new Set((matchedServer?.defaultOptions || []).map((o) => o.value)),
+    [matchedServer]
+  );
+  /** 提交给后端的 addon 列表:目录里有这个型号就走 chip,没有就走手填,二选一不混用 */
+  const chosenOptions = useMemo(() => {
+    if (matchedServer) return Object.values(picked).filter(Boolean) as string[];
+    return splitList(extraOptions);
+  }, [matchedServer, picked, extraOptions]);
   // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
   const [globalAccountId] = useActiveAccount();
   const accountsQ = useAccounts();
@@ -546,10 +582,6 @@ function AddSubscriptionDialog({
   // 然后自动下单被静默拦掉 —— 用户看到的是一条没有理由的死路:
   // 去账户页明明有账户,回来还是"未选择"。失败必须说出失败,并给重试。
   const accountsFailed = accountsQ.isError && !activeAcc;
-  const matchedServer = useMemo(
-    () => (servers.data || []).find((server) => server.planCode === planCode.trim()),
-    [servers.data, planCode],
-  );
 
   const reset = () => {
     setPlanCode("");
@@ -560,10 +592,18 @@ function AddSubscriptionDialog({
     setQuantity(1);
     setAutoPay(false);
     setDelaySeconds(0);
+    setPicked({});
+    setExtraOptions("");
   };
 
   // 每次打开都按当前 editing 重灌一次表单。依赖里带上 open,
   // 否则用户改了几个字段又取消,下次打开看到的还是上次改了一半的样子。
+  //
+  // 依赖里**绝不能**放 matchedServer:它随用户打字而变(打到目录里真实存在的
+  // 型号那一刻从 undefined 变成对象)。新增模式下 effect 一重跑就走 else 分支
+  // reset(),把用户刚打进去的型号清空 —— 清空后又匹配不上,再触发一轮,
+  // 来回抖动直接撞 React 的 Maximum update depth exceeded。
+  // 这正是 v0.1.22 那个"输入 24sk202 就闪退"。
   useEffect(() => {
     if (!open) return;
     if (editing) {
@@ -575,11 +615,56 @@ function AddSubscriptionDialog({
       setQuantity(editing.quantity && editing.quantity > 0 ? editing.quantity : 1);
       setAutoPay(!!editing.autoPay);
       setDelaySeconds(editing.delaySeconds || 0);
+      // 配置的回填交给下面那个 effect —— 它要等目录到位才能把 addon code
+      // 映射成 chip,而目录是异步来的,不能塞进这个"打开即重灌"的 effect 里
     } else {
       reset();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing]);
+
+  // 编辑模式下回填已选配置。单独一个 effect,因为它要等 matchedServer(目录)到位,
+  // 而目录是异步来的。它只写 picked / extraOptions,绝不碰 planCode —— 上面那个
+  // effect 才负责表单重灌,两者职责不能混,混了就是上面注释里说的那个死循环。
+  //
+  // filledFor 保证每次打开只回填一次:用户开始手动改配置之后,目录刷新
+  // (useServers 有 refetch)不该把他的选择重置回订阅里存的那份。
+  const filledFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open || !editing) {
+      filledFor.current = null;
+      return;
+    }
+    if (filledFor.current === editing.planCode) return;
+
+    const want = editing.options || [];
+    if (want.length === 0) {
+      // 订阅本来就是"盯全部配置",没什么可回填的。标记成已处理,
+      // 免得目录到位后再进来一次
+      filledFor.current = editing.planCode;
+      setPicked({});
+      setExtraOptions("");
+      return;
+    }
+    // 目录还没到:先什么都别做,等它来了这个 effect 会因为 matchedServer 变化再跑一次。
+    // 这时候如果贸然把 want 全塞进手填框,目录一到位又要清掉重来,用户会看到闪一下。
+    if (!matchedServer) return;
+
+    filledFor.current = editing.planCode;
+    const g = groupOptions(matchedServer.availableOptions);
+    const next: Partial<Record<OptionGroupKey, string>> = {};
+    const used = new Set<string>();
+    for (const key of Object.keys(g) as OptionGroupKey[]) {
+      const hit = (g[key] || []).find((o) => want.includes(o.value));
+      if (hit) {
+        next[key] = hit.value;
+        used.add(hit.value);
+      }
+    }
+    setPicked(next);
+    // chip 没覆盖到的 addon 走手填框,不能丢 —— 丢了保存时就把它从订阅里抹掉了
+    setExtraOptions(want.filter((v) => !used.has(v)).join(", "));
+  }, [open, editing, matchedServer]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -609,6 +694,9 @@ function AddSubscriptionDialog({
       autoOrderAccountId: autoOrder ? autoOrderAccountId : "",
       autoPay: autoOrder ? autoPay : false,
       delaySeconds: autoOrder ? delaySeconds : undefined,
+      // 始终显式传:PUT 用 *[]string 区分「没传」和「改成空数组」,
+      // 不传的话后端保留旧值,用户在界面上清空了配置却不生效
+      options: chosenOptions,
     };
     const done = {
       onSuccess: () => {
@@ -721,6 +809,57 @@ function AddSubscriptionDialog({
             </div>
           </div>
 
+          {/* 盯哪一套配置。
+              一个型号底下常有好几套内存/存储组合，而通知和自动下单是**按配置逐套**
+              触发的 —— 不限定的话「自动抢 1 台」= 每套配置在每个机房各抢 1 台。
+              留空保持老行为（盯全部），所以这一块默认是收起的提示而不是必填项。 */}
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+              只盯这套配置（可选）
+            </label>
+            {servers.isPending ? (
+              <Skeleton className="h-16 rounded-xl" />
+            ) : grouped ? (
+              <div className="space-y-3 rounded-xl border border-border p-3.5">
+                {(["cpu", "memory", "systemStorage", "storage", "bandwidth", "vrack", "other"] as OptionGroupKey[])
+                  .filter((g) => (grouped[g] || []).length > 0)
+                  .map((g) => (
+                    <OptionGroupSection
+                      key={g}
+                      groupKey={g}
+                      options={grouped[g]}
+                      picked={picked[g] || ""}
+                      defaultValueSet={defaultValueSet}
+                      onPick={(v) =>
+                        setPicked((prev) => ({ ...prev, [g]: prev[g] === v ? "" : v }))
+                      }
+                    />
+                  ))}
+                {chosenOptions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPicked({})}
+                    className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                  >
+                    清空选择（改回盯全部配置）
+                  </button>
+                )}
+              </div>
+            ) : (
+              // 目录里没有这个型号（冷门机型 / 目录没拉到）→ 退回手填，跟下单弹窗同一策略
+              <Input
+                value={extraOptions}
+                onChange={(e) => setExtraOptions(e.target.value)}
+                placeholder="addon planCode，逗号分隔；留空 = 盯全部配置"
+              />
+            )}
+            <p className="text-[11px] text-muted-foreground mt-1">
+              {chosenOptions.length > 0
+                ? `已选 ${chosenOptions.length} 项，只有完全匹配的配置才会触发通知与自动下单`
+                : "留空 = 盯该型号的全部配置。多套配置同时补货时会逐套触发"}
+            </p>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex items-center gap-2.5 cursor-pointer rounded-xl border border-border px-3.5 py-2.5 hover:bg-muted/40 transition-colors">
               <Checkbox
@@ -768,14 +907,9 @@ function AddSubscriptionDialog({
                     </Button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
-                    <User className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-[13px] font-medium">
-                      {accountsQ.isPending ? "读取账户…" : activeAcc?.name || "未选择账户"}
-                    </span>
-                    {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
-                    <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
-                  </div>
+                  // 当前账户不在这里重复 —— 切换器在顶栏(手机)/侧栏(桌面)始终可见。
+                  // 只保留下面那句"触发时用这个账户下单",它说的是行为不是身份。
+                  null
                 )}
                 <p className="text-[11px] text-muted-foreground mt-1">
                   触发时用这个账户下单;关掉上面的开关 = 只通知不下单

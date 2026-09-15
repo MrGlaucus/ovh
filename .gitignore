@@ -80,6 +80,7 @@ web/dist-ssr/
 web/.next/
 /.next/
 web/.tanstack/
+.vite/
 *.tsbuildinfo
 web/*.tsbuildinfo
 # ---------- 四、本地环境噪音 ----------

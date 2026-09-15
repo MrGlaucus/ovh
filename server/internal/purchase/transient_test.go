@@ -46,6 +46,11 @@ func TestTransientDoesNotBurnRetryBudget(t *testing.T) {
 		{"IO 超时", errors.New("net/http: request canceled (Client.Timeout exceeded)"), true},
 		{"EOF", errors.New("unexpected EOF"), true},
 
+		// 出口 IP 闸门阻断:请求没出网,没有 HTTP 状态码,仅靠传输层特征认不出来。
+		// 这是环境/代理配置问题,不是"这单买不成" —— 修好代理后重试立即恢复。
+		{"出口 IP 闸门阻断", errors.New(`Get "https://eu.api.ovh.com/1.0/dedicated/server/datacenter/availabilities?planCode=24sk202": 账户出口 IP 未确认，携带账户鉴权的 OVH 请求已阻断：实际出口 IP 151.246.186.106 与预期 131.143.239.3 不一致`), true},
+		{"出口 IP 闸门阻断(其他原因)", errors.New(`Post "https://eu.api.ovh.com/1.0/order/cart": 账户出口 IP 未确认，携带账户鉴权的 OVH 请求已阻断：未配置有效的预期出口 IPv4`), true},
+
 		{"业务拒绝", errors.New("this plan is not available in datacenter rbx"), false},
 		{"nil", nil, false},
 	}
@@ -110,6 +115,21 @@ func TestFailOutcomeSkipsHistoryForTransient(t *testing.T) {
 	state.HistoryMu.Unlock()
 	if n != 0 {
 		t.Fatalf("408 不应写抢购历史,实际写入了 %d 条", n)
+	}
+
+	// 出口 IP 闸门阻断:请求根本没出网(代理/出口 IP 是环境配置问题),
+	// 和 408 同类 —— "这一下没打通"不是"这单买不成"。修好代理后任务要能
+	// 继续抢,不该被判死,历史里也不该留下环境错误。
+	gateErr := errors.New(`Get "https://eu.api.ovh.com/1.0/dedicated/server/datacenter/availabilities?planCode=24sk202": 账户出口 IP 未确认，携带账户鉴权的 OVH 请求已阻断：实际出口 IP 151.246.186.106 与预期 131.143.239.3 不一致`)
+	out = failOutcome(state, item, gateErr, gateErr.Error())
+	if out.Attempted {
+		t.Fatal("出口 IP 闸门阻断不该被记成一次真正的失败尝试")
+	}
+	state.HistoryMu.Lock()
+	n = len(state.History)
+	state.HistoryMu.Unlock()
+	if n != 0 {
+		t.Fatalf("出口 IP 闸门阻断不应写抢购历史,实际写入了 %d 条", n)
 	}
 
 	// 404:确定性业务失败 —— 历史要留痕、计数要累加

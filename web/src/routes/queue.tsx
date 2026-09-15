@@ -21,7 +21,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Chip } from "@/components/common/Chip";
 import { StatusDot } from "@/components/common/StatusDot";
 import { EmptyState } from "@/components/common/EmptyState";
-import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
+import { LoadFailed, LoadFailedBanner, errorMessage } from "@/components/common/LoadFailed";
 import { Skeleton } from "@/components/common/Skeleton";
 import {
   Dialog,
@@ -36,26 +36,25 @@ import {
   useToggleQueueItem,
   useBatchUpdateQueueStatus,
   useRemoveQueueItem,
+  useUpdateQueueInterval,
   useClearQueue,
   useCreateQueueItem,
   type QueueItem,
   usePurchaseTimings,
   type PurchaseTiming,
 } from "@/hooks/use-queue";
-import { useServers, type ServerOption } from "@/hooks/use-servers";
+import { useServers } from "@/hooks/use-servers";
 import { OVH_DATACENTERS as OVH_DC_LIST } from "@/lib/datacenters";
+import { RETRY_INTERVAL, useSettings } from "@/hooks/use-settings";
 import { useActiveAccount } from "@/hooks/use-active-account";
 import { useAccounts, findAccountByID } from "@/hooks/use-accounts";
 import { TimingChip } from "@/components/common/TimingChip";
 import { AccountChip } from "@/components/common/AccountChip";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
-import {
-  classifyOption,
-  formatOptionDisplay,
-  groupOptions,
-  type OptionGroupKey,
-} from "@/lib/option-groups";
+import { describeOptionCodes, groupOptions, type OptionGroupKey } from "@/lib/option-groups";
+import { splitList } from "@/lib/split-list";
+import { clampOrderPlan, MAX_ORDER_QUANTITY, MAX_ORDER_FANOUT } from "@/lib/order-limits";
 import {
   useAvailability,
   buildVariantIndex,
@@ -75,23 +74,76 @@ export const Route = createFileRoute("/queue")({
 /** OVH 数据中心列表：复用 lib/datacenters.ts 的共享常量 */
 const OVH_DATACENTERS = OVH_DC_LIST;
 
-/** 任务重试间隔默认值（秒），与后端 TASK_RETRY_INTERVAL 保持一致 */
-const DEFAULT_RETRY_INTERVAL = 60;
+/** 新建任务时的兜底间隔。真正的默认值来自设置（/api/settings.defaultRetryInterval），
+ *  这个常量只在配置还没读到时占位 —— 和后端 types.DefaultTaskRetryInterval 一致 */
+const FALLBACK_RETRY_INTERVAL = RETRY_INTERVAL.defaultTask;
+
+/**
+ * 队列卡片上那个可点的秒数。
+ *
+ * 点一下变输入框，回车/失焦提交。改的是这一条任务自己的间隔，
+ * 处理器每轮都读任务上的值，所以下一轮就生效，不用重建任务。
+ */
+function IntervalEditor({ id, value }: { id: string; value: number }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+  const update = useUpdateQueueInterval();
+
+  const commit = () => {
+    setEditing(false);
+    const n = Number(draft);
+    if (!n || n === value) return setDraft(String(value));
+    if (n < RETRY_INTERVAL.min || n > RETRY_INTERVAL.max) {
+      toast.error(`重试间隔要在 ${RETRY_INTERVAL.min} ~ ${RETRY_INTERVAL.max} 秒之间`);
+      return setDraft(String(value));
+    }
+    update.mutate({ id, retryInterval: n });
+  };
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(String(value));
+          setEditing(true);
+        }}
+        className="font-medium text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+        title="点击修改这条任务的重试间隔"
+      >
+        {value}
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      type="text"
+      inputMode="numeric"
+      value={draft}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v === "" || /^\d*$/.test(v)) setDraft(v);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") {
+          setDraft(String(value));
+          setEditing(false);
+        }
+      }}
+      // 手机端 16px 防 iOS 聚焦缩放
+      className="w-14 px-1 py-0.5 rounded border border-input bg-background text-base sm:text-[11px] text-center"
+    />
+  );
+}
 
 function QueuePage() {
   const queue = useQueueList();
   // 队列仅保存 planCode；展示名从当前账户目录实时映射，目录未命中时回退原始标识。
   const servers = useServers();
   const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
-  // 保留完整 option 元数据，而不是只取原始 label；队列表据此复用选配页的通用友好展示。
-  const optionsByValue = useMemo(
-    () => new Map<string, ServerOption>(
-      (servers.data || []).flatMap((server) =>
-        [...server.defaultOptions, ...server.availableOptions].map((option) => [option.value, option] as const),
-      ),
-    ),
-    [servers.data],
-  );
   // 每条链路上一轮的耗时,用来回答"我到底卡在哪一步"
   const timings = usePurchaseTimings();
   const toggle = useToggleQueueItem();
@@ -118,13 +170,69 @@ function QueuePage() {
   const pausableCount = items.filter((item) => ["running", "pending", "delaying"].includes(item.status)).length;
   const resumableCount = items.filter((item) => item.status === "paused").length;
 
+  // —— 批量操作 ——
+  // 一条 /buy 或一次网页建单最多扇出 60 个任务(MAX_ORDER_FANOUT),
+  // 而在这之前只能一个一个点暂停/删除。抢购结束后清理一批失败任务是高频动作,
+  // 「清空」又太狠(会把还在跑的一起删掉)。
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchRunning, setBatchRunning] = useState(false);
+  const [showBatchDelete, setShowBatchDelete] = useState(false);
+
+  // 任务被别处删掉(TG /cancel、监控自动清理)后,选中集合里会留下不存在的 id。
+  // 不剪掉的话「已选 3 项」里可能有 2 项早就没了,批量操作会静默少做几件。
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const alive = new Set(items.map((i) => i.id));
+      const next = new Set([...prev].filter((id) => alive.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [items]);
+
+  const selectedItems = items.filter((i) => selected.has(i.id));
+  const toggleSelect = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  const allSelected = items.length > 0 && selected.size === items.length;
+
+  /** 逐条执行并汇总成一条结果,不要弹 N 个 toast */
+  const runBatch = async (
+    label: string,
+    targets: QueueItem[],
+    fn: (it: QueueItem) => Promise<unknown>
+  ) => {
+    if (targets.length === 0) return;
+    setBatchRunning(true);
+    let ok = 0;
+    let firstError = "";
+    for (const it of targets) {
+      try {
+        await fn(it);
+        ok++;
+      } catch (e) {
+        if (!firstError) firstError = errorMessage(e);
+      }
+    }
+    setBatchRunning(false);
+    setSelected(new Set());
+    const failed = targets.length - ok;
+    if (failed === 0) toast.success(`已${label} ${ok} 个任务`);
+    else toast.error(`${label}:成功 ${ok} 个,失败 ${failed} 个。${firstError}`);
+    queue.refetch();
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-3 sm:space-y-6">
       <PageHeader
         icon={ClipboardList}
         title="抢购队列"
         description="管理自动抢购服务器的队列"
         action={
+          // 必须 flex-wrap:PageHeader 外层允许换行,内层不换的话整排按钮保持
+          // max-content 宽度,在 390px 上会被挤出左边界(实测 left=-19px)。
           <div className="flex flex-wrap justify-end gap-2">
             <Button onClick={() => setShowCreateDialog(true)}>
               <Plus className="w-4 h-4" />
@@ -151,6 +259,13 @@ function QueuePage() {
             <Button variant="outline" onClick={() => queue.refetch()} disabled={queue.isFetching || batchStatus.isPending}>
               <RefreshCw className={`w-4 h-4 ${queue.isFetching ? "animate-spin" : ""}`} />
               刷新
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setSelected(allSelected ? new Set() : new Set(items.map((i) => i.id)))}
+              disabled={items.length === 0}
+            >
+              {allSelected ? "取消全选" : "全选"}
             </Button>
             <Button
               variant="outline"
@@ -203,13 +318,59 @@ function QueuePage() {
         </Card>
       ) : (
         <div className="space-y-3">
+          {selected.size > 0 && (
+            // 贴在列表顶部而不是浮在底部:手机上底部有 tab 栏,浮层会盖住它
+            <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-background/95 backdrop-blur px-3 py-2 shadow-sm">
+              <span className="text-[13px] font-medium">已选 {selected.size} 个</span>
+              <div className="flex flex-wrap gap-1.5 ml-auto">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={batchRunning}
+                  onClick={() =>
+                    runBatch("暂停", selectedItems.filter((i) => i.status === "running"), (it) =>
+                      toggle.mutateAsync({ id: it.id, action: "pause" })
+                    )
+                  }
+                >
+                  <PauseCircle className="w-3.5 h-3.5" />暂停
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={batchRunning}
+                  onClick={() =>
+                    runBatch("恢复", selectedItems.filter((i) => i.status === "paused"), (it) =>
+                      toggle.mutateAsync({ id: it.id, action: "resume" })
+                    )
+                  }
+                >
+                  <PlayCircle className="w-3.5 h-3.5" />恢复
+                </Button>
+                {/* 删除是不可逆的,单独走二次确认,不能和暂停放同一个手势层级 */}
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={batchRunning}
+                  onClick={() => setShowBatchDelete(true)}
+                >
+                  {batchRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                  删除
+                </Button>
+                <Button size="sm" variant="ghost" disabled={batchRunning} onClick={() => setSelected(new Set())}>
+                  取消选择
+                </Button>
+              </div>
+            </div>
+          )}
           {items.map((q) => (
             <QueueRow
               key={q.id}
               item={q}
               displayName={serverNames.get(q.planCode)}
-              optionsByValue={optionsByValue}
               timing={timings.data?.[`${q.planCode}@${q.datacenter}`]}
+              selected={selected.has(q.id)}
+              onSelect={() => toggleSelect(q.id)}
               onToggle={() =>
                 toggle.mutate({
                   id: q.id,
@@ -221,6 +382,32 @@ function QueuePage() {
           ))}
         </div>
       )}
+
+      <Dialog open={showBatchDelete} onOpenChange={setShowBatchDelete}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除选中的 {selected.size} 个任务？</DialogTitle>
+            <DialogDescription>
+              此操作不可撤销。正在执行中的下单（已走到结账那几秒的）可能仍会完成并产生真实订单。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBatchDelete(false)} disabled={batchRunning}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={batchRunning}
+              onClick={() => {
+                setShowBatchDelete(false);
+                void runBatch("删除", selectedItems, (it) => remove.mutateAsync(it.id));
+              }}
+            >
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showClearDialog} onOpenChange={setShowClearDialog}>
         <DialogContent>
@@ -277,7 +464,7 @@ function CreateQueueDialog({
 }) {
   const servers = useServers();
   const create = useCreateQueueItem();
-  // 下单账户 = 左侧菜单栏选的全局账户,本页不再单独选
+  // 下单账户 = 左侧菜单栏(手机端在顶栏)选的全局账户,本页不再单独选
   const [globalAccountId] = useActiveAccount();
   // 库存按"实际下单的那个账户"所在站点查:EU/US/CA 三站的 availabilities 互不相通
   // (实测 US 站 423 个 planCode,只有 134 个与 EU 重合),用别区的库存点红绿灯,
@@ -295,7 +482,16 @@ function CreateQueueDialog({
   const [planCode, setPlanCode] = useState(initialPlanCode || "");
   const [datacenters, setDatacenters] = useState<string[]>([]);
   const [quantity, setQuantity] = useState("1");
-  const [retryInterval, setRetryInterval] = useState(String(DEFAULT_RETRY_INTERVAL));
+  // 默认间隔跟着设置页走(配置没读到时用兜底常量)。
+  // 以前这里硬编码 60,而后端四条入队路径写的是 30 —— 弹窗显示的和实际用的对不上。
+  const settingsQ = useSettings();
+  const cfgDefault = settingsQ.data?.defaultRetryInterval || FALLBACK_RETRY_INTERVAL;
+  const [retryInterval, setRetryInterval] = useState("");
+  // 配置到手后填进去(用户还没动过输入框才填,不覆盖他正在打的字)
+  const touchedRef = useRef(false);
+  useEffect(() => {
+    if (!touchedRef.current) setRetryInterval(String(cfgDefault));
+  }, [cfgDefault]);
   // 默认不自动付款:自动扣钱必须显式打开。
   // 这个对话框和服务器卡片弹的那个是两条建任务入口,开关两边都要有 ——
   // 上一版只加了卡片那边,这边漏了
@@ -330,7 +526,7 @@ function CreateQueueDialog({
       // 走"外部带 initialOptions 进来"分支:
       //   - 能映射到 chip 组的塞进 picked
       //   - 剩下没匹配上的(chip 没覆盖到的 addon)塞进 extraInput
-      const wantedList = initialOptions.split(",").map((v) => v.trim()).filter(Boolean);
+      const wantedList = splitList(initialOptions);
       const consumed = new Set<string>();
       const next: Partial<Record<OptionGroupKey, string>> = {};
       const groupedMap = matchedServer ? groupOptions(matchedServer.availableOptions) : null;
@@ -369,10 +565,7 @@ function CreateQueueDialog({
     if (matchedServer) {
       return Object.values(picked).filter(Boolean) as string[];
     }
-    return extraInput
-      .split(",")
-      .map((v) => v.trim())
-      .filter(Boolean);
+    return splitList(extraInput);
   }, [matchedServer, picked, extraInput]);
 
   // option chip 的绿/红点:跟服务器列表对话框同一套逻辑
@@ -390,15 +583,19 @@ function CreateQueueDialog({
     );
   };
 
-  const qty = Number(quantity) || 1;
-  const totalTasks = datacenters.length * qty;
+  // 和 servers.tsx 用同一套上限:预览行必须说真会创建的数,
+  // 否则会出现"提示 5000 个任务、实际建 60 个"。
+  const orderPlan = clampOrderPlan(datacenters.length, Number(quantity) || 1);
+  const qty = orderPlan.quantity;
+  const totalTasks = orderPlan.total;
   const canSubmit = !!accountId && planCode.trim().length > 0 && datacenters.length > 0 && qty > 0;
 
   const reset = () => {
     setPlanCode("");
     setDatacenters([]);
     setQuantity("1");
-    setRetryInterval(String(DEFAULT_RETRY_INTERVAL));
+    touchedRef.current = false;
+    setRetryInterval(String(cfgDefault));
     setPicked({});
     setExtraInput("");
     prevPlanCodeRef.current = "";
@@ -428,7 +625,7 @@ function CreateQueueDialog({
       planCode: planCode.trim(),
       datacenters,
       quantity: qty,
-      retryInterval: Number(retryInterval) || DEFAULT_RETRY_INTERVAL,
+      retryInterval: Number(retryInterval) || cfgDefault,
       options: parsedOptions,
       autoPay,
       delaySeconds,
@@ -458,25 +655,13 @@ function CreateQueueDialog({
         </DialogHeader>
 
         <div className="space-y-5 py-2">
-          {/* 账户只在左侧菜单栏切,这里只显示当前是谁 */}
+          {/* 当前账户不在这里重复显示 —— 顶栏(手机)/侧栏(桌面)的切换器始终可见,
+              对话框打开时它也没被盖住。
+              但下面这两条要留着:一条是规则(拿错站点的 planCode 必然被拒),
+              一条是提交会被拦掉的理由,都不是"当前账户是谁"的重复。 */}
           <div>
-            <label className="block text-[13px] font-medium mb-1.5">OVH 账户</label>
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-secondary/30">
-              {/* 「未选择账户」只该出现在"确实没选/没有账户"时。列表没读到也写这四个字,
-                  等于把一次网络失败说成用户自己的配置问题。 */}
-              <span className="text-[13px] font-medium">
-                {activeAcc?.name ||
-                  (accountsQ.isPending
-                    ? "读取账户中…"
-                    : accountsQ.isError
-                      ? "账户列表读取失败"
-                      : "未选择账户")}
-              </span>
-              {activeAcc && <span className="text-[11px] text-muted-foreground">{activeAcc.zone}</span>}
-              <span className="ml-auto text-[10px] text-muted-foreground">在左侧菜单切换</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              下单用该账户的凭据,购物车 subsidiary 跟随账户 zone。planCode 也要是这个站点的 ——
+            <p className="text-[11px] text-muted-foreground">
+              下单用当前账户的凭据,购物车 subsidiary 跟随账户 zone。planCode 也要是这个站点的 ——
               三区目录互不相通
             </p>
             {/* 没有账户就没法下单,底下的创建按钮会一直灰着 —— 必须讲清是"没读到"还是"真没有" */}
@@ -592,7 +777,7 @@ function CreateQueueDialog({
                 placeholder="默认: 1"
               />
               <p className="text-[11px] text-muted-foreground mt-1">
-                每台服务器单独成单
+                每台服务器单独成单（每机房最多 {MAX_ORDER_QUANTITY} 台，单次最多 {MAX_ORDER_FANOUT} 个任务）
               </p>
             </div>
             <div>
@@ -605,12 +790,13 @@ function CreateQueueDialog({
                 value={retryInterval}
                 onChange={(e) => {
                   const v = e.target.value;
+                  touchedRef.current = true;
                   if (v === "" || /^\d*$/.test(v)) setRetryInterval(v);
                 }}
-                placeholder={`默认: ${DEFAULT_RETRY_INTERVAL}`}
+                placeholder={`默认: ${cfgDefault}`}
               />
               <p className="text-[11px] text-muted-foreground mt-1">
-                抢购失败后等待秒数再重试
+                抢购失败后等待秒数再重试（默认值在「设置 → 抢购」里改）
               </p>
             </div>
           </div>
@@ -621,8 +807,8 @@ function CreateQueueDialog({
           </label>
           <p className="text-[11px] text-muted-foreground -mt-2">
             {autoPay
-              ? "下单成功后用 OVH 默认支付方式自动扣款（需先在 OVH 设置好）；下单即放弃 14 天撤销期"
-              : "不勾则只下单：需在订单过期前自己付款；下单即放弃 14 天撤销期"}
+              ? "下单成功后用 OVH 默认支付方式自动扣款（需先在 OVH 设置好）"
+              : "不勾则只下单：需在订单过期前自己付款"}
           </p>
 
           <div>
@@ -744,15 +930,17 @@ function CreateQueueDialog({
 function QueueRow({
   item,
   displayName,
-  optionsByValue,
   timing,
+  selected,
+  onSelect,
   onToggle,
   onDelete,
 }: {
   item: QueueItem;
   displayName?: string;
-  optionsByValue: Map<string, ServerOption>;
   timing?: PurchaseTiming;
+  selected: boolean;
+  onSelect: () => void;
   onToggle: () => void;
   onDelete: () => void;
 }) {
@@ -815,24 +1003,31 @@ function QueueRow({
 
   return (
     <Card>
-      <CardContent className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3">
-        <div className="flex-1 min-w-0">
+      <CardContent className="p-3 sm:p-5 flex flex-col sm:flex-row sm:items-start gap-3">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          {/* 复选框单独占一列,点它不会触发行上的其它动作 */}
+          <Checkbox
+            checked={selected}
+            onCheckedChange={onSelect}
+            aria-label={`选择任务 ${item.planCode} @ ${item.datacenter}`}
+            className="mt-0.5 flex-shrink-0"
+          />
+          <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="font-semibold text-sm">{displayName || item.planCode}</span>
             {displayName && <span className="font-mono text-[11px] text-muted-foreground">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
             <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
-            {item.options?.map((option) => {
-              const catalogOption = optionsByValue.get(option);
-              const display = catalogOption
-                ? formatOptionDisplay(catalogOption, classifyOption(catalogOption))
-                : option;
-              return (
-                <Chip key={option} tone="default" title={catalogOption ? option : "未识别的可选配置：" + option}>
-                  {display}
-                </Chip>
-              );
-            })}
+            {item.options && item.options.length > 0 && (
+              // 以前只显示个数。而一个型号底下几套配置的差别恰恰在这里 ——
+              // 同时下了三单时,用户看到三张"含 2 个可选配置"的卡片,
+              // 分不出哪一单抢的是 64G+NVMe、哪一单是 32G+HDD。
+              // describeOptionCodes 纯靠 code 正则解析,不需要目录,
+              // 机型下架或目录没拉到时也能显示。
+              <Chip tone="default" title={item.options.join("\n")}>
+                {describeOptionCodes(item.options)}
+              </Chip>
+            )}
             {item.autoPay && (
               <Chip tone="warning" title="下单成功后会用 OVH 默认支付方式自动扣款">
                 自动付款
@@ -858,8 +1053,16 @@ function QueueRow({
             ) : inDelayWindow ? (
               <span>延迟下单中，还剩 {delayLeft} 秒后开始</span>
             ) : (
-              <span>
-                下次尝试 {item.retryCount > 0 ? `${item.retryInterval}秒后（第 ${item.retryCount + 1} 次）` : "即将开始"}
+              <span className="inline-flex items-center gap-1">
+                下次尝试
+                {item.retryCount > 0 ? (
+                  <>
+                    <IntervalEditor id={item.id} value={item.retryInterval} />
+                    秒后（第 {item.retryCount + 1} 次）
+                  </>
+                ) : (
+                  "即将开始"
+                )}
               </span>
             )}
             {timing && (
@@ -885,6 +1088,7 @@ function QueueRow({
             )}
             <span>·</span>
             <span>{new Date(item.createdAt).toLocaleString()}</span>
+          </div>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">

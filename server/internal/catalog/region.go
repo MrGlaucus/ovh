@@ -265,18 +265,22 @@ func AddonFamiliesForPlan(state *app.State, accountID, planCode string) (map[str
 	return pc.addonFamilies, nil
 }
 
-// ConfigPriceProfile 是通知使用的目录价格补充信息。月费仍以实际购物车询价为准；
-// 安装费与配置类型来自同一子公司公开目录，不额外创建购物车。
+// ConfigPriceProfile 是通知使用的目录价格补充信息。月费与安装费都来自同一子公司
+// 公开目录，不额外创建购物车。注意购物车询价返回的 withTax 是首期账单总额
+// （一个月的月费 + 一次性安装费），不能拿来当"月费"展示。
 type ConfigPriceProfile struct {
 	ConfigTypeKnown   bool
 	IsDefaultConfig   bool
 	InstallationKnown bool
 	InstallationTotal float64
+	MonthlyKnown      bool
+	MonthlyTotal      float64
 	Currency          string
 }
 
 // ConfigPriceProfileForOptions 根据 OVH 目录默认 addon 判断标准/扩展硬件配置，
-// 并累计基础机型与已选硬件 addon 的一次性安装费（含税）。
+// 并累计基础机型与已选硬件 addon 的月费（default 合同的 1 个月续费条目）
+// 与一次性安装费。
 func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, options []string) (ConfigPriceProfile, error) {
 	acc, _ := state.FindAccount(accountID)
 	subsidiary := SubsidiaryOfAccount(acc)
@@ -291,6 +295,7 @@ func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, 
 
 	profile := ConfigPriceProfile{Currency: cat.currency, InstallationKnown: true}
 	installTotal := installationAmount(pc.pricings)
+	monthlyTotal, monthlyKnown := monthlyAmount(pc.pricings)
 	isDefault, typeKnown := true, true
 	if len(options) == 0 && len(pc.addonFamilies) > 0 {
 		// 空 options 对"有 addon 家族的分段机型"是"配置未知"而不是"标准配置":
@@ -302,6 +307,7 @@ func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, 
 		// "标准配置"+安装费展示 —— 与 telegram/purchase/queue 的豁免口径一致。
 		typeKnown = false
 		profile.InstallationKnown = false
+		monthlyKnown = false
 	}
 	for _, option := range options {
 		family, isKnown := addonFamilyForOption(pc.addonFamilies, option)
@@ -309,6 +315,7 @@ func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, 
 			// options 来自目录匹配；若目录无法识别，不能武断贴上标准/高配标签。
 			typeKnown = false
 			profile.InstallationKnown = false
+			monthlyKnown = false
 			continue
 		}
 		defaultOption, hasDefault := pc.defaultAddons[family]
@@ -320,13 +327,19 @@ func ConfigPriceProfileForOptions(state *app.State, accountID, planCode string, 
 		pricings, found := cat.addonPricings[option]
 		if !found {
 			profile.InstallationKnown = false
+			monthlyKnown = false
 			continue
 		}
 		installTotal += installationAmount(pricings)
+		if amount, ok := monthlyAmount(pricings); ok {
+			monthlyTotal += amount
+		}
 	}
 	profile.ConfigTypeKnown = typeKnown
 	profile.IsDefaultConfig = typeKnown && isDefault
 	profile.InstallationTotal = float64(installTotal) / 1e8
+	profile.MonthlyKnown = monthlyKnown
+	profile.MonthlyTotal = float64(monthlyTotal) / 1e8
 	return profile, nil
 }
 
@@ -339,13 +352,61 @@ func addonFamilyForOption(families map[string][]string, option string) (string, 
 	return "", false
 }
 
+// installationAmount 该组价格条目里的一次性安装费（微分）。
+// 只取 price：目录的 price 就是实收金额（formattedPrice 印的就是它），
+// tax 是"price × 税率"的展示字段（18.99 + 3.798），再加一遍等于收两次税，
+// 实测 KS-2 的安装费因此从 18.99 被算成 22.79。
 func installationAmount(pricings []catalogPricing) int64 {
 	for _, pricing := range pricings {
 		if pricing.Mode == "default" && contains(pricing.Capacities, "installation") {
-			return pricing.Price + pricing.Tax
+			return pricing.Price
 		}
 	}
 	return 0
+}
+
+// monthlyAmount 该组价格条目里的月费（微分）。
+// 只认 default 合同的"1 个月续费"条目：upfront12/upfront24 的 renew 条目
+// 是整段预付价（216.49 / 432.97），当成月费会虚高十倍以上。
+// 第二个返回值表示目录里有没有这个条目——没有时宁可这块显示不出来，
+// 也不要拿别的价钱顶替。
+func monthlyAmount(pricings []catalogPricing) (int64, bool) {
+	for _, pricing := range pricings {
+		if pricing.Mode == "default" && pricing.IntervalUnit == "month" && pricing.Interval == 1 &&
+			contains(pricing.Capacities, "renew") {
+			return pricing.Price, true
+		}
+	}
+	return 0, false
+}
+
+// CanonicalPlanCode 在本子公司目录里按**大小写无关**找回 planCode 的正确拼写。
+//
+// 为什么需要:OVH 的 planCode 绝大多数是全小写,但不是全部 —— 实测三区公开目录
+// 2393 个 planCode 里有 16 个带大写(vps-2025-model1.LZ 这一批 VPS 及其 option)。
+// 所以**不能**在入口处一律 ToLower 归一化:那会把这批 VPS 直接弄坏。
+//
+// 能做的是反过来:用户拼错大小写时,把目录里的正确写法找出来告诉他。
+// 手机键盘会自动把首字母大写,这个错误比想象中常见,而它的表现是
+// 「查不到这个机型」—— 用户会以为机型下架了,根本想不到是大小写。
+//
+// 只在精确匹配失败后调用,正常路径一次都不会走到这里。
+func CanonicalPlanCode(state *app.State, accountID, planCode string) (string, bool) {
+	want := strings.ToLower(strings.TrimSpace(planCode))
+	if want == "" {
+		return "", false
+	}
+	acc, _ := state.FindAccount(accountID)
+	cat, err := loadSubsidiaryCatalog(state, SubsidiaryOfAccount(acc))
+	if err != nil {
+		return "", false
+	}
+	for code := range cat.plans {
+		if strings.ToLower(code) == want {
+			return code, code != planCode
+		}
+	}
+	return "", false
 }
 
 // regionBucketForDC 机房归属的 region 桶(只在 plan 有多个候选时用来消歧)。

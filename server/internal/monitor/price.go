@@ -316,3 +316,39 @@ func (m *Monitor) getPriceWithTimeout(planCode, datacenter string, configInfo ma
 		return "", errMsg
 	}
 }
+
+// monthlyPriceText 这套配置的月费。数据源是公开目录 default 合同的 1 个月续费条目，
+// 不是购物车询价——询价返回的是首期账单总额（一个月的月费 + 一次性安装费），
+// 当成"月费"展示会整整多出一份安装费：实测 KS-2 标准配置因此显示成 18.99×2。
+// 目录有 2 小时缓存，也不占账户配额。
+func (m *Monitor) monthlyPriceText(planCode, accountID string, options []string) string {
+	profile, err := catalog.ConfigPriceProfileForOptions(m.state, accountID, planCode, options)
+	if err != nil {
+		m.state.Logger.Debug("月费取不到("+planCode+"): "+err.Error(), "monitor")
+		return ""
+	}
+	// 配置识别不全（缺 addon 部分）或目录没有月付条目时宁可不显示——
+	// 一个偏低的月费会让用户按错的预期下单。
+	if !profile.MonthlyKnown || profile.MonthlyTotal <= 0 {
+		return ""
+	}
+	return formatMoney(profile.Currency, profile.MonthlyTotal)
+}
+
+// installPriceText 这套配置的一次性安装费。拿不到就返回空串 —— 通知里那一行直接不出现。
+//
+// 用目录算而不是询价:询价要建购物车 → 加商品 → 拿 summary → 删车,一次好几秒,
+// 而补货通知的全部价值就是"有货那一刻立刻发出去"。目录有 2 小时缓存,也不占账户配额。
+func (m *Monitor) installPriceText(planCode, accountID string, options []string) string {
+	profile, err := catalog.ConfigPriceProfileForOptions(m.state, accountID, planCode, options)
+	if err != nil {
+		m.state.Logger.Debug("安装费取不到("+planCode+"): "+err.Error(), "monitor")
+		return ""
+	}
+	// 金额不完整(缺 addon 部分)或取不到时宁可不显示 ——
+	// 一个偏低的数字会让用户按错的预期下单。
+	if !profile.InstallationKnown || profile.InstallationTotal <= 0 {
+		return ""
+	}
+	return formatOneTimeMoney(profile.Currency, profile.InstallationTotal)
+}

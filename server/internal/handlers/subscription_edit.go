@@ -49,7 +49,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "请求体格式错误: " + err.Error()})
 			return
 		}
-		
+
 		// 先取当前值作为默认,再用 body 里给了的字段覆盖
 		cur := mon.SubscriptionConfig(planCode)
 		datacenters := cur.Datacenters
@@ -60,7 +60,7 @@ func UpdateSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc 
 		accountID := cur.AutoOrderAccountID
 		autoPay := cur.AutoPay
 		delaySeconds := cur.DelaySeconds
-		
+
 		if body.Datacenters != nil {
 			datacenters = *body.Datacenters
 		}

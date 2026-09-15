@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/ovh-buy/server/internal/app"
 )
 
 // 缓存粒度必须是 (机型, 大区)。曾经按 planCode 单键缓存,结果:
@@ -57,5 +59,36 @@ func TestRegionOfPlan_探测失败不写正缓存(t *testing.T) {
 
 	if _, err := RegionOfPlan(testState(t), "x", []string{"EU", "US"}); err == nil {
 		t.Fatal("全部探测失败时必须返回错误,不能返回'哪都没有'")
+	}
+}
+
+// 公开查询失败必须把真实错误带给调用方(监控要如实归因,
+// 不能把"闸门阻断/网络故障"说成"机型可能已下架")。
+func TestCheckServerAvailabilityPublic_错误透传(t *testing.T) {
+	orig := fetchAvailabilitiesPublic
+	defer func() { fetchAvailabilitiesPublic = orig }()
+	fetchAvailabilitiesPublic = func(*app.State, string, string) ([]map[string]interface{}, error) {
+		return nil, errors.New("账户出口 IP 未确认，携带账户鉴权的 OVH 请求已阻断")
+	}
+	m, err := CheckServerAvailabilityPublic(testState(t), "24sk202", "")
+	if err == nil || len(m) != 0 {
+		t.Fatalf("expected error propagation, got map=%v err=%v", m, err)
+	}
+}
+
+// 空数组(200 + [])不是错误:调用方要能区分"站点没有记录"(走区域归因)
+// 和"查询失败"(如实报错)。
+func TestCheckServerAvailabilityPublic_空数组不算错误(t *testing.T) {
+	orig := fetchAvailabilitiesPublic
+	defer func() { fetchAvailabilitiesPublic = orig }()
+	fetchAvailabilitiesPublic = func(*app.State, string, string) ([]map[string]interface{}, error) {
+		return nil, nil
+	}
+	m, err := CheckServerAvailabilityPublic(testState(t), "24sk202", "")
+	if err != nil {
+		t.Fatalf("empty array must not be an error, got %v", err)
+	}
+	if len(m) != 0 {
+		t.Fatalf("expected empty result, got %v", m)
 	}
 }

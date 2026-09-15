@@ -1,6 +1,7 @@
 package purchase
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -38,10 +39,25 @@ type Outcome struct {
 	DelayPending bool
 	// ResetDelay:延迟到期后的二次库存确认发现已无货；下次重新发现有货时再开始等待。
 	ResetDelay bool
+	// Cancelled:任务在下单途中被用户删除,本轮主动终止。
+	// 不是失败:不写 history、不计 FailureCount、不算 Attempted。
+	// 结账之前的任何一步都可能落到这里;结账一旦发出就不再接受取消(见 checkout 处注释)。
+	Cancelled bool
+}
+
+// cancelledOutcome 下单途中任务被删除时的返回。
+// 只记日志:history 里不留痕(用户自己删的,不是失败),耗时统计也不记(不是一次完整尝试)。
+func cancelledOutcome(state *app.State, item *types.QueueItem, stage string) Outcome {
+	state.Logger.Info(fmt.Sprintf("任务 %s (%s @ %s) 在「%s」阶段被取消,本轮终止",
+		item.ID, item.PlanCode, item.Datacenter, stage), "purchase")
+	return Outcome{Cancelled: true}
 }
 
 // 多账户:用 item.AccountID 取对应 OVH client 和 subsidiary。
-func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
+//
+// ctx 由队列处理器给,用户删任务时会被取消(app.State.MarkTaskDeleted)。
+// 结账之前的每一次 OVH 调用都挂在它上面,取消即中断;结账本身例外,见那里的注释。
+func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem) Outcome {
 	if item.AccountID == "" {
 		// 历史/导入任务可能缺失账户；绝不能让 ClientFor("") 回退默认账户，
 		// 否则任务会使用另一账户的凭据、代理和出口 IP。
@@ -75,12 +91,15 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	var availabilities []map[string]interface{}
 	q := url.Values{}
 	q.Set("planCode", item.PlanCode)
-	if err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
+	if err := client.GetWithContext(ctx, "/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
+		if ctx.Err() != nil {
+			return cancelledOutcome(state, item, "查库存")
+		}
 		tl.mark("查库存")
 		recordTiming(timingKey, tl, "failed")
 		errMsg := err.Error()
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
-		return failOutcome(state, item, err, errMsg)
+		return failOutcome(state, item, err, ovh.Explain(err))
 	}
 	tl.mark("查库存")
 
@@ -190,11 +209,14 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	// 创建购物车
 	state.Logger.Info(fmt.Sprintf("为区域 %s 创建购物车 (账户 %s)", subsidiary, acc.Name), "purchase")
 	var cartResult map[string]interface{}
-	if err := client.Post("/order/cart", map[string]interface{}{
+	if err := client.PostWithContext(ctx, "/order/cart", map[string]interface{}{
 		"ovhSubsidiary": subsidiary,
 	}, &cartResult); err != nil {
+		if ctx.Err() != nil {
+			return cancelledOutcome(state, item, "建购物车")
+		}
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
-		return failOutcome(state, item, err, err.Error())
+		return failOutcome(state, item, err, ovh.Explain(err))
 	}
 	cartID, _ = cartResult["cartId"].(string)
 	tl.mark("建购物车")
@@ -208,6 +230,8 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		if success || cartID == "" {
 			return
 		}
+		// 故意不带 ctx:取消路径也要走到这里清 cart。挂上 ctx 的话,
+		// 用户一删任务,清理请求自己先被取消,僵尸 cart 就留在 OVH 那边了。
 		if err := client.Delete("/order/cart/"+cartID, nil); err != nil {
 			state.Logger.Debug(fmt.Sprintf("清理失败 cart %s: %s", cartID, err.Error()), "purchase")
 		} else {
@@ -225,11 +249,14 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	// （nil→空串，{}→"{}"），两边自洽，签名不会因此失配。真正的理由只是：
 	// schema 没声明 body 就别发 body，少一个 OVH 将来收紧校验时会绊住的东西。
 	state.Logger.Info("绑定购物车 "+cartID, "purchase")
-	if err := client.Post("/order/cart/"+cartID+"/assign", nil, nil); err != nil {
+	if err := client.PostWithContext(ctx, "/order/cart/"+cartID+"/assign", nil, nil); err != nil {
+		if ctx.Err() != nil {
+			return cancelledOutcome(state, item, "绑定购物车")
+		}
 		errMsg := err.Error()
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, errMsg), "purchase")
 		state.Logger.Error("错误发生时的购物车ID: "+cartID, "purchase")
-		return failOutcome(state, item, err, errMsg)
+		return failOutcome(state, item, err, ovh.Explain(err))
 	}
 	tl.mark("绑定购物车")
 	state.Logger.Info("购物车绑定成功", "purchase")
@@ -245,7 +272,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	var itemResult map[string]interface{}
 	postBase := func() error {
 		itemResult = nil
-		return client.Post("/order/cart/"+cartID+"/eco", map[string]interface{}{
+		return client.PostWithContext(ctx, "/order/cart/"+cartID+"/eco", map[string]interface{}{
 			"planCode":    item.PlanCode,
 			"pricingMode": basePricingMode,
 			"duration":    baseDuration,
@@ -253,6 +280,10 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		}, &itemResult)
 	}
 	if err := postBase(); err != nil {
+		// 取消了就别再去查计价重试 —— lookupEcoPricing 还要发一次 OVH 请求
+		if ctx.Err() != nil {
+			return cancelledOutcome(state, item, "加基础商品")
+		}
 		if d, pm, found := lookupEcoPricing(state, client, cartID, item.PlanCode); found &&
 			(d != baseDuration || pm != basePricingMode) {
 			state.Logger.Warn(fmt.Sprintf("以 %s/%s 加购 %s 失败(%s)，改用目录计价 %s/%s 重试",
@@ -261,9 +292,12 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			err = postBase()
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return cancelledOutcome(state, item, "加基础商品")
+			}
 			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s", item.PlanCode, err.Error()), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
-			return failOutcome(state, item, err, err.Error())
+			return failOutcome(state, item, err, ovh.Explain(err))
 		}
 	}
 	if n, ok := numconv.ToInt64(itemResult["itemId"]); ok {
@@ -310,7 +344,10 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		state.Logger.Warn(fmt.Sprintf("无法为数据中心 %s 推断区域，改问购物车的 requiredConfiguration",
 			strings.ToLower(apiDC)), "purchase")
 		var required []map[string]interface{}
-		if err := client.Get(fmt.Sprintf("/order/cart/%s/item/%d/requiredConfiguration", cartID, itemID), &required); err != nil {
+		if err := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/item/%d/requiredConfiguration", cartID, itemID), &required); err != nil {
+			if ctx.Err() != nil {
+				return cancelledOutcome(state, item, "查必需配置")
+			}
 			state.Logger.Warn("获取必需配置失败: "+err.Error(), "purchase")
 		} else {
 			allowed, mandatory := regionAllowedValues(required)
@@ -343,7 +380,7 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	// 也不赌 OVH 对同一 cart item 并发写的宽容度（失败就是整单取消，货就没了）。
 	postConfig := func(label, value string) error {
 		state.Logger.Info(fmt.Sprintf("配置项目 %d: 设置必需项 %s = %s", itemID, label, value), "purchase")
-		if err := client.Post(fmt.Sprintf("/order/cart/%s/item/%d/configuration", cartID, itemID),
+		if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/item/%d/configuration", cartID, itemID),
 			map[string]interface{}{"label": label, "value": value}, nil); err != nil {
 			return err
 		}
@@ -352,11 +389,14 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 	}
 	for _, cfg := range configurations {
 		if err := postConfig(cfg.label, cfg.value); err != nil {
+			if ctx.Err() != nil {
+				return cancelledOutcome(state, item, "设置配置项")
+			}
 			errMsg := err.Error()
 			state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误(%s): %s", item.PlanCode, cfg.label, errMsg), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的购物车ID: %s", cartID), "purchase")
 			state.Logger.Error(fmt.Sprintf("错误发生时的基础商品ID: %d", itemID), "purchase")
-			return failOutcome(state, item, err, errMsg)
+			return failOutcome(state, item, err, ovh.Explain(err))
 		}
 	}
 
@@ -371,9 +411,12 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			var availableEcoOpts []map[string]interface{}
 			q := url.Values{}
 			q.Set("planCode", item.PlanCode)
-			if err := client.Get(fmt.Sprintf("/order/cart/%s/eco/options?%s", cartID, q.Encode()), &availableEcoOpts); err != nil {
+			if err := client.GetWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options?%s", cartID, q.Encode()), &availableEcoOpts); err != nil {
+				if ctx.Err() != nil {
+					return cancelledOutcome(state, item, "查硬件选项")
+				}
 				// 拉 eco/options 失败 → 中止订单。否则会用基础 plan 默认存储（多半是 HDD）下到错误配置
-				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败: %s（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", err.Error(), len(filtered))
+				errMsg := fmt.Sprintf("获取 Eco 硬件选项列表失败: %s（用户指定了 %d 个选项，无法验证，已取消下单避免下到错误配置）", ovh.Explain(err), len(filtered))
 				state.Logger.Error(errMsg, "purchase")
 				return failOutcome(state, item, err, errMsg)
 			}
@@ -433,10 +476,13 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 			// 不值得拿"整单取消"去赌 OVH 的并发宽容度。
 			state.Logger.Info(fmt.Sprintf("依次添加 %d 个 Eco 选项: %v", len(todo), filtered), "purchase")
 			for _, t := range todo {
-				if err := client.Post(fmt.Sprintf("/order/cart/%s/eco/options", cartID), t.body, nil); err != nil {
+				if err := client.PostWithContext(ctx, fmt.Sprintf("/order/cart/%s/eco/options", cartID), t.body, nil); err != nil {
+					if ctx.Err() != nil {
+						return cancelledOutcome(state, item, "加硬件选项")
+					}
 					state.Logger.Error(fmt.Sprintf("添加 Eco 选项 %s 失败: %s", t.planCode, err.Error()), "purchase")
 					// 关键选项添加失败 → 整单失败。不能静默继续 checkout,否则会下到错误配置。
-					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败: %s（已取消下单避免下到错误配置）", t.planCode, err.Error())
+					errMsg := fmt.Sprintf("添加 Eco 选项 %s 失败: %s（已取消下单避免下到错误配置）", t.planCode, ovh.Explain(err))
 					return failOutcome(state, item, err, errMsg)
 				}
 				state.Logger.Info(fmt.Sprintf("成功添加 Eco 选项: %s", t.planCode), "purchase")
@@ -451,6 +497,13 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 
 	// 直接结账 —— 跳过 /summary(它只是日志用的价格,2 秒开销),
 	// 价格 + 过期时间下面 checkout 成功后用 /me/order 异步补,不阻塞主流程。
+	// 结账前最后一次复核。这是整条链路里唯一真正花钱的一步,也是取消能起作用的
+	// 最后一个点 —— 从这里往下,结账请求一旦发出就**不再接受取消**:
+	// 请求已经到了 OVH、我们这边却中途断开,订单可能已经生成而我们不知道,
+	// 既没 history 也没通知,那比"多下了一单"更糟。
+	if ctx.Err() != nil || state.IsTaskDeleted(item.ID) {
+		return cancelledOutcome(state, item, "结账前复核")
+	}
 	state.Logger.Info("对购物车 "+cartID+" 执行结账", "purchase")
 	var checkoutResult map[string]interface{}
 	checkoutPayload := map[string]interface{}{
@@ -458,15 +511,28 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		// "order will be automatically paid with preferred payment method",
 		// 需要 OVH 账户已设置默认支付方式)。默认 false:不替用户扣钱。
 		"autoPayWithPreferredPaymentMethod": item.AutoPay,
-		"waiveRetractationPeriod":           true,
 	}
-	if err := client.Post("/order/cart/"+cartID+"/checkout", checkoutPayload, &checkoutResult); err != nil {
+	// 不发 waiveRetractationPeriod。
+	//
+	// 这个字段的意思是"放弃 14 天无理由撤回权"(官方定义:order will be processed
+	// with waiving retractation period)。它在 schema 里是 required:false,
+	// 以前这里写死 true —— 每一单都替用户把这个权利交出去;而旁边的 autoPay
+	// 明明是跟着用户开关走的,说明当时对"不能替用户做花钱决定"是有意识的,
+	// 只是漏了这一个字段。
+	//
+	// 不传 = 不主动弃权。这不影响拿到机器的速度:checkout 只是创建订单
+	// (它是 notPaid),真正开通要等付款,卡点从来不是这个字段。
+	// 而且方向上是可恢复的 —— 真需要弃权还有 POST /me/order/{id}/waiveRetraction
+	// 可以事后补;反过来结账时一旦 true,权利当场消失,没有任何接口能拿回来。
+	if err := client.PostWithContext(context.WithoutCancel(ctx), "/order/cart/"+cartID+"/checkout", checkoutPayload, &checkoutResult); err != nil {
 		// POST /item/{id}/configuration 对取值不做任何校验 —— 实测在 EU 车上把
 		// dedicated_datacenter 设成 "hil"、region 设成 "usa" 都会 200 返回配置项 id,
 		// 直到 summary/checkout 才报 "<fqn> is not available in hil"。
 		// 也就是说"配置全设成功"根本不代表值合法,错的机房/区域只能在这里现原形,
 		// 必须把它翻成用户看得懂的话,否则历史里只有一句英文 OVH 报错。
-		errMsg := err.Error()
+		// 用 Explain 而不是 err.Error():这条是用户在「购买历史」里唯一能看到的说明。
+		// Explain 把原文原样嵌在后面,所以下面那句 Contains 判断照样成立。
+		errMsg := ovh.Explain(err)
 		if strings.Contains(errMsg, "is not available in") {
 			errMsg = fmt.Sprintf("%s（机房 %s 不在子公司 %s 的 %s 目录里；OVH 三站目录独立，同一机型在不同区可选的机房不同）",
 				errMsg, apiDC, subsidiary, item.PlanCode)
@@ -509,12 +575,12 @@ func PurchaseServer(state *app.State, item *types.QueueItem) Outcome {
 		// "成功"的真实语义是「订单已创建、**还没付款**、逾期作废」。
 		// 通知里必须把这句说出来,否则用户看到🎉就睡了,订单过期机器就没了。
 		payNote := "⚠️ 订单尚未付款：请尽快打开订单链接完成付款,逾期未付订单会自动作废。\n" +
-			"(下单时已按惯例放弃 14 天撤销期,付款即开通)\n"
+			"(撤回权保留,未放弃 14 天无理由撤回期)\n"
 		if item.AutoPay {
 			// 只承诺我们真正知道的:已请求自动付款 ≠ 扣款一定成功
 			// (默认支付方式失效/余额不足时 OVH 不会扣成),让用户去核对
 			payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
-				"(下单时已按惯例放弃 14 天撤销期)\n"
+				"(撤回权保留,未放弃 14 天无理由撤回期)\n"
 		}
 		// 通知里发控制面板深链,不发 checkout 返回的那个 url ——
 		// 后者是带凭证的下载链接(OVH 的 billing.Order 里 url 旁边就是 password),
@@ -922,8 +988,13 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 
 	// billing.Order 里 expirationDate（订单待付款到期作废时间）与 retractionDate
 	// （法定撤销权截止日）是两个语义完全不同的 datetime，历史里展示的"过期时间"
-	// 指的是前者；何况 checkout 传了 waiveRetractationPeriod:true 已经放弃撤销期，
-	// 拿 retractionDate 当付款截止时间会让用户误判付款窗口。
+	// 指的是前者，拿 retractionDate 当付款截止时间会让用户误判付款窗口。
+	//
+	// 注意 retractionDate 现在是有意义的:checkout 不再传 waiveRetractationPeriod,
+	// 撤回权没被放弃,这个日期就是"在此之前还能申请无理由撤回"的真实截止时间。
+	// 而这次 fix 之前下的单都弃权了,OVH 对它们不返回 retractionDate ——
+	// 前端据此判断要不要显示撤回入口,不用自己按 14 天算(算了就会给老订单
+	// 显示一个点了必然失败的按钮)。
 	expirationTime := ""
 	if exp, ok := orderInfo["expirationDate"].(string); ok && exp != "" {
 		expirationTime = exp

@@ -233,7 +233,7 @@ OVH 凭据**不放 env**,通过前端 OvhCredsGate / 设置页"OVH 账户" tab �
 ### 已购服务器管理
 - **顶部账户切换器**:服务器控制 tab 头单独有账户下拉,切换后所有 `/server-control/*` 请求由 axios 拦截器自动追加 `?account=<id>`,无需逐 hook 改造
 - **概览**:硬件信息 + 服务到期 + IP / 网卡 + MRTG 流量图
-- **电源 / 系统**:重启 / 重装(含 ZFS / 软 RAID / 自定义分区)/ IPMI 控制台 / 启动模式 / SPLA Windows 解锁 / 任务列表 / BIOS / 安装进度。重装接口加了 per-service `TryLock`,防双击重复提交
+- **电源 / 系统**:重启 / 重装(含 ZFS / 软 RAID / 自定义分区)/ 一键救援(改 netboot + 填收密码的邮箱 + 重启三步合一,不用去 OVH 后台点四遍)/ IPMI 控制台 / 启动模式 / SPLA Windows 解锁 / 任务列表 / BIOS / 安装进度。重装接口加了 per-service `TryLock`,防双击重复提交
 - **维护**:维护记录 + 硬件更换工单(硬盘 / 内存 / 散热)+ 联系人变更(Token 邮件确认)
 - **高级**(9 个 sub-tab):Burst / 防火墙 / Backup FTP / Secondary DNS / 虚拟 MAC / vRack / 可订购升级 / 附加选项 / IP 规格
 - **隐私模式**:一键打码所有 IP / MAC / 反向 DNS 主机名

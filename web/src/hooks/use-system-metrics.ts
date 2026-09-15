@@ -5,7 +5,10 @@ import { api } from "@/lib/api";
 export function useAppVersion() {
   return useQuery({
     queryKey: ["app", "version"],
-    queryFn: async () => (await api.get<{ version: string }>("/version")).data.version,
+    // ?? "" 不能省:queryFn 返回 undefined 会被 react-query 当成错误抛,
+    // 而这个 hook 用在仪表盘上 —— 抛出去就是整页白屏。
+    // 后端正常返回 { version }, 这里防的是响应结构意外(代理插页、网关 200 带错误体)。
+    queryFn: async () => (await api.get<{ version: string }>("/version")).data?.version ?? "",
     staleTime: Infinity, // 进程跑起来版本号不会变,缓存到 unmount
     gcTime: Infinity,
     retry: 0,
@@ -24,6 +27,11 @@ export interface UpdateCheck {
   body: string;
   prerelease: boolean;
   checkedAt: string;
+  /** 跑在容器里。自更新在容器里是停用的 —— 新二进制只会写进容器的可写层，
+   *  容器一重建就回到镜像里的旧版本。界面据此显示「怎么拉新镜像」而不是更新按钮。 */
+  inContainer?: boolean;
+  /** 容器里的更新指引（多行文本）。inContainer 为 false 时是空串。 */
+  updateHint?: string;
 }
 
 /** 检查上游 (MrGlaucus/ovh) 是否有新版本。

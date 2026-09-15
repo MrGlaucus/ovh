@@ -17,6 +17,14 @@ export interface MonitorSubscription {
   autoPay?: boolean;
   /** 补货后延迟 N 秒下单,0=跟随全局 AUTO_ORDER_DELAY_SECONDS */
   delaySeconds?: number;
+  /**
+   * 只盯这套配置(addon planCode 列表)。空 / 缺省 = 盯该型号的全部配置。
+   *
+   * 一个 planCode 底下常有好几套内存/存储组合，而通知和自动下单是**按配置逐套**
+   * 触发的 —— 不限定配置时「自动抢 1 台」会变成「每套配置在每个机房各抢 1 台」。
+   * 后端引擎一直支持这个字段，只是前端以前没接，所以网页建的订阅永远是「盯全部」。
+   */
+  options?: string[];
   lastStatus: Record<string, string>;
   /** 最近一轮实际开始查询库存的时间。 */
   lastCheckAt?: string;

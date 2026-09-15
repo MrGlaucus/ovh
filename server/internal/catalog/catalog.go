@@ -1,8 +1,11 @@
 package catalog
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -60,12 +64,42 @@ func IsAvailableForOrder(availability string) bool {
 //   - accountID:决定用哪个账户的 OVH client 和 zone 拉 catalog。空 = 默认账户。
 //     `/dedicated/server/datacenter/availabilities` 是全局接口,client 走哪个账户无所谓;
 //     但 `/order/catalog/public/eco` 必须用对应 subsidiary 拉,否则跨子公司账户的 options 匹配会失败。
-//   - monitor 检查 loop 没有"当前账户"概念,直接传 "",意味着只能保证默认账户 + 同 subsidiary 账户准确;
-//     quick-order / Telegram 这种已知 account_id 的调用方应该传具体 ID。
+//   - monitor 的库存查询已改走 CheckServerAvailabilityPublic(免鉴权,不经出口 IP 闸门);
+//     quick-order / Telegram 这类已知 account_id 的下单链路调用方传具体 ID。
 func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accountID string) map[string]*ConfigAvailability {
-	client, err := state.OVH.ClientFor(accountID)
+	availabilities, err := fetchAvailabilitiesSigned(state, planCode, accountID)
 	if err != nil {
 		return map[string]*ConfigAvailability{}
+	}
+	return buildAvailabilityConfigs(state, planCode, accountID, availabilities)
+}
+
+// CheckServerAvailabilityPublic 与 CheckServerAvailabilityWithConfigs 数据等价
+// (同一端点、同一响应结构;check.go 顶部注释里有三站点未鉴权实测记录),
+// 但走免鉴权的公开查询:不带账户凭据、不经过账户出口 IP 闸门。
+//
+// monitor 主链路用它:签名版在出口 IP 不匹配时逐个请求排队复检(同账户单飞,
+// 超时型故障每次 10 秒),一轮检查被拖到分钟级,前端只显示"检查可能停滞" ——
+// 监控不该被下单侧的 fail-closed 闸门拖死。库存查询是公开数据(不含账户身份),
+// 改公开后出口 IP 异常只影响下单/询价(它们仍走签名请求,闸门语义正确)。
+//
+// 失败时返回真实错误(签名版只留日志),供调用方如实归因 ——
+// 把"闸门阻断/网络故障"报成"机型可能已下架"会把用户引向完全错误的方向。
+func CheckServerAvailabilityPublic(state *app.State, planCode, accountID string) (map[string]*ConfigAvailability, error) {
+	availabilities, err := fetchAvailabilitiesPublic(state, planCode, accountID)
+	if err != nil {
+		return map[string]*ConfigAvailability{}, err
+	}
+	return buildAvailabilityConfigs(state, planCode, accountID, availabilities), nil
+}
+
+// fetchAvailabilitiesSigned 走账户签名 client 拉可用性(quick_order / telegram / queue
+// 等下单链路保持用它:这些场景马上要发签名请求下单,闸门阻断发生在更早的查询阶段
+// 语义一致,且这些调用方本来就需要真实的闸门保护)。
+func fetchAvailabilitiesSigned(state *app.State, planCode, accountID string) ([]map[string]interface{}, error) {
+	client, err := state.OVH.ClientFor(accountID)
+	if err != nil {
+		return nil, err
 	}
 
 	// 子公司/站点先算出来:下面所有日志都要带上它,否则"查不到"这种话在三区之间
@@ -81,18 +115,76 @@ func CheckServerAvailabilityWithConfigs(state *app.State, planCode string, accou
 	q.Set("planCode", planCode)
 	if err := client.Get("/dedicated/server/datacenter/availabilities?"+q.Encode(), &availabilities); err != nil {
 		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败: %s", err.Error()), "monitor")
+		return nil, err
+	}
+	if len(availabilities) == 0 {
+		warnEmptyAvailabilities(state, planCode, region, subsidiary)
+	}
+	return availabilities, nil
+}
+
+// fetchAvailabilitiesPublic 免鉴权拉可用性,端点与区域探测(availprobe.go)完全一致,
+// 无需凭据(实测三站点直接可取),不消耗任何账户配额。
+// 写成变量以便测试替换假实现(同 fetchSubsidiaryCatalog / probeRegionHasPlan 的模式)。
+var fetchAvailabilitiesPublic = func(state *app.State, planCode, accountID string) ([]map[string]interface{}, error) {
+	acc, ok := state.FindAccount(accountID)
+	if !ok {
+		return nil, fmt.Errorf("未找到用于查询可用性的 OVH 账户")
+	}
+	subsidiary := SubsidiaryOfAccount(acc)
+	region := ovh.SubsidiaryRegion(subsidiary)
+
+	state.Logger.Info(fmt.Sprintf("[配置监控] 查询 %s 的所有配置组合(%s 站点 / 子公司 %s,公开接口)...", planCode, region, subsidiary), "monitor")
+
+	q := url.Values{}
+	q.Set("planCode", planCode)
+	reqURL := ovh.APIBaseURLForRegion(region) + "/v1/dedicated/server/datacenter/availabilities?" + q.Encode()
+
+	client := proxy.HTTPClient(20 * time.Second)
+	resp, err := client.Get(reqURL)
+	if err != nil {
+		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败(公开接口): %s", err.Error()), "monitor")
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		err := fmt.Errorf("可用性接口返回 HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		state.Logger.Error(fmt.Sprintf("[配置监控] 获取配置可用性失败(公开接口): %s", err.Error()), "monitor")
+		return nil, err
+	}
+	var availabilities []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&availabilities); err != nil {
+		state.Logger.Error(fmt.Sprintf("[配置监控] 解析可用性响应失败(公开接口): %s", err.Error()), "monitor")
+		return nil, fmt.Errorf("解析可用性响应失败: %w", err)
+	}
+	if len(availabilities) == 0 {
+		warnEmptyAvailabilities(state, planCode, region, subsidiary)
+	}
+	return availabilities, nil
+}
+
+// warnEmptyAvailabilities 空数组 ≠ 无货:OVH 对"不属于本站点的 planCode"就是回 200 + []
+// (实测三区互查都如此),真正的缺货是有记录、availability=unavailable。必须把区域线索
+// 写进日志,否则跨区订阅(拿欧区 planCode 监控美区账户)会永远显示"取不到可用性"而查不出原因。
+func warnEmptyAvailabilities(state *app.State, planCode, region, subsidiary string) {
+	state.Logger.Warn(fmt.Sprintf("[配置监控] %s 站点(子公司 %s)没有 %s 的任何可用性记录 —— "+
+		"这不是无货,而是该 planCode 不属于这个站点(美区机型带 -us/-ca/-eu/-sgp 后缀,欧区裸 planCode 在美区查不到)",
+		region, subsidiary, planCode), "monitor")
+}
+
+// buildAvailabilityConfigs 把可用性原始数组组装成按配置组合索引的结果(含 addon 匹配)。
+// 签名 / 公开两条获取路径共用,保证数据口径完全一致。
+func buildAvailabilityConfigs(state *app.State, planCode, accountID string, availabilities []map[string]interface{}) map[string]*ConfigAvailability {
+	if len(availabilities) == 0 {
 		return map[string]*ConfigAvailability{}
 	}
 
-	if len(availabilities) == 0 {
-		// 空数组 ≠ 无货:OVH 对"不属于本站点的 planCode"就是回 200 + [](实测三区互查都如此),
-		// 真正的缺货是有记录、availability=unavailable。这里必须把区域线索写进日志,
-		// 否则跨区订阅(拿欧区 planCode 监控美区账户)会永远显示"取不到可用性"而查不出原因。
-		state.Logger.Warn(fmt.Sprintf("[配置监控] %s 站点(子公司 %s)没有 %s 的任何可用性记录 —— "+
-			"这不是无货,而是该 planCode 不属于这个站点(美区机型带 -us/-ca/-eu/-sgp 后缀,欧区裸 planCode 在美区查不到)",
-			region, subsidiary, planCode), "monitor")
-		return map[string]*ConfigAvailability{}
-	}
+	// 子公司/站点先算出来:下面所有日志都要带上它,否则"查不到"这种话在三区之间
+	// 完全没法定位到底是哪个站点在回空。
+	acc, _ := state.FindAccount(accountID)
+	subsidiary := SubsidiaryOfAccount(acc)
+	region := ovh.SubsidiaryRegion(subsidiary)
 
 	state.Logger.Info(fmt.Sprintf("[配置监控] OVH API 返回 %d 个配置组合", len(availabilities)), "monitor")
 

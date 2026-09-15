@@ -200,6 +200,7 @@ func TestParseEcoCatalogKeepsDefaultsAndInstallationFees(t *testing.T) {
 	fixture := `{
 		"locale":{"currencyCode":"EUR"},
 		"plans":[{"planCode":"24sk202","pricings":[
+			{"interval":12,"intervalUnit":"month","mode":"upfront12","price":43200000000,"tax":0,"capacities":["renew"]},
 			{"interval":1,"intervalUnit":"month","mode":"default","price":4000000000,"tax":0,"capacities":["renew"]},
 			{"interval":1,"intervalUnit":"month","mode":"default","price":1000000000,"tax":200000000,"capacities":["installation"]}
 		],"addonFamilies":[{"name":"memory","addons":["ram-32","ram-64"],"default":"ram-32"}]}],
@@ -212,11 +213,20 @@ func TestParseEcoCatalogKeepsDefaultsAndInstallationFees(t *testing.T) {
 	if currency != "EUR" || plans["24sk202"].defaultAddons["memory"] != "ram-32" {
 		t.Fatalf("默认配置或币种未保留: currency=%q defaults=%v", currency, plans["24sk202"].defaultAddons)
 	}
-	if got, want := installationAmount(plans["24sk202"].pricings), int64(1200000000); got != want {
+	// 安装费只取 price:目录的 tax 字段是"price × 税率"的展示值,
+	// 再加一遍等于收两次税(实测 KS-2 因此从 18.99 被算成 22.79)。
+	if got, want := installationAmount(plans["24sk202"].pricings), int64(1000000000); got != want {
 		t.Errorf("基础安装费 = %d, want %d", got, want)
 	}
-	if got, want := installationAmount(addons["ram-64"]), int64(600000000); got != want {
+	if got, want := installationAmount(addons["ram-64"]), int64(500000000); got != want {
 		t.Errorf("扩展项安装费 = %d, want %d", got, want)
+	}
+	// 月费只认 default 合同的 1 个月续费条目,upfront12 的整段预付价不能拿来当参考。
+	if got, ok := monthlyAmount(plans["24sk202"].pricings); !ok || got != 4000000000 {
+		t.Errorf("基础月费 = %d(ok=%v), want 4000000000(true)", got, ok)
+	}
+	if got, ok := monthlyAmount(addons["ram-64"]); ok {
+		t.Errorf("ram-64 没有月付条目时应返回 ok=false, got %d", got)
 	}
 }
 

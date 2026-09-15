@@ -19,9 +19,14 @@ import (
 type notification struct {
 	// notify 这条跳变要不要发通知。与"要不要下单"分开:
 	// 下单只看跳变本身,通知才受 NotifyAvailable/NotifyUnavailable 控制。
-	notify           bool
-	dc               string
-	status           string
+	notify bool
+	dc     string
+	status string
+	// rawStatus OVH 原样返回的可用性值(1H-low / 24H / 72H …)。
+	// status 是归一化后的 available/unavailable/price_check_failed,
+	// 丢掉原值就没法在通知里告诉用户"多久能交付、库存高还是低" ——
+	// 而这正是决定要不要立刻下单的信息。
+	rawStatus        string
 	oldStatus        string
 	hasOld           bool
 	statusKey        string
@@ -383,13 +388,24 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 
 	// 监控用选中账户的 subsidiary 拉 catalog,这样跨子公司 multi-account
 	// 触发 auto-order 时,options 匹配能命中目标账户独有的项。
-	currentAvailability := catalog.CheckServerAvailabilityWithConfigs(m.state, planCode, choice.accountID)
+	//
+	// 走免鉴权公开接口(与签名 client 同一端点、同一数据):签名请求要过账户出口 IP
+	// 闸门,出口异常时逐个请求排队复检,整轮检查被拖住,前端只显示"检查可能停滞" ——
+	// 监控主链路不该被下单侧的 fail-closed 闸门拖死。库存查询不带账户身份,
+	// 改公开后出口 IP 异常只影响下单/询价(它们另有闸门保护)。
+	currentAvailability, availErr := catalog.CheckServerAvailabilityPublic(m.state, planCode, choice.accountID)
 	if len(currentAvailability) == 0 {
 		// 区分两种"空":选到了区域正确的账户还是空 → OVH 侧问题;
 		// 用的账户其实在别的大区 → 区域配错,必须说清楚,不能只丢一句"无法获取"。
 		reason := choice.degradeReason
 		if reason == "" {
-			reason = m.explainEmptyAvailability(planCode, choice)
+			if availErr != nil {
+				// 真实错误优先:把"查询失败(网络/HTTP/账户缺失)"说成
+				// "机型可能已下架"会把用户引向完全错误的方向。
+				reason = "获取可用性失败: " + availErr.Error()
+			} else {
+				reason = m.explainEmptyAvailability(planCode, choice)
+			}
 		}
 		sub.setCheckError(reason)
 		if reason != prevErr {
@@ -587,6 +603,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				n := notification{
 					dc:               dc,
 					status:           actualStatus,
+					rawStatus:        ds.status,
 					oldStatus:        ds.oldStatus,
 					hasOld:           ds.hasOld,
 					statusKey:        ds.statusKey,
@@ -607,7 +624,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			lastStatus[ds.statusKey] = actualStatus
 		}
 
-		// 价格查询（同一配置只查一次）
+		// 购物车询价（同一配置只查一次）。
+		// 结果不再直接进通知:购物车返回的是首期账单总额（一个月的月费 + 一次性安装费），
+		// 通知里的月费改用公开目录；这里留下的失败原因仍会随通知展示。
 		var priceText string
 		var priceFetchError string
 		hasAvail := false
@@ -630,7 +649,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				if priceText != "" {
 					m.state.Logger.Debug(fmt.Sprintf("配置 %s 价格获取成功: %s，将在所有通知中复用", configDisplay, priceText), "monitor")
 				} else {
-					m.state.Logger.Warn(fmt.Sprintf("配置 %s 价格获取失败，通知中不包含价格信息", configDisplay), "monitor")
+					m.state.Logger.Warn(fmt.Sprintf("配置 %s 购物车价格探活失败，通知月费将改用公开目录数据", configDisplay), "monitor")
 					if priceFetchError == "" {
 						priceFetchError = "价格接口未返回结果"
 					}
@@ -695,12 +714,24 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			m.state.Logger.Info(fmt.Sprintf("准备发送汇总提醒: %s [%s] - %d个机房有货",
 				planCode, configDisplay, len(availables)), "monitor")
 			configInfoWithPrice := copyMap(priceCfg)
-			if priceText != "" {
-				configInfoWithPrice["cached_price"] = priceText
+			// 月费从公开目录算:购物车询价返回的是首期账单总额
+			// (一个月的月费 + 一次性安装费),当成"月费"展示会整整多出一份安装费。
+			monthlyText := m.monthlyPriceText(planCode, choice.accountID, configData.Options)
+			if monthlyText != "" {
+				configInfoWithPrice["cached_price"] = monthlyText
+			}
+			// 安装费从公开目录算(已缓存 2 小时,不占账户配额)。
+			// 不走询价接口:那个要真的建购物车再删,一次好几秒 ——
+			// 而补货通知的全部价值就在于"有货那一刻立刻发出去"。
+			if ip := m.installPriceText(planCode, choice.accountID, configData.Options); ip != "" {
+				configInfoWithPrice["install_price"] = ip
 			}
 			availDCs := make([]map[string]interface{}, 0, len(availables))
 			for _, n := range availables {
 				dcInfo := map[string]interface{}{"dc": n.dc, "status": n.status}
+				if n.rawStatus != "" {
+					dcInfo["raw_status"] = n.rawStatus
+				}
 				if n.durationText != "" {
 					dcInfo["duration_text"] = n.durationText
 				}
@@ -714,7 +745,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				configTraceForNotif = availables[0].configTraceID
 			}
 			errIfNoPrice := ""
-			if priceText == "" {
+			if monthlyText == "" {
 				errIfNoPrice = priceFetchError
 			}
 			m.SendAvailabilityAlertGrouped(planCode, availDCs, configInfoWithPrice, cfg.ServerName,
@@ -738,10 +769,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		for _, n := range priceFailed {
 			m.state.Logger.Info(fmt.Sprintf("准备发送价格校验失败提醒: %s@%s [%s] - 可用性有货但价格校验失败",
 				planCode, n.dc, configDisplay), "monitor")
-			priceTextFailed := m.GetPriceInfoText(planCode, n.dc, priceCfg)
 			configInfoFailed := copyMap(priceCfg)
-			if priceTextFailed != "" {
-				configInfoFailed["cached_price"] = priceTextFailed
+			if mp := m.monthlyPriceText(planCode, choice.accountID, configData.Options); mp != "" {
+				configInfoFailed["cached_price"] = mp
 				configInfoFailed["price_check_error"] = n.priceCheckError
 			}
 			m.SendAvailabilityAlert(planCode, n.dc, "unavailable", "price_check_failed",

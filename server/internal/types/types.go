@@ -45,16 +45,76 @@ type Config struct {
 	// TgWebhookSecretRegistered secret 是否已经推给 Telegram（setWebhook 成功过）。
 	// false 时 webhook 处于兼容模式：不强制校验 secret，避免升级后老用户的按钮直接全挂。
 	TgWebhookSecretRegistered bool `json:"tgWebhookSecretRegistered,omitempty"`
+
+	// DefaultRetryInterval 新建抢购任务的默认重试间隔(秒)。
+	// 网页弹窗、TG /buy、上架通知里的一键下单按钮不显式指定时都用它。
+	// 以前四条入队路径各写各的(30 / 30 / 30,前端弹窗还显示 60),用户既改不了也对不上。
+	DefaultRetryInterval int `json:"defaultRetryInterval,omitempty"`
+	// QuickOrderRetryInterval 监控触发的自动下单(/watch 自动抢)用的重试间隔(秒)。
+	// 单独一个值是因为场景不同:货刚出现那一刻要抢,窗口可能只有几十秒,
+	// 所以默认比普通任务激进得多;但太密会吃 OVH 的 429,这里交给用户自己权衡。
+	QuickOrderRetryInterval int `json:"quickOrderRetryInterval,omitempty"`
+}
+
+// 重试间隔的默认值与合法区间(秒)。
+const (
+	DefaultTaskRetryInterval  = 60
+	DefaultQuickRetryInterval = 2
+	MinRetryInterval          = 1
+	MaxRetryInterval          = 86400
+)
+
+// ClampRetryInterval 把重试间隔夹到合法区间;<= 0 视为"没设",退回 fallback。
+//
+// 处理器、入队路径、设置保存都走这一个函数。0 必须兜住:处理器的就绪判断是
+// `now - last >= interval`,间隔为 0 时恒真,任务会每秒重试一次把 OVH 刷到 429 ——
+// 旧库里 retry_interval 列后加的行、任何忘了设这个字段的入队路径都会踩到。
+func ClampRetryInterval(v, fallback int) int {
+	if v <= 0 {
+		v = fallback
+	}
+	if v < MinRetryInterval {
+		return MinRetryInterval
+	}
+	if v > MaxRetryInterval {
+		return MaxRetryInterval
+	}
+	return v
 }
 
 // DefaultConfig 默认配置
 func DefaultConfig() Config {
 	return Config{
-		Endpoint: "ovh-eu",
-		IAM:      "go-ovh-ie",
-		Zone:     "IE",
+		Endpoint:                "ovh-eu",
+		IAM:                     "go-ovh-ie",
+		Zone:                    "IE",
+		DefaultRetryInterval:    DefaultTaskRetryInterval,
+		QuickOrderRetryInterval: DefaultQuickRetryInterval,
 	}
 }
+
+// —— 下单规模上限 ——
+//
+// 这几个数原来只写在 telegram 包里,于是只有 TG 那条路受保护。
+// 网页端建任务的循环是 `for dc { for i < qty { POST /queue } }`,两个上界都没有:
+// 数量填 9999、选 5 个机房 = 约 5 万次串行请求,浏览器卡死、库里塞 5 万条任务,
+// 而每一条都是一次真实的下单尝试。多打一个数字的代价不该是这个。
+//
+// 放在 types 里是为了让所有入队路径共用同一份约束 —— 之前"能力在一条路径有、
+// 另一条没有"已经出过好几次问题了。
+const (
+	// MaxOrderQuantity 单个机房最多下几台。
+	// 没有上限时 "planCode 4000000000" 会让入队方先把 40 亿个 QueueItem
+	// append 进一个切片 —— 进程当场 OOM 被杀。
+	MaxOrderQuantity = 20
+	// MaxOrderFanout 一次操作最多创建多少个抢购任务。
+	// 不指定机房时任务数 = 配置数 × 机房数 × 数量,很容易远超用户直觉。
+	MaxOrderFanout = 60
+	// MaxQueueItems 队列里最多存多少条任务。
+	// 这是最后一道闸:不管任务从哪条路进来(网页 / 快速下单 / TG / 监控自动下单),
+	// 超过这个数一律拒绝。每条任务都是一次真实下单尝试,正常用法离这个数很远。
+	MaxQueueItems = 500
+)
 
 // LogEntry 日志条目（字段名与前端 JSON 结构一致）
 type LogEntry struct {
