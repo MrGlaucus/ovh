@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser } from "lucide-react";
+import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -118,6 +118,29 @@ function parseStoredTime(value: string): Date {
 function getExpirationMs(item: PurchaseHistory): number {
   if (item.expirationTime) return new Date(item.expirationTime).getTime();
   return parseStoredTime(item.purchaseTime).getTime() + ORDER_VALIDITY_MS;
+}
+
+/**
+ * 退款窗口截止:OVH 的 14 天撤回权(right of withdrawal),官方政策为
+ * 「自下单次日起 14 天内」。次日算第 1 天,第 14 天结束即下单日之后第 15 天的
+ * 00:00(本地时区)。窗口只跟下单时间走,早付晚付一样长。
+ */
+const REFUND_WINDOW_DAYS = 14;
+function getRefundDeadlineMs(item: PurchaseHistory): number {
+  const d = parseStoredTime(item.purchaseTime);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1 + REFUND_WINDOW_DAYS).getTime();
+}
+
+function fmtDeadline(deadlineMs: number): string {
+  return new Date(deadlineMs).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function refundWindowTitle(deadlineMs: number): string {
+  return `退款窗口（OVH 14 天撤回权）：自下单次日起 14 天内可申请取消退款，截止 ${fmtDeadline(deadlineMs)}`;
+}
+
+function refundExpiredTitle(deadlineMs: number): string {
+  return `退款窗口（OVH 14 天撤回权）已结束，已于 ${fmtDeadline(deadlineMs)} 截止`;
 }
 
 function HistoryPage() {
@@ -366,6 +389,15 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
   const isExpired = showCountdown && remainingMs <= 0;
   const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
+  // 退款窗口:已付款订单都显示(OVH 14 天撤回权;未付款订单不适用——到期
+  // 自动取消)。窗口只跟下单时间走,交付快慢不影响。窗口内显示倒计时,
+  // 过期后换灰色的"已结束" —— 还能不能退款,答案都要在列表上。
+  const refundDeadlineMs = st.paid ? getRefundDeadlineMs(item) : 0;
+  const hasRefundWindow = item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
+  const showRefund = hasRefundWindow && refundDeadlineMs > now;
+  const refundExpired = hasRefundWindow && refundDeadlineMs <= now;
+  const refundRemainingMs = showRefund ? refundDeadlineMs - now : 0;
+  const refundUrgent = showRefund && refundRemainingMs < 3 * 24 * 60 * 60 * 1000;
   const delayLabel = item.delaySeconds && item.delaySeconds > 0 ? `有货后延迟 ${item.delaySeconds}s` : "立即抢购";
   return (
     <tr className={`text-[13px] hover:bg-muted ${isExpired ? "opacity-60" : ""}`}>
@@ -393,6 +425,16 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
               <Hourglass className="w-3 h-3" />{formatCountdown(remainingMs)}
             </Chip>
           )}
+          {showRefund && (
+            <Chip tone={refundUrgent ? "warning" : "info"} title={refundWindowTitle(refundDeadlineMs)}>
+              <RotateCcw className="w-3 h-3" />退款 {formatCountdown(refundRemainingMs)}
+            </Chip>
+          )}
+          {refundExpired && (
+            <Chip tone="default" title={refundExpiredTitle(refundDeadlineMs)}>
+              <RotateCcw className="w-3 h-3" />退款窗口已结束
+            </Chip>
+          )}
         </div>
       </td>
       <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
@@ -416,6 +458,12 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
   const isExpired = showCountdown && remainingMs <= 0;
   const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
+  const refundDeadlineMs = st.paid ? getRefundDeadlineMs(item) : 0;
+  const hasRefundWindow = item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
+  const showRefund = hasRefundWindow && refundDeadlineMs > now;
+  const refundExpired = hasRefundWindow && refundDeadlineMs <= now;
+  const refundRemainingMs = showRefund ? refundDeadlineMs - now : 0;
+  const refundUrgent = showRefund && refundRemainingMs < 3 * 24 * 60 * 60 * 1000;
   return (
     <Card className={isExpired ? "opacity-60" : ""}>
       <CardContent className="p-4 space-y-3">
@@ -440,7 +488,15 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
           {item.price?.withTax != null && <HistoryPrice item={item} strike={isExpired} />}
         </div>
         <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-          {showCountdown ? <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"} title="付款窗口：倒计时结束前未付款订单会作废"><Hourglass className="w-3 h-3" />{formatCountdown(remainingMs)}</Chip> : <span />}
+          {showCountdown ? (
+            <Chip tone={isExpired ? "danger" : isUrgent ? "warning" : "info"} title="付款窗口：倒计时结束前未付款订单会作废"><Hourglass className="w-3 h-3" />{formatCountdown(remainingMs)}</Chip>
+          ) : showRefund ? (
+            <Chip tone={refundUrgent ? "warning" : "info"} title={refundWindowTitle(refundDeadlineMs)}><RotateCcw className="w-3 h-3" />退款 {formatCountdown(refundRemainingMs)}</Chip>
+          ) : refundExpired ? (
+            <Chip tone="default" title={refundExpiredTitle(refundDeadlineMs)}><RotateCcw className="w-3 h-3" />退款窗口已结束</Chip>
+          ) : (
+            <span />
+          )}
           <div className="flex items-center gap-4 whitespace-nowrap">
             {canPay && <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款"><CreditCard className="w-3 h-3" />付款</button>}
             <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录"><Trash2 className="w-3 h-3" />删除</button>
