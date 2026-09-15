@@ -240,9 +240,9 @@ func showTelegramAccountChoices(state *app.State, mon *monitor.Monitor, cb map[s
 	if !exists || row.UsedAt > 0 || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
 		return fmt.Errorf("按钮已失效")
 	}
-	if row.AccountID == "" {
-		return fmt.Errorf("按钮缺少账户归属")
-	}
+	// 历史通知的按钮可能没记下账户归属（生成时账户解析降级为空）。
+	// 直接报错会让按钮永久失效；CompatibleOrderAccounts 对空 id 退回
+	// 默认账户再取同区域列表，与下单侧的兜底一致。
 	accounts := mon.CompatibleOrderAccounts(row.AccountID)
 	if len(accounts) < 2 {
 		return fmt.Errorf("没有两个同区域可用账户")
@@ -432,6 +432,37 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载配置", false)
 		if err := sendBuyConfigurationChoices(state, chatID, int64(messageID), planCode); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载配置选择："+err.Error(), int64(messageID))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	if action == "menu" {
+		// 上架通知的入口按钮：进入与 /buy 选完型号后相同的
+		// 「配置 → 机房 → 账户」选购链，每一步都按当前实时库存生成。
+		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
+		if planCode == "" {
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效，请等待新的通知", true)
+			c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_plan_code"})
+			return
+		}
+		if state.DB == nil {
+			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "数据库不可用", true)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
+			return
+		}
+		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载配置", false)
+		ref, err := telegram.SendMessageWithRef(state, "🛒 正在加载配置选项…", nil)
+		if err != nil {
+			telegram.SendReply(state, chatID, "❌ 无法加载配置选择："+err.Error(), int64(messageID))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
+			return
+		}
+		// 菜单在占位消息上就地编辑：通知消息本身继续承担下架编辑的职责。
+		if err := sendBuyConfigurationChoices(state, ref.ChatID, ref.MessageID, planCode); err != nil {
+			// 占位消息已发出，把它编辑成失败原因，不留一条永远"加载中"的消息。
+			_ = telegram.EditMessageText(state, ref.ChatID, ref.MessageID, "❌ 无法加载配置选择："+err.Error(), nil)
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
 			return
 		}

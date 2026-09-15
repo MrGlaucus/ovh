@@ -219,11 +219,27 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 		Text         string `json:"text"`
 		CallbackData string `json:"callback_data"`
 	}
+	// 新格式通知（无机房按钮）的按钮是单颗选购入口，与机房状态无关：
+	// 编辑时始终保留，点进去的菜单按当时实时库存生成。
+	// 旧格式通知每机房一颗按钮，仍按"未下架保留、已下架移除"重建。
+	hasLegacyButtons := false
+	for _, dc := range snapshot.Datacenters {
+		if strings.TrimSpace(dc.ButtonID) != "" {
+			hasLegacyButtons = true
+			break
+		}
+	}
 	keyboard := [][]button{}
 	line := []button{}
+	if !hasLegacyButtons {
+		keyboard = append(keyboard, []button{{Text: telegramBuyMenuButtonText, CallbackData: telegramBuyMenuCallback(snapshot.Session.PlanCode)}})
+	}
 	for _, dc := range snapshot.Datacenters {
 		if dc.ClosedAt == 0 {
 			allClosed = false
+			if !hasLegacyButtons {
+				continue
+			}
 			action := "add_to_queue"
 			if strings.Contains(dc.ButtonText, "选择账户下单") {
 				action = "choose"
@@ -278,76 +294,9 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
-// resolveNotifyAccountID 决定「这条上架通知生成的一键下单按钮该落到哪个 OVH 账户」。
-//
-// 为什么必须解析出账户:planCode 是分区的(EU / US / CA 三份目录基本不重合,
-// 实测 US 目录 143 个 planCode 里只有少数与 EU 重合)。按钮不带账户时 webhook 只能
-// 用「默认账户」下单,多账户跨区的人就会把欧区机型下到美区账户上 —— OVH 返回
-// 200 + 空库存而不是报错,队列一直重试到过期,用户看不出是账户选错了。
-//
-// 优先级:
-//  1. explicit —— 调用方(check.go)显式传进来的账户,最权威;
-//  2. sub.AutoOrderAccountID —— 用户为这条订阅明确指定的下单账户,与自动下单走同一个;
-//  3. sub.LastCheckAccountID —— 本轮真正查到这批库存的账户,它的大区一定含这个 planCode。
-//
-// 只接受在账户表里还存在的 id:订阅里可能留着已删除账户的 id,存进按钮只会让回调
-// 在几小时后才失败,不如当场退回默认账户。
-//
-// 锁:这里取 subsMu。调用链是 monitorLoop → runSubscriptionCheck → CheckAvailabilityChange
-// → 本函数,全程不持有 subsMu(loop.go 只在拷贝订阅列表时短暂加锁),不会自锁。
-// 注意 SendNewServerAlert 是在 CheckNewServers 持有 subsMu 时调用的,那条路径没有按钮,
-// 也不要在它里面调本函数。
-func (m *Monitor) resolveNotifyAccountID(planCode string, explicit ...string) string {
-	valid := func(id string) string {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return ""
-		}
-		if acc, ok := m.state.FindAccount(id); ok && acc.ID == id {
-			return id
-		}
-		return ""
-	}
-	for _, id := range explicit {
-		if v := valid(id); v != "" {
-			return v
-		}
-	}
-
-	// 订阅的可变字段必须走 s 自己的锁(types.go 里立的约定):
-	// LastCheckAccountID 的写者是检查 goroutine 的 beginCheck(只持 s.mu、不持 subsMu),
-	// 这里只持 subsMu 裸读就是无同步的读-写竞争。
-	// 先在 subsMu 下把指针挑出来,再逐个取带锁快照。
-	m.subsMu.Lock()
-	matched := make([]*Subscription, 0, 2)
-	for _, sub := range m.subscriptions {
-		if sub != nil && sub.PlanCode == planCode {
-			matched = append(matched, sub)
-		}
-	}
-	m.subsMu.Unlock()
-
-	var autoOrder, lastCheck string
-	for _, sub := range matched {
-		snap := sub.snapshot()
-		if autoOrder == "" {
-			autoOrder = snap.AutoOrderAccountID
-		}
-		if lastCheck == "" {
-			lastCheck = snap.LastCheckAccountID
-		}
-	}
-
-	if v := valid(autoOrder); v != "" {
-		return v
-	}
-	return valid(lastCheck)
-}
-
-// accountID 是可变参数而不是必填形参:写入口 check.go 不在本次改动范围内,
-// 加必填形参会直接编译不过。传了就用传的,没传就由 resolveNotifyAccountID 反查订阅。
-// CompatibleOrderAccounts 返回与本次发现库存账户同一区域的可下单账户。
+// CompatibleOrderAccounts 返回与参照账户同一区域的可下单账户。
 // 同一区域的 OVH 库存视图相通；跨 EU/US/CA 账户下单只会得到空库存，故不展示。
+// 空 id（历史通知按钮没记下账户归属）退回默认账户再取区域，与下单侧兜底一致。
 func (m *Monitor) CompatibleOrderAccounts(referenceAccountID string) []types.OVHAccount {
 	reference, ok := m.state.FindAccount(referenceAccountID)
 	if !ok {
@@ -365,15 +314,26 @@ func (m *Monitor) CompatibleOrderAccounts(referenceAccountID string) []types.OVH
 	return accounts
 }
 
+// telegramBuyMenuButtonText 是上架通知入口按钮的文案：
+// 点开后进入与 /buy 选完型号一致的「配置 → 机房 → 账户」选购链。
+const telegramBuyMenuButtonText = "🛒 选择配置下单"
+
+// telegramBuyMenuCallback 组装上架通知入口按钮的回调数据。
+// 按钮与机房、账户都无关，planCode 明文即可：点击后每一步都会按实时库存重新校验。
+func telegramBuyMenuCallback(planCode string) string {
+	cb, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode})
+	return string(cb)
+}
+
 // buildAvailabilityAlert 拼出上架通知的正文和按钮。
 //
 // 从 SendAvailabilityAlertGrouped 里拆出来，是为了能在测试里直接看到
 // 用户真正会收到的那段文字 —— 通知的排版是这个工具的门面，
 // 以前只能靠真的触发一次补货才看得见。
-// 注意它有副作用：会把按钮 UUID 写进 telegram_order_buttons。
+// 按钮只有一颗「选择配置下单」入口：点击后走与 /buy 相同的
+// 「配置 → 机房 → 账户」链，每一步按点击那一刻的实时库存生成。
 func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[string]interface{},
-	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
-	accountID ...string) (string, map[string]interface{}) {
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string) (string, map[string]interface{}) {
 
 	var msg strings.Builder
 	msg.WriteString("🎉 服务器上架通知\n\n")
@@ -469,79 +429,26 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	_ = traceID
 	_ = configTraceID
 
-	// 构建按钮（每行最多 2 个）
+	// 下单按钮是一颗入口，而不是每个机房一颗：点击后进入与 /buy
+	// 选完型号完全相同的「配置 → 机房 → 账户」链，每一步都按点击那一刻的
+	// 实时库存生成。通知里的机房列表只用于展示，不参与下单决策，
+	// 因此也不再有"机房下架导致按钮失效"的问题。
 	type btn struct {
 		Text         string `json:"text"`
 		CallbackData string `json:"callback_data"`
 	}
-	keyboard := [][]btn{}
-	row := []btn{}
-	options := []string{}
-	// 同一条通知的所有机房按钮共用 menu ID，账户选择页可据此安全地恢复原机房列表。
-	buttonConfigInfo := make(map[string]interface{}, len(configInfo)+1)
-	for key, value := range configInfo {
-		buttonConfigInfo[key] = value
-	}
-	buttonConfigInfo["telegram_menu_id"] = uuid.NewString()
-	if configInfo != nil {
-		if opts, ok := configInfo["options"].([]string); ok {
-			options = opts
-		} else if optsRaw, ok := configInfo["options"].([]interface{}); ok {
-			for _, o := range optsRaw {
-				if s, ok := o.(string); ok {
-					options = append(options, s)
-				}
-			}
-		}
-	}
-	btnAccountID := m.resolveNotifyAccountID(planCode, accountID...)
-	eligibleAccounts := m.CompatibleOrderAccounts(btnAccountID)
-	if btnAccountID == "" {
-		// 不是错误:单账户用户、或订阅没勾自动下单时本来就没有账户维度。
-		// 记一行是为了在"按钮下到了错误大区"的事故里能一眼看出按钮当时是无账户的。
-		m.state.Logger.Debug("一键下单按钮无法解析账户归属，回调时将退回默认账户: "+planCode, "monitor")
-	}
-	for idx, dcInfo := range availableDCs {
-		dc, _ := dcInfo["dc"].(string)
-		msgUUID := uuid.NewString()
-		// 账户与按钮同一次写入数据库；选择账户的交互必须依赖这条绑定信息。
-		m.AddMessageUUIDForAccount(msgUUID, btnAccountID, planCode, dc, options, buttonConfigInfo)
-		m.state.Logger.Debug(fmt.Sprintf("生成消息UUID: %s, 配置: %s@%s, options=%v, account=%s",
-			msgUUID, planCode, dc, options, btnAccountID), "monitor")
-
-		action := "add_to_queue"
-		buttonText := DisplayDatacenterShortName(dc) + " 一键下单"
-		if len(eligibleAccounts) > 1 {
-			action = "choose"
-			buttonText = DisplayDatacenterShortName(dc) + " 选择账户下单"
-		}
-		cb := map[string]string{"a": action, "u": msgUUID}
-		cbStr, _ := json.Marshal(cb)
-		if len(cbStr) > 64 {
-			m.state.Logger.Warn(fmt.Sprintf("UUID callback_data异常长: %d字节, UUID=%s", len(cbStr), msgUUID), "monitor")
-		}
-		dcInfo["notification_button_id"] = msgUUID
-		dcInfo["notification_button_text"] = buttonText
-		row = append(row, btn{
-			Text:         buttonText,
-			CallbackData: string(cbStr),
-		})
-		if len(row) >= 2 || idx == len(availableDCs)-1 {
-			keyboard = append(keyboard, row)
-			row = nil
-		}
-	}
-	replyMarkup := map[string]interface{}{"inline_keyboard": keyboard}
-	return msg.String(), replyMarkup
+	keyboard := [][]btn{{
+		{Text: telegramBuyMenuButtonText, CallbackData: telegramBuyMenuCallback(planCode)},
+	}}
+	return msg.String(), map[string]interface{}{"inline_keyboard": keyboard}
 }
 
 // SendAvailabilityAlertGrouped 拼好通知并广播出去。
 func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []map[string]interface{},
-	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string,
-	accountID ...string) {
+	configInfo map[string]interface{}, serverName string, priceErrorMessage string, traceID, configTraceID string) {
 
 	msgText, replyMarkup := m.buildAvailabilityAlert(planCode, availableDCs, configInfo,
-		serverName, priceErrorMessage, traceID, configTraceID, accountID...)
+		serverName, priceErrorMessage, traceID, configTraceID)
 
 	configDesc := ""
 	if configInfo != nil {
