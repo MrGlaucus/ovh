@@ -56,6 +56,12 @@ export default {
         // 满世界的 bg-info/text-info 类全都没生成 —— 蓝色系状态（付款核验中、
         // 交付中、延迟等）实际渲染出来是无色的。补上映射让设计意图生效。
         info: "hsl(var(--info))",
+        // 进行中状态（「已付款·交付中」）专用紫：蓝被「付款核验中/退款窗口」
+        // 占用，绿是终态「已交付」，黄/红/灰各归警告/错误/中性，只剩紫可用。
+        progress: "hsl(var(--progress))",
+        // 「付款核验中」专用青：色相盘里仅剩的冷色空位（红/黄/绿/蓝/紫已占），
+        // 与退款窗口的蓝、交付中的紫都能拉开。
+        processing: "hsl(var(--processing))",
         "button-primary": {
           DEFAULT: "hsl(var(--button-primary))",
           foreground: "hsl(var(--button-primary-foreground))",

@@ -45,6 +45,8 @@
     --success: 142 71% 45%;             /* #22c55e */
     --warning: 38 92% 50%;              /* #f59e0b */
     --info: 217 91% 60%;                /* #3b82f6 */
+    --progress: 258 90% 66%;            /* #8b5cf6 紫：进行中（交付中），与蓝/绿/黄/红拉开 */
+    --processing: 173 80% 40%;          /* #14b8a6 青：付款核验中（进行中），与蓝/紫/绿区分 */
 
     /* 主按钮独立 token（CTA 提交/确认/购买，与品牌色解耦） */
     --button-primary: 0 0% 9%;
@@ -88,6 +90,8 @@
     --success: 142 65% 50%;
     --warning: 38 85% 55%;
     --info: 217 85% 65%;
+    --progress: 255 90% 76%;            /* #a78bfa */
+    --processing: 173 66% 50%;          /* #2dd4bf */
 
     --button-primary: 0 0% 96%;
     --button-primary-foreground: 0 0% 9%;

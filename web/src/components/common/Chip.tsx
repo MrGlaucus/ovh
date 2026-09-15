@@ -4,10 +4,10 @@ import { cn } from "@/lib/utils";
 /**
  * 胶囊状态徽章。tone 决定语义色：
  * - default: 灰底深字
- * - success / warning / danger / info: 各自的语义浅底深字
+ * - success / warning / danger / info / progress / processing: 各自的语义浅底深字
  * - solid: 全黑底白字（强调）
  */
-type Tone = "default" | "success" | "warning" | "danger" | "info" | "solid";
+type Tone = "default" | "success" | "warning" | "danger" | "info" | "progress" | "processing" | "solid";
 
 const toneClasses: Record<Tone, string> = {
   default: "bg-secondary text-foreground border border-border",
@@ -15,6 +15,8 @@ const toneClasses: Record<Tone, string> = {
   warning: "bg-warning/10 text-warning border border-warning/30",
   danger: "bg-destructive/10 text-destructive border border-destructive/30",
   info: "bg-info/10 text-info border border-info/30",
+  progress: "bg-progress/10 text-progress border border-progress/30",
+  processing: "bg-processing/10 text-processing border border-processing/30",
   solid: "bg-button-primary text-button-primary-foreground",
 };
 
