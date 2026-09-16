@@ -287,8 +287,9 @@ export interface PriceInfo {
   currency: string;
 }
 
-// Eco 目录常有 10MB 以上；必须比服务端 catalogFetchTimeout 更长，避免浏览器先中止。
-const CATALOG_REQUEST_TIMEOUT_MS = 120_000;
+// Eco 目录常有 10MB 以上；必须比服务端 catalogFetchTimeout（300s）更长，避免浏览器先中止。
+// 慢代理下整份目录跑两三分钟是常态；导出供 OvhCredsGate 的预热请求复用，口径保持一致。
+export const CATALOG_REQUEST_TIMEOUT_MS = 330_000;
 
 /**
  * 拉取 OVH 公共目录（每个 subsidiary 各自一份：不同币、不同税、不同促销价）。

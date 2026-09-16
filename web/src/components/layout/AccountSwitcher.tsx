@@ -45,6 +45,33 @@ export function AccountSwitcher({
     refetchInterval: 30_000,
   });
 
+  // 账号代理的四态判定:直连 / 已确认 / 被阻断 / 检测中。
+  // 桌面侧栏按钮、手机胶囊圆点、手机切换面板里的详情共用这一份 —— 同一个问题
+  // 三处各写一遍判定,迟早漂移成"检测中"和"已阻断"谁优先都不一致。
+  const proxyState: "direct" | "ok" | "blocked" | "checking" = isDirect
+    ? "direct"
+    : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false
+      ? "blocked"
+      : proxyStatus.data
+        ? "ok"
+        : "checking";
+
+  const proxyDotClass: Record<"direct" | "ok" | "blocked" | "checking", string> = {
+    direct: "bg-muted-foreground",
+    ok: "bg-success",
+    blocked: "bg-destructive",
+    checking: "bg-warning",
+  };
+
+  const proxyLabel =
+    proxyState === "direct"
+      ? "账号代理：直连"
+      : proxyState === "checking"
+        ? "账号代理：检测中"
+        : proxyState === "blocked"
+          ? "账号代理：出口 IP 未确认（OVH 已阻断）"
+          : `账号代理：出口 IP 已确认${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`;
+
   // 按 API endpoint 区域分组,组内保持后端给的顺序(默认账户通常在前)。
   // 认不出子公司的账户单独归到「未知区」,不并进欧区 —— 猜错区 = 下单打错站点。
   const grouped = useMemo(() => {
@@ -139,6 +166,14 @@ export function AccountSwitcher({
                 三区 planCode 互不相通,拿欧区机型配美区账户必然被拒。 */}
             {compact ? (
               <span className="min-w-0 flex-1 flex items-center gap-1.5">
+                {/* 手机顶栏塞不下完整的状态按钮,但状态不能退化成"打开面板才知道" ——
+                    一个小圆点带着同样的四态颜色,颜色语义和侧栏按钮完全一致 */}
+                {active && (
+                  <span
+                    className={cn("flex-shrink-0 w-1.5 h-1.5 rounded-full", proxyDotClass[proxyState])}
+                    title={proxyLabel}
+                  />
+                )}
                 <span className="text-[13px] font-medium truncate">{active?.name || "选择账户"}</span>
                 {active && (
                   <span
@@ -229,6 +264,72 @@ export function AccountSwitcher({
               </div>
             ))}
           </div>
+          {/* 手机端(compact):账号代理状态放这里。顶栏只有 48px 高,塞不下常驻按钮,
+              但完全不给入口的话手机上就看不到账户级出口 IP 的状态了 ——
+              右上角那个 ProxyStatus 是公共代理(Telegram/GitHub 这类不带账户签名的请求),
+              顶替不了这里。桌面端有侧栏下方的独立「账号代理」按钮,不需要这份。 */}
+          {compact && (
+            <div className="border-t border-border mt-1 px-2 pt-2 pb-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className={cn("flex-shrink-0 w-1.5 h-1.5 rounded-full", proxyDotClass[proxyState])} />
+                <span
+                  className={cn(
+                    "min-w-0 flex-1 text-[10.5px] leading-snug",
+                    proxyState === "direct"
+                      ? "text-muted-foreground"
+                      : proxyState === "blocked"
+                        ? "text-destructive"
+                        : proxyState === "checking"
+                          ? "text-warning"
+                          : "text-success"
+                  )}
+                >
+                  {proxyLabel}
+                </span>
+                <button
+                  onClick={() => proxyStatus.refetch()}
+                  disabled={proxyStatus.isFetching}
+                  className="flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md border border-border text-muted-foreground hover:bg-muted disabled:opacity-60"
+                  title="重新检测"
+                >
+                  <RefreshCw className={cn("w-3 h-3", proxyStatus.isFetching && "animate-spin")} />
+                </button>
+              </div>
+              {proxyState !== "direct" && (
+                <div className="mt-1 space-y-0.5 text-[10px] leading-snug text-muted-foreground">
+                  <p className="flex items-baseline gap-1.5">
+                    <span className="flex-shrink-0">预期</span>
+                    <span className="font-mono text-foreground truncate">
+                      {proxyStatus.data?.expectedOutboundIp || active?.expectedOutboundIp || "未配置"}
+                    </span>
+                  </p>
+                  <p className="flex items-baseline gap-1.5">
+                    <span className="flex-shrink-0">实际</span>
+                    <span className={cn("font-mono truncate", proxyState === "ok" ? "text-success" : "text-destructive")}>
+                      {proxyStatus.data?.actualOutboundIp || "未确认"}
+                    </span>
+                  </p>
+                  <p>
+                    {proxyStatus.data?.outboundIpCheckedAt
+                      ? `上次检查 ${new Date(proxyStatus.data.outboundIpCheckedAt).toLocaleString("zh-CN")}（每 30 秒复检）`
+                      : "尚未检查（每 30 秒自动复检）"}
+                  </p>
+                  {proxyState === "blocked" && (
+                    <p className="text-destructive break-all">
+                      {proxyStatus.data?.outboundIpError ||
+                        (!proxyStatus.data ? "状态读取失败，30 秒后自动重试" : "出口 IP 未确认，OVH 已阻断")}
+                    </p>
+                  )}
+                  {proxyStatus.data?.ovhAuthStatus === "failed" && (
+                    <p className="text-destructive">OVH 凭据：{proxyStatus.data.ovhAuthError || "验证失败"}</p>
+                  )}
+                </div>
+              )}
+              <p className="mt-1 text-[9.5px] leading-snug text-muted-foreground/80">
+                仅覆盖「{active?.name || "当前账户"}」的签名 OVH 请求,和右上角的公共代理是两回事。
+              </p>
+            </div>
+          )}
           <Link
             to="/settings"
             onClick={() => {
@@ -242,16 +343,29 @@ export function AccountSwitcher({
           </Link>
         </PopoverContent>
       </Popover>
-      {/* 账号代理详情与站点说明只在侧栏版出现。顶栏只有 48px 高，
-          多这几行会把它撑破；手机上代理状态由顶栏的 ProxyStatus 显示，
-          同样的站点说明也已放进下拉面板顶部。 */}
+      {/* 侧栏版才有这块常驻按钮+详情;顶栏只有 48px 高放不下,手机端的账号代理状态
+          在切换面板内(compact 分支),外加胶囊上的状态圆点。
+          注意右上角的 ProxyStatus 是公共代理(Telegram/GitHub 这类不带账户签名的
+          请求),和这里的账号级出口 IP 状态是两回事,顶替不了。 */}
       {!compact && (
         <>
           <Popover open={proxyOpen} onOpenChange={setProxyOpen}>
             <PopoverTrigger asChild>
-              <button className={cn("w-full mt-1.5 px-2 py-1 rounded-md text-[10px] flex items-center gap-1.5 text-left hover:opacity-80 transition-opacity", isDirect ? "text-muted-foreground bg-muted/50" : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false ? "text-destructive bg-destructive/5" : proxyStatus.isPending ? "text-warning bg-warning/5" : "text-success bg-success/5")} title="查看当前账户携带鉴权的 OVH API 代理状态">
-                <span className={cn("w-1.5 h-1.5 rounded-full", isDirect ? "bg-muted-foreground" : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false ? "bg-destructive" : proxyStatus.isPending ? "bg-warning" : "bg-success")} />
-                {isDirect ? "账号代理：直连" : proxyStatus.isPending ? "账号代理：检测中" : proxyStatus.isError || proxyStatus.data?.blocked || proxyStatus.data?.healthy === false ? "账号代理：出口 IP 未确认（OVH 已阻断）" : `账号代理：出口 IP 已确认${proxyStatus.data?.latencyMs != null ? ` · ${proxyStatus.data.latencyMs}ms` : ""}`}
+              <button
+                className={cn(
+                  "w-full mt-1.5 px-2 py-1 rounded-md text-[10px] flex items-center gap-1.5 text-left hover:opacity-80 transition-opacity",
+                  proxyState === "direct"
+                    ? "text-muted-foreground bg-muted/50"
+                    : proxyState === "blocked"
+                      ? "text-destructive bg-destructive/5"
+                      : proxyState === "checking"
+                        ? "text-warning bg-warning/5"
+                        : "text-success bg-success/5"
+                )}
+                title="查看当前账户携带鉴权的 OVH API 代理状态"
+              >
+                <span className={cn("w-1.5 h-1.5 rounded-full", proxyDotClass[proxyState])} />
+                {proxyLabel}
               </button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-[calc(100vw-2rem)] max-w-[320px] p-0">

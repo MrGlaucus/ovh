@@ -176,6 +176,13 @@ func EditMessageText(state *app.State, chatID string, messageID int64, text stri
 	return nil
 }
 
+// IsMessageNotModified 判断 Telegram 是否以「消息内容未变化」拒绝了本次编辑。
+// 重复点击同一个菜单入口时会出现：消息已经是目标状态，调用方应按成功处理，
+// 而不是把它当成一次加载失败。
+func IsMessageNotModified(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "message is not modified")
+}
+
 // SetMyCommands 注册 Bot 原生命令菜单；所有命令都由 webhook 的现有授权链继续保护。
 func SetMyCommands(state *app.State) error {
 	cfg := state.Config.Get()

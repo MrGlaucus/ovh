@@ -85,7 +85,7 @@ export function ProxyStatus() {
         <div className="border-t border-border px-4 py-2 text-[11px] leading-snug text-muted-foreground">
           <p>公共访问：Telegram、GitHub Releases、自定义 Webhook。</p>
           <p className="mt-1">OVH 公开访问：`auth/time` 与库存可用性探测，不携带账户 API 鉴权。</p>
-          <p className="mt-1">账户签名的 OVH API 请求请查看左侧当前账户下方的「账号代理」详情；该处会校验账户预期出口 IP。</p>
+          <p className="mt-1">账户签名的 OVH API 请求有独立的「账号代理」状态（会校验预期出口 IP）—— 桌面在左侧栏、手机在顶栏账户切换面板。</p>
         </div>
 
         <div className="border-t border-border px-2 py-1.5 space-y-0.5 max-h-[280px] overflow-y-auto">

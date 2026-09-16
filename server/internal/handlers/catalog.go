@@ -20,7 +20,11 @@ const catalogTTL = 2 * time.Hour
 
 // catalogFetchTimeout 要小于前端目录请求超时，确保慢代理/OVH 响应时仍由服务端返回
 // 可读错误或 stale 缓存，而不是先被浏览器中断为一个没有正文的失败请求。
-const catalogFetchTimeout = 105 * time.Second
+//
+// 曾设 105s：10MB+ 的 eco 目录在慢代理下经常跑到 100 秒开外，贴着上限被本端掐断
+// （日志里是「catalog 拉取失败: context deadline exceeded」，区别于上游主动回 408）。
+// 拉长到 300s 给慢链路留足余量；真失败时 stale 缓存的回退路径不受影响。
+const catalogFetchTimeout = 300 * time.Second
 
 // catalogBaseURLForSubsidiary 把 subsidiary 映射成对应站点的 base URL。
 // 实现收敛在 ovh 包一份(catalog 包解析 region 时也要用同一张表),

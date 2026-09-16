@@ -12,6 +12,7 @@ import { qk } from "@/lib/query";
 import { OVH_SUBSIDIARIES } from "@/lib/ovh-subsidiaries";
 import { apiBaseUrlForEndpoint, endpointRegion } from "@/lib/ovh-regions";
 import { OvhTokenGuide } from "@/components/common/OvhTokenGuide";
+import { CATALOG_REQUEST_TIMEOUT_MS } from "@/hooks/use-availability";
 
 const PREFETCH_STALE = 2 * 60 * 60_000;
 
@@ -32,7 +33,8 @@ function prefetchAfterCredsSaved(qc: ReturnType<typeof useQueryClient>, zone: st
     queryFn: async () => {
       const params: Record<string, string> = {};
       if (zone) params.subsidiary = zone;
-      const res = await api.get("/catalog", { params });
+      // 目录可能 10MB+，用与服务端拉取超时（300s）配套的长超时，避免预热请求被短超时打断
+      const res = await api.get("/catalog", { params, timeout: CATALOG_REQUEST_TIMEOUT_MS });
       return res.data;
     },
     staleTime: PREFETCH_STALE,

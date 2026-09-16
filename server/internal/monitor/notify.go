@@ -332,6 +332,35 @@ func telegramBuyMenuCallback(planCode, datacenter string) string {
 	return string(cb)
 }
 
+// humanMemoryText / humanStorageText 把裸 addon FQN(ram-64g-ecc-2133 /
+// softraid-4x2000sa)转成人读文案 —— 监控落库的是 FQN,直接贴进通知里
+// 用户只能看到一串代码。已是人读文本的值(含空格,例如旧数据里的
+// "32GB ECC DDR4-2400"、目录缺数据时的 "N/A")原样保留,避免被正则
+// 翻译一遍反而丢信息。
+func humanMemoryText(code string) string {
+	if code == "" || strings.Contains(code, " ") {
+		return code
+	}
+	return catalog.FormatMemoryDisplay(code)
+}
+
+func humanStorageText(code string) string {
+	if code == "" || strings.Contains(code, " ") {
+		return code
+	}
+	return catalog.FormatStorageDisplay(code)
+}
+
+// configMemoryStorage 从 configInfo 解出内存 / 存储的可读文案。
+func configMemoryStorage(configInfo map[string]interface{}) (memory, storage string) {
+	if configInfo == nil {
+		return "", ""
+	}
+	memory, _ = configInfo["memory"].(string)
+	storage, _ = configInfo["storage"].(string)
+	return humanMemoryText(memory), humanStorageText(storage)
+}
+
 // buildAvailabilityAlert 拼出上架通知的正文和按钮。
 //
 // 从 SendAvailabilityAlertGrouped 里拆出来，是为了能在测试里直接看到
@@ -350,8 +379,7 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	// 而抢购那一刻用户要在几秒内判断"这是不是我要的那台"。
 	msg.WriteString("📦 产品名称: " + m.productName(planCode, serverName) + "\n")
 
-	memory, _ := configInfo["memory"].(string)
-	storage, _ := configInfo["storage"].(string)
+	memory, storage := configMemoryStorage(configInfo)
 	if memory != "" {
 		msg.WriteString("💾 内存: " + memory + "\n")
 	}
@@ -503,8 +531,7 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	msg.WriteString("型号: " + planCode + "\n")
 	if configInfo != nil {
 		display, _ := configInfo["display"].(string)
-		memory, _ := configInfo["memory"].(string)
-		storage, _ := configInfo["storage"].(string)
+		memory, storage := configMemoryStorage(configInfo)
 		msg.WriteString("配置: " + display + "\n")
 		msg.WriteString("├─ 内存: " + memory + "\n")
 		msg.WriteString("└─ 存储: " + storage + "\n")
@@ -556,8 +583,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		msg.WriteString("数据中心: " + datacenter + "\n")
 		if configInfo != nil {
 			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
+			memory, storage := configMemoryStorage(configInfo)
 			msg.WriteString("配置: " + display + "\n")
 			msg.WriteString("├─ 内存: " + memory + "\n")
 			msg.WriteString("└─ 存储: " + storage + "\n")
@@ -605,8 +631,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		msg.WriteString("数据中心: " + datacenter + "\n")
 		if configInfo != nil {
 			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
+			memory, storage := configMemoryStorage(configInfo)
 			msg.WriteString("配置: " + display + "\n")
 			msg.WriteString("├─ 内存: " + memory + "\n")
 			msg.WriteString("└─ 存储: " + storage + "\n")
@@ -631,8 +656,7 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		msg.WriteString("型号: " + planCode + "\n")
 		if configInfo != nil {
 			display, _ := configInfo["display"].(string)
-			memory, _ := configInfo["memory"].(string)
-			storage, _ := configInfo["storage"].(string)
+			memory, storage := configMemoryStorage(configInfo)
 			msg.WriteString("配置: " + display + "\n")
 			msg.WriteString("├─ 内存: " + memory + "\n")
 			msg.WriteString("└─ 存储: " + storage + "\n")
@@ -660,8 +684,10 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 }
 
 func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
+	memRaw, _ := server["memory"].(string)
+	storRaw, _ := server["storage"].(string)
 	msg := fmt.Sprintf("🆕 新服务器上架通知！\n\n型号: %v\n名称: %v\nCPU: %v\n内存: %v\n存储: %v\n带宽: %v\n时间: %s\n\n💡 快去查看详情！",
-		server["planCode"], server["name"], server["cpu"], server["memory"], server["storage"], server["bandwidth"],
+		server["planCode"], server["name"], server["cpu"], humanMemoryText(memRaw), humanStorageText(storRaw), server["bandwidth"],
 		m.nowBeijing().Format("2006-01-02 15:04:05"))
 	notify.Broadcast(m.state, msg, nil)
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")

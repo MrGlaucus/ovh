@@ -441,7 +441,8 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 	if action == "menu" {
 		// 上架通知的机房按钮（带 d）进入该机房的配置选择；不带 d 的入口
 		// （配置页的「返回机房选择」，或改造前已发出的旧单颗按钮）
-		// 打开机房选择页。每一步都按点击那一刻的实时库存生成。
+		// 打开机房选择页。每一步都按点击那一刻的实时库存生成，
+		// 并且全部就地在原消息上展开/切换（不再另发消息）。
 		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
 		datacenter := strings.TrimSpace(strOr(callbackObj, "d", "datacenter"))
 		if planCode == "" {
@@ -454,27 +455,20 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, c *gin.Conte
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
 			return
 		}
-		placeholder := "🛒 正在加载配置选项…"
-		if datacenter == "" {
-			placeholder = "🛒 正在加载机房选项…"
-		}
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载选购菜单", false)
-		ref, err := telegram.SendMessageWithRef(state, placeholder, nil)
-		if err != nil {
-			telegram.SendReply(state, chatID, "❌ 无法加载选购菜单："+err.Error(), int64(messageID))
-			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "buy_menu_unavailable"})
-			return
-		}
-		// 菜单在占位消息上就地编辑：通知消息本身继续承担下架编辑的职责。
+		// 就地在原通知消息上展开：整条「机房 → 配置 → 账户」链（含各级返回）
+		// 都在同一条消息里切换，不再每次点击都新发一条消息。
 		var menuErr error
 		if datacenter == "" {
-			menuErr = sendBuyDatacenterChoicesForPlan(state, ref.ChatID, ref.MessageID, planCode)
+			menuErr = sendBuyDatacenterChoicesForPlan(state, chatID, int64(messageID), planCode)
 		} else {
-			menuErr = sendBuyConfigurationChoicesForDatacenter(state, ref.ChatID, ref.MessageID, planCode, datacenter)
+			menuErr = sendBuyConfigurationChoicesForDatacenter(state, chatID, int64(messageID), planCode, datacenter)
 		}
-		if menuErr != nil {
-			// 占位消息已发出，把它编辑成失败原因，不留一条永远"加载中"的消息。
-			_ = telegram.EditMessageText(state, ref.ChatID, ref.MessageID, "❌ 无法加载选购菜单："+menuErr.Error(), nil)
+		// 重复点击同一入口时 Telegram 会以 "message is not modified" 拒绝编辑，
+		// 此时消息已是目标菜单，按成功处理。
+		if menuErr != nil && !telegram.IsMessageNotModified(menuErr) {
+			// 就地编辑失败（消息被删除等）；原通知保持原样，失败原因在回复里说明。
+			telegram.SendReply(state, chatID, "❌ 无法加载选购菜单："+menuErr.Error(), int64(messageID))
 			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "buy_menu_unavailable"})
 			return
 		}
