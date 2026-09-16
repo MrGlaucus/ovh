@@ -617,6 +617,13 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				} else {
 					notifyThis = cfg.NotifyAvailable
 				}
+				// 有货 ↔ 价格校验失败 的相互跳变不发通知:这是同一波有货的
+				// 抖动(OVH 429/超时都会让 verifyPriceAvailable 失败),抖动窗口
+				// 里状态来回跳,以前每次恢复都发「🎉 上架」,用户看到"反复上架
+				// 下架"而库存从未变过。状态推进与下单不受影响。
+				if isQuietTransition(ds.oldStatus, actualStatus) {
+					notifyThis = false
+				}
 			}
 
 			if statusChanged {
@@ -863,6 +870,19 @@ func containsString(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// isQuietTransition 有货 ↔ 价格校验失败 之间的相互跳变:状态照常推进、
+// 下单照常触发,但不发通知。
+//
+// 这两个状态都属于"有货",差别只在订单链路是否健康 —— verifyPriceAvailable
+// 把本地 HTTP 异常 / 30 秒超时 / OVH 429 全算失败,OVH 抖一下的窗口里状态
+// 会 available → price_check_failed → available 来回跳,每次恢复都按
+// 「新上架」发 🎉,用户看到"反复上下架"而库存从头到尾没变。
+// 注意:从无货 / 首次检查进入这两个状态是真实变化,不在静默范围。
+func isQuietTransition(oldStatus, actualStatus string) bool {
+	return (oldStatus == "available" && actualStatus == "price_check_failed") ||
+		(oldStatus == "price_check_failed" && actualStatus == "available")
 }
 
 // subscriptionWantsConfig 判断一套配置是否落在订阅"只盯"的范围内。

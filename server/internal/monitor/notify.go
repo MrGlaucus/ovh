@@ -437,11 +437,11 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 		msg.WriteString("💵 安装费: " + installText + "\n")
 	}
 
-	// 这个型号已经有几个任务在抢。
+	// 这套配置已经有几个任务在抢。
 	// 补货常连着来好几条通知,对同一台机器按两次就是两笔真实订单,
 	// 而按钮的一次性 claim 只挡得住同一颗按钮按两次。
-	if n := m.activeQueueCount(planCode); n > 0 {
-		msg.WriteString(fmt.Sprintf("\n⚠️ 这个型号已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
+	if n := m.activeQueueCount(planCode, optionsFromConfig(configInfo)); n > 0 {
+		msg.WriteString(fmt.Sprintf("\n⚠️ 这套配置已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
 	}
 
 	pushTime := m.nowBeijing()
@@ -693,12 +693,16 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 }
 
-// activeQueueCount 这个型号当前有几个进行中的抢购任务。
+// activeQueueCount 当前有几个进行中的任务会抢"这套配置"。
 //
 // 用来在上架通知里提醒"你已经在抢这台了"。补货往往连着来好几条通知,
 // 用户在手机上对同一台机器按两次按钮是很自然的动作,而那就是两笔真实订单。
 // 按钮自己的一次性 claim 只挡得住同一颗按钮按两次,挡不住两条通知各按一次。
-func (m *Monitor) activeQueueCount(planCode string) int {
+//
+// configOptions 是这套配置(FQN 内存/存储段)匹配出的 addon。以前这里只
+// 匹配 planCode —— 同型号下别的配置的任务也被算进来,用户明明没抢这套
+// 配置也看到"有 N 个任务在抢"。现在按 queueTaskTargetsConfig 收窄。
+func (m *Monitor) activeQueueCount(planCode string, configOptions []string) int {
 	if m.state == nil {
 		return 0
 	}
@@ -709,11 +713,42 @@ func (m *Monitor) activeQueueCount(planCode string) int {
 		if it.PlanCode != planCode {
 			continue
 		}
-		if it.Status == "running" || it.Status == "pending" || it.Status == "paused" {
-			n++
+		if it.Status != "running" && it.Status != "pending" && it.Status != "paused" {
+			continue
 		}
+		if !queueTaskTargetsConfig(it.Options, configOptions) {
+			continue
+		}
+		n++
 	}
 	return n
+}
+
+// queueTaskTargetsConfig 判断一个抢购任务会不会抢到"这套配置"。
+//
+// 任一方向子集成立都算"覆盖到这套":
+//   - 任务⊆本套:任务只勾了部分维度(如"ram-64g 的任意存储"),会抢到本套;
+//   - 本套⊆任务:任务比本套多勾 —— 网页下单是逐组选择,带宽等不入 FQN 的
+//     项也会进任务 options,它一样会抢本套。
+//
+// 两边的配置维度有一处不一致(如内存选得不同)时两个方向都不成立 → 不算。
+// 缺可比信息(任务 options 空 = 裸 planCode 机型,configOptions 空 = 目录缺
+// 数据)时退回"算":提醒的目的是防用户手滑重复下单,漏提醒的代价更大。
+func queueTaskTargetsConfig(taskOptions, configOptions []string) bool {
+	if len(taskOptions) == 0 || len(configOptions) == 0 {
+		return true
+	}
+	return subsetOf(taskOptions, configOptions) || subsetOf(configOptions, taskOptions)
+}
+
+// subsetOf sub 里的每一项都在 super 里。
+func subsetOf(sub, super []string) bool {
+	for _, x := range sub {
+		if !containsString(super, x) {
+			return false
+		}
+	}
+	return true
 }
 
 // productName 通知抬头那一行。
@@ -739,6 +774,12 @@ func (m *Monitor) productName(planCode, serverName string) string {
 	}
 	switch {
 	case name != "" && cpu != "":
+		// 目录的 invoiceName 本身就可能是完整对外名(如 "KS-2 | Intel Xeon-D 1540"),
+		// 而 CPU 字段正是从它 | 后半段提取的 —— 名字里已含 CPU 时不重复拼,
+		// 否则会显示成 "... | Intel Xeon-D 1540 | Intel Xeon-D 1540"。
+		if strings.Contains(strings.ToLower(name), strings.ToLower(cpu)) {
+			return name
+		}
 		return name + " | " + cpu
 	case name != "":
 		return name

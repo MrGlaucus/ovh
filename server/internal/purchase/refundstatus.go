@@ -29,9 +29,9 @@ import (
 
 // refundCheckMinInterval 同一单两次查退款的最小间隔。
 //
-// 不退款是绝大多数订单的常态，而 /me 命名空间和抢购主链路（查库存/建车/结账）
-// 共用账户配额 —— 不节流的话每 10 分钟一轮后台会把所有未退款成功单全查一遍，
-// 天长日久纯属浪费。手动刷新（force）跳过它："我刚在面板取消完订单"要能立即看到。
+// 退款查询现在只在用户手动刷新（force=true，跳过节流）时执行，没有后台轮询。
+// 保留这个间隔只为防御非 force 的批量入口：不退款是绝大多数订单的常态，
+// 而 /me 命名空间和抢购主链路（查库存/建车/结账）共用账户配额，不能无节制地重复查。
 const refundCheckMinInterval = time.Hour
 
 // refundMaxAge 超过这么久还没查到退款就不再查。与订单状态刷新同一口径
@@ -133,7 +133,7 @@ func FetchOrderRefund(client *ovhsdk.Client, orderID string) (*types.RefundInfo,
 }
 
 // RefreshRefundStatuses 给还没标记退款的成功单各查一次退款记录，命中就写回。
-// force=true 跳过节流（手动刷新用）。返回这次新标记了几条。
+// force=true 跳过节流（手动刷新用，也是目前唯一的调用方式）。返回这次新标记了几条。
 func RefreshRefundStatuses(state *app.State, force bool) int {
 	// 先拍快照，网络请求不能拿着 HistoryMu
 	state.HistoryMu.Lock()

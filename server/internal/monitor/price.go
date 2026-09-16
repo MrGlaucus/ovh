@@ -3,6 +3,7 @@ package monitor
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/proxy"
+	"github.com/ovh-buy/server/internal/purchase"
 )
 
 // optionsFromConfig 取本次配置组合要询价的 addon 列表
@@ -135,8 +137,35 @@ func formatMoneyWithSuffix(currency string, v float64, suffix string) string {
 	}
 }
 
-// 返回 (是否可下单, 失败原因)
+// verifyPriceAvailable 价格校验探针:真跑一遍下单链路试单(建车→加购→配置→
+// 询价→删车),失败且原因像链路瞬态时,隔 1 秒整体重跑一次再下结论。
+//
+// 动机(实案):建车第一步 POST /order/cart 被掐成 "EOF" —— 国际链路/代理的
+// 一次性瞬断,5 秒节奏的一轮探针会直接判"校验失败",还把状态机推进到
+// price_check_failed(触发一轮通知)。纯瞬断隔一秒就恢复,重跑一次直接消掉;
+// 持续故障(账户/权限/限流)两次都失败,结论不变。
+// 只对传输层瞬态错误(EOF/超时/429/5xx/出口闸门,见 purchase.IsTransient)
+// 重试:业务性失败(机房不可售/配置降级)重试也是同一个答案。
 func (m *Monitor) verifyPriceAvailable(planCode, datacenter string, configInfo map[string]interface{}) (bool, string) {
+	ok, errMsg := m.verifyPriceAvailableOnce(planCode, datacenter, configInfo)
+	if ok || !purchase.IsTransient(errors.New(errMsg)) {
+		return ok, errMsg
+	}
+	time.Sleep(time.Second)
+	ok2, errMsg2 := m.verifyPriceAvailableOnce(planCode, datacenter, configInfo)
+	if ok2 {
+		m.state.Logger.Info(fmt.Sprintf("%s@%s 价格校验首次失败,1 秒后重试通过(首次原因: %s)",
+			planCode, datacenter, errMsg), "monitor")
+		return true, ""
+	}
+	m.state.Logger.Info(fmt.Sprintf("%s@%s 价格校验两次均失败: 首次 %s; 重试 %s",
+		planCode, datacenter, errMsg, errMsg2), "monitor")
+	return false, errMsg2
+}
+
+// verifyPriceAvailableOnce 单次探针。
+// 返回 (是否可下单, 失败原因)
+func (m *Monitor) verifyPriceAvailableOnce(planCode, datacenter string, configInfo map[string]interface{}) (bool, string) {
 	options := optionsFromConfig(configInfo)
 
 	url := "http://127.0.0.1:" + m.state.Port + "/api/internal/monitor/price"

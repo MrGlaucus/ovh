@@ -355,9 +355,12 @@ func ApplyOrderStatus(state *app.State, entryID, status string) bool {
 	return false
 }
 
-// OrderStatusLoop 后台定时刷新。用户付款发生在下单之后的任意时刻,
-// 只在下单那一刻查一次是不够的。退款记录(GET /me/refund?orderId=)同理,
-// 跟着同一轮刷新 —— 状态刚变成 cancelled 的订单,这一轮就能顺带查上退款。
+// OrderStatusLoop 后台定时刷新订单支付状态。用户付款发生在下单之后的任意时刻,
+// 只在下单那一刻查一次是不够的。
+//
+// 退款记录(GET /me/refund?orderId=)刻意不跟这一轮:退款查询是低频按需操作,
+// 后台每 10 分钟替所有未退款成功单轮询既浪费 /me 配额(与抢购主链路共用),
+// 也拖慢这一轮刷新 —— 现在只有手动点"刷新状态"时才查退款。
 func OrderStatusLoop(state *app.State) {
 	// 启动先等一会,别和开机时的一堆 OVH 请求挤在一起
 	time.Sleep(90 * time.Second)
@@ -365,9 +368,8 @@ func OrderStatusLoop(state *app.State) {
 		if n := RefreshOrderStatuses(state, false); n > 0 {
 			state.Logger.Info(fmt.Sprintf("后台刷新订单状态:%d 条有变化", n), "purchase")
 		}
-		if n := RefreshRefundStatuses(state, false); n > 0 {
-			state.Logger.Info(fmt.Sprintf("后台发现 %d 条订单已退款", n), "purchase")
-		}
+		// 退款查询(GET /me/refund?orderId=)刻意不在这里跟:见 RefreshRefundStatuses,
+		// 只在用户手动刷新时执行。
 		time.Sleep(10 * time.Minute)
 	}
 }

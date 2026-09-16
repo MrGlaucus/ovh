@@ -1,6 +1,11 @@
 package monitor
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
+)
 
 func TestConfigMemoryStorage(t *testing.T) {
 	if mem, stor := configMemoryStorage(nil); mem != "" || stor != "" {
@@ -47,6 +52,40 @@ func TestHumanStorageText(t *testing.T) {
 	for in, want := range cases {
 		if got := humanStorageText(in); got != want {
 			t.Errorf("humanStorageText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// productName:目录 invoiceName 已含 CPU(如 "KS-2 | Intel Xeon-D 1540")时
+// 不再重复拼 CPU;纯型号名的旧订阅照常拼。
+func TestProductNameCPUDedup(t *testing.T) {
+	state := &app.State{
+		ServerPlans: []types.ServerPlan{
+			{PlanCode: "24sk202", Name: "KS-2 | Intel Xeon-D 1540", CPU: "Intel Xeon-D 1540"},
+			{PlanCode: "24rise01", Name: "RISE-1", CPU: "RISE系列专用CPU"},
+		},
+	}
+	m := New(state)
+
+	cases := []struct {
+		planCode string
+		server   string
+		want     string
+	}{
+		// 订阅存的就是含 CPU 的完整对外名(现网 SK 系列订阅的真实形态)
+		{"24sk202", "KS-2 | Intel Xeon-D 1540", "KS-2 | Intel Xeon-D 1540"},
+		// 订阅没存名字时回退目录 invoiceName,同样不能重复
+		{"24sk202", "", "KS-2 | Intel Xeon-D 1540"},
+		// 纯型号名的旧订阅照常拼 CPU
+		{"24rise01", "RISE-1", "RISE-1 | RISE系列专用CPU"},
+		// 目录里没有该 planCode:退回订阅名
+		{"nope", "X-99", "X-99"},
+		// 什么都没有:退回 planCode
+		{"nope", "", "nope"},
+	}
+	for _, c := range cases {
+		if got := m.productName(c.planCode, c.server); got != c.want {
+			t.Errorf("productName(%q, %q) = %q, want %q", c.planCode, c.server, got, c.want)
 		}
 	}
 }

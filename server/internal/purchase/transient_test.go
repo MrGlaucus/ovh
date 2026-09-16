@@ -45,6 +45,8 @@ func TestTransientDoesNotBurnRetryBudget(t *testing.T) {
 		{"DNS 解析不了", errors.New("dial tcp: lookup eu.api.ovh.com: no such host"), true},
 		{"IO 超时", errors.New("net/http: request canceled (Client.Timeout exceeded)"), true},
 		{"EOF", errors.New("unexpected EOF"), true},
+		// 用户实案(价格校验探针建车第一步被掐):monitor 侧等 1 秒整体重跑一次
+		{"建车连接被掐", errors.New(`Post "https://eu.api.ovh.com/1.0/order/cart": EOF`), true},
 
 		// 出口 IP 闸门阻断:请求没出网,没有 HTTP 状态码,仅靠传输层特征认不出来。
 		// 这是环境/代理配置问题,不是"这单买不成" —— 修好代理后重试立即恢复。

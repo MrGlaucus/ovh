@@ -323,7 +323,8 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 //
 // 手动刷新所有未到终态订单的支付状态(GET /me/order/{id}/status),
 // 并给还没标记退款的成功单查退款记录(GET /me/refund?orderId=)。
-// 后台每 10 分钟也会自动刷,这里是给"我刚付完款/刚取消完想马上看到"的场景。
+// 订单状态后台每 10 分钟也会自动刷;退款查询只在手动刷新时执行,后台不轮询 ——
+// 这里是给"我刚付完款/刚取消完想马上看到"的场景。
 func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 	// 手动刷新会对每条未终态订单各打一次 /me/order/{id},而 force=true 正是用来
 	// 跳过那个 2 分钟节流的 —— 等于把限流闸门交给用户的手速。

@@ -260,8 +260,8 @@ type PurchaseHistoryEntry struct {
 	// Refund 已确认的退款记录（GET /me/refund?orderId={orderId}）。
 	// 有值 = 已退款；nil = 未发现退款（可能没退，也可能只是还没查到）。
 	Refund *RefundInfo `json:"refund,omitempty"`
-	// RefundCheckedAt 上次查退款的时间。不退款是绝大多数订单的常态，
-	// 没有它后台每轮会把所有未退款成功单全查一遍；有它才能按小时节流。
+	// RefundCheckedAt 上次查退款的时间。退款查询只在用户手动刷新时执行,
+	// 它给非 force 的批量入口做按小时节流用(手动刷新不受它限制)。
 	RefundCheckedAt string `json:"refundCheckedAt,omitempty"`
 }
 

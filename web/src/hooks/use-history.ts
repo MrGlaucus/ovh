@@ -37,7 +37,7 @@ export interface PurchaseHistory {
   };
   /**
    * 已确认的退款记录（OVH billing.Refund）。有值 = 已退款。
-   * 后端在刷新订单状态时顺带查 GET /me/refund?orderId= 落库；
+   * 后端只在手动点「刷新状态」时查 GET /me/refund?orderId= 落库（后台不轮询）；
    * OVH 退款单没有状态机，只有"有/没有"，到账时间差在支付渠道侧。
    */
   refund?: {
@@ -47,7 +47,7 @@ export interface PurchaseHistory {
     /** 退款单 PDF 链接（OVH 返回原值） */
     pdfUrl?: string;
   };
-  /** 上次查退款的时间（后端按小时节流用，一般不用展示） */
+  /** 上次查退款的时间（后端节流用；手动刷新跳过它，一般不用展示） */
   refundCheckedAt?: string;
 }
 
@@ -60,7 +60,8 @@ export function useHistory() {
 }
 
 /**
- * 手动刷新所有未到终态订单的支付状态(后台每 10 分钟也会自动刷)。
+ * 手动刷新所有未到终态订单的支付状态(后台每 10 分钟也会自动刷)，
+ * 并查一次未退款成功单的退款记录(退款只在手动刷新时查，后台不轮询)。
  * 给"我刚付完款想马上看到"的场景。
  */
 export function useRefreshOrderStatus() {
