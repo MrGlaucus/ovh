@@ -288,10 +288,8 @@ func main() {
 		api.GET("/notify/channels", handlers.GetNotifyChannels(state))
 		api.GET("/telegram/verify", handlers.VerifyTelegram(state))
 
-		// Telegram
-		api.POST("/telegram/set-webhook", handlers.SetTelegramWebhook(state))
-		api.GET("/telegram/get-webhook-info", handlers.GetTelegramWebhookInfo(state))
-		api.POST("/telegram/webhook", handlers.TelegramWebhook(state, mon))
+		// Telegram：update 只有长轮询一条路。这个端点只读状态，给设置页显示"收到没收到"。
+		api.GET("/telegram/poller", handlers.GetTelegramPollerStatus(state))
 
 		// Servers / availability / cache
 		api.GET("/servers", handlers.GetServers(state))
@@ -585,9 +583,11 @@ func main() {
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,
 	// 首次解析放在抢购链路上会白白慢 2-7 秒
 	go catalog.WarmRegionCache(state)
-	// Telegram webhook secret 自愈：老部署注册过的 webhook 不带 secret_token，
-	// 启动时用同一 URL 重注册一次，把强校验补上（未配置 TG 时无操作）。
-	go telegram.AutoUpgradeWebhookSecret(state)
+	// Telegram 长轮询：配了 Token 就拉起来。
+	// 内部会先 deleteWebhook —— 老版本可能在 Telegram 那边注册过 webhook，
+	// 不摘掉的话 getUpdates 会一直失败。
+	handlers.InitPoller(state, mon)
+	go handlers.StartPollerIfEnabled(state)
 	// 服务器目录走懒加载：访问到且缓存过期时才打 OVH，无后台定时刷新
 
 	// 自动启动监控（如果有订阅）

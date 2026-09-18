@@ -53,7 +53,7 @@ func (db *DB) EncryptExistingSecrets() (migrated int, err error) {
 		}
 		migrated++
 	}
-	// ---- 2. kv['config'] 里的 Telegram Token / webhook secret ----
+	// ---- 2. kv['config'] 里的 Telegram Token 等敏感字段 ----
 	// 这块是整条 JSON 存的,所以只能读出来、改字段、写回去。
 	// config.Store 保存时会自动加密,但那要等用户下次改设置才会触发 ——
 	// 这里主动走一遍,免得 token 明文一直躺在库里。

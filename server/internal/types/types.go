@@ -30,21 +30,12 @@ type Config struct {
 	TgChatID    string `json:"tgChatId"`
 	// TgAllowedUserIDs 是允许处理消息/按钮回调的 Telegram 数字 User ID，逗号分隔；空值即拒绝全部用户。
 	TgAllowedUserIDs string `json:"tgAllowedUserIds"`
-	// WebhookURL 是 Telegram 回调到本服务的公网地址；保存后自动注册并启用 secret_token。
-	WebhookURL string `json:"webhookUrl,omitempty"`
-	IAM        string `json:"iam"`
-	Zone       string `json:"zone"`
+	IAM              string `json:"iam"`
+	Zone             string `json:"zone"`
 
-	// TgWebhookSecret Telegram setWebhook 的 secret_token。Telegram 会在每次回调里带
-	// X-Telegram-Bot-Api-Secret-Token 头，用它证明请求真的来自 Telegram。
-	// 首次需要时自动生成并落库；GetSettings 不会把它回给前端。
-	TgWebhookSecret string `json:"tgWebhookSecret,omitempty"`
 	// NotifyWebhookURL 第二条通知通道:一个接收 JSON POST 的地址(钉钉/飞书/Bark/自建都行)。
 	// 补货监控的全部价值就是"有货那一刻你能收到消息",单通道意味着 Telegram 一挂就全盲。
 	NotifyWebhookURL string `json:"notifyWebhookUrl,omitempty"`
-	// TgWebhookSecretRegistered secret 是否已经推给 Telegram（setWebhook 成功过）。
-	// false 时 webhook 处于兼容模式：不强制校验 secret，避免升级后老用户的按钮直接全挂。
-	TgWebhookSecretRegistered bool `json:"tgWebhookSecretRegistered,omitempty"`
 
 	// DefaultRetryInterval 新建抢购任务的默认重试间隔(秒)。
 	// 网页弹窗、TG /buy、上架通知里的一键下单按钮不显式指定时都用它。

@@ -1,7 +1,7 @@
 // Package secret 给落盘的敏感字段做加密。
 //
 // 为什么需要:sniper.db 的 ovh_accounts 表存着 OVH AppKey / AppSecret / ConsumerKey,
-// kv 表存着 Telegram Bot Token 与 webhook secret —— 全是明文。拿到这个文件
+// kv 表存着 Telegram Bot Token 等敏感字段 —— 全是明文。拿到这个文件
 // 就等于拿到用户 OVH 账户的完全控制权(能下单、能重装、能删机器)。
 // .gitignore 只挡住"提交到仓库"这一种泄漏方式,挡不住:备份被同步到网盘、
 // 拷贝整个目录换机器、把 data/ 打包发给别人排查问题。

@@ -26,7 +26,6 @@ func DefaultWhitelist() map[string]struct{} {
 		"/api/version":                {}, // 前端启动时拉版本号,登录前可见
 		"/api/version/check-update":   {}, // 更新检查也免鉴权,登录前可提示
 		"/api/internal/monitor/price": {},
-		"/api/telegram/webhook":       {},
 		// 右上角代理指示器的只读端点。首次运行会被 AuthGate / OvhCredsGate
 		// 全屏遮罩拦住(那时还没有 key),而用户恰恰需要在那两层遮罩上
 		// 确认代理连通性。代理地址已脱敏(user:pass → ***)。
@@ -89,8 +88,7 @@ func Middleware(cfg Config) gin.HandlerFunc {
 		}
 
 		// 常量时间比较。远程时序攻击在网络抖动面前基本不可行,
-		// 但同项目的 telegram/security.go 已经用了 ConstantTimeCompare,
-		// 没有理由这里松一档。
+		// 但没有理由在这里松一档。
 		if subtle.ConstantTimeCompare([]byte(key), []byte(cfg.APIKey)) != 1 {
 			// 记一次失败。不限次数的话,端口可达的人可以一秒几千次地猜 ——
 			// 而这个服务能用你的 OVH 账户下单。

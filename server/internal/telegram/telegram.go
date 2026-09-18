@@ -7,7 +7,6 @@ import (
 	"html"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,9 +33,9 @@ var tokenRe = regexp.MustCompile(`/bot[0-9]+:[A-Za-z0-9_-]+`)
 //
 // 而这类部署连 api.telegram.org 本来就常失败。以前这些 scrub(err.Error()) 被直接
 // 拼进日志 —— 明文 Token 落进 logs/ 并通过 GET /api/logs 显示在前端;
-// 有几处还把同一串当 error 返回,出现在「添加订阅」的报错和 webhook 信息接口里。
+// 有几处还把同一串当 error 返回,出现在「添加订阅」的报错里。
 //
-// Token 能冒充你发通知、甚至通过 webhook 触发下单,config.go 专门为它做了加密落库,
+// Token 能冒充你发通知、甚至触发下单,config.go 专门为它做了加密落库,
 // 这条路等于把那份保护绕过去了。
 func scrub(s string) string {
 	return tokenRe.ReplaceAllString(s, "/bot***")
@@ -183,7 +182,7 @@ func IsMessageNotModified(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "message is not modified")
 }
 
-// SetMyCommands 注册 Bot 原生命令菜单；所有命令都由 webhook 的现有授权链继续保护。
+// SetMyCommands 注册 Bot 原生命令菜单；所有命令都由长轮询收取后走 ProcessUpdate 的授权链。
 func SetMyCommands(state *app.State) error {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
@@ -218,99 +217,6 @@ func SetMyCommands(state *app.State) error {
 		return fmt.Errorf("注册 Telegram 命令菜单失败: %s", scrub(result.Description))
 	}
 	return nil
-}
-
-// SetWebhook 调用 Telegram setWebhook
-func SetWebhook(state *app.State, webhookURL string) (bool, string, map[string]interface{}) {
-	cfg := state.Config.Get()
-	if cfg.TgToken == "" {
-		return false, "未配置 Telegram Bot Token", nil
-	}
-	if !strings.HasPrefix(webhookURL, "http://") && !strings.HasPrefix(webhookURL, "https://") {
-		return false, "Webhook URL 必须以 http:// 或 https:// 开头", nil
-	}
-	if !strings.HasSuffix(webhookURL, "/api/telegram/webhook") {
-		webhookURL = strings.TrimSuffix(webhookURL, "/") + "/api/telegram/webhook"
-	}
-	state.Logger.Info("正在设置 Telegram Webhook: "+webhookURL, "telegram")
-
-	// 带上 secret_token：之后 Telegram 每次回调都会带 X-Telegram-Bot-Api-Secret-Token 头，
-	// webhook handler 用它区分「真的来自 Telegram」和「别人拿 URL 伪造」。
-	secret, secErr := EnsureWebhookSecret(state)
-	if secErr != nil {
-		state.Logger.Warn("生成 webhook secret 失败，本次将不带 secret_token 注册: "+secErr.Error(), "telegram")
-	}
-
-	setURL := "https://api.telegram.org/bot" + cfg.TgToken + "/setWebhook"
-	q := url.Values{}
-	q.Set("url", webhookURL)
-	if secret != "" {
-		q.Set("secret_token", secret)
-	}
-	req, _ := http.NewRequest(http.MethodPost, setURL+"?"+q.Encode(), nil)
-	client := proxy.HTTPClient(10 * time.Second)
-	resp, err := client.Do(req)
-	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
-		return false, scrub(err.Error()), nil
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	_ = json.Unmarshal(body, &result)
-	if ok, _ := result["ok"].(bool); ok {
-		state.Logger.Info("✅ Telegram Webhook 设置成功: "+webhookURL, "telegram")
-		if secret != "" {
-			// secret 已经推给 Telegram，从此刻起 webhook 强制校验
-			MarkWebhookSecretRegistered(state)
-		}
-		if err := SetMyCommands(state); err != nil {
-			// Webhook 已经注册成功，命令菜单失败不能让通知与下单整体失效；下次启动或重设 Webhook 会重试。
-			state.Logger.Warn(err.Error(), "telegram")
-		}
-		// 获取 webhook info
-		var info map[string]interface{}
-		infoResp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
-		if err == nil {
-			infoBody, _ := io.ReadAll(infoResp.Body)
-			infoResp.Body.Close()
-			var infoResult map[string]interface{}
-			_ = json.Unmarshal(infoBody, &infoResult)
-			if r, ok := infoResult["result"].(map[string]interface{}); ok {
-				info = r
-			}
-		}
-		return true, webhookURL, info
-	}
-	desc, _ := result["description"].(string)
-	state.Logger.Error("Telegram Webhook 设置失败: "+desc, "telegram")
-	return false, desc, nil
-}
-
-// GetWebhookInfo
-func GetWebhookInfo(state *app.State) (bool, map[string]interface{}, string) {
-	cfg := state.Config.Get()
-	if cfg.TgToken == "" {
-		return false, nil, "未配置 Telegram Bot Token"
-	}
-	client := proxy.HTTPClient(10 * time.Second)
-	resp, err := client.Get("https://api.telegram.org/bot" + cfg.TgToken + "/getWebhookInfo")
-	if err != nil {
-		state.Logger.Error("请求 Telegram API 失败: "+scrub(err.Error()), "telegram")
-		return false, nil, scrub(err.Error())
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	_ = json.Unmarshal(body, &result)
-	if ok, _ := result["ok"].(bool); ok {
-		if r, ok := result["result"].(map[string]interface{}); ok {
-			return true, r, ""
-		}
-		return true, nil, ""
-	}
-	desc, _ := result["description"].(string)
-	return false, nil, desc
 }
 
 // AnswerCallback 应答 callback_query

@@ -158,7 +158,7 @@ func (m *Monitor) KnownServers() []string {
 	return out
 }
 
-// MessageUUIDCacheLookup 用于 webhook 回调时取回完整配置
+// MessageUUIDCacheLookup 供按钮回调取回完整配置
 func (m *Monitor) MessageUUIDCacheLookup(id string) *CachedMessage {
 	m.cacheLock.Lock()
 	defer m.cacheLock.Unlock()

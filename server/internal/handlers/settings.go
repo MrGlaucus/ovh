@@ -48,11 +48,7 @@ func normalizeTelegramUserIDs(raw string) (string, error) {
 // GetSettings GET /api/settings
 func GetSettings(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		cfg := state.Config.Get()
-		// webhook secret 不下发前端：它只在后端和 Telegram 之间使用，
-		// 前端拿到也没用，暴露面反而变大。
-		cfg.TgWebhookSecret = ""
-		c.JSON(http.StatusOK, cfg)
+		c.JSON(http.StatusOK, state.Config.Get())
 	}
 }
 
@@ -79,15 +75,12 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			return
 		}
 		newCfg.TgAllowedUserIDs = allowedUserIDs
-		// 同样去空白:webhook 地址末尾带个换行,POST 出去就是 DNS 解析失败
-		newCfg.WebhookURL = strings.TrimSpace(newCfg.WebhookURL)
 		newCfg.NotifyWebhookURL = strings.TrimSpace(newCfg.NotifyWebhookURL)
 		// 在保存这一步就把地址挡下来。放过去的话,用户要等到真有货那一刻
 		// 才会发现通知发不出去 —— 而那正是唯一不能出错的时刻。
 		for _, target := range []struct {
 			name, value string
 		}{
-			{"Telegram 回调地址", newCfg.WebhookURL},
 			{"通知 Webhook 地址", newCfg.NotifyWebhookURL},
 		} {
 			if target.value == "" {
@@ -98,17 +91,6 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": target.name + "不合法,必须是完整的 http:// 或 https:// 地址"})
 				return
 			}
-		}
-
-		// webhook secret 前端不可见也不可改（GetSettings 已抹掉），
-		// 这里必须从旧配置继承回来，否则前端保存一次设置就把 secret 清了，
-		// Telegram 那边仍在校验旧 secret → 所有回调直接 401。
-		newCfg.TgWebhookSecret = prev.TgWebhookSecret
-		newCfg.TgWebhookSecretRegistered = prev.TgWebhookSecretRegistered
-		// 回调地址或 Bot Token 变了，旧的注册状态不再可信；保存后会重新注册。
-		registerWebhook := newCfg.WebhookURL != "" && (newCfg.WebhookURL != prev.WebhookURL || newCfg.TgToken != prev.TgToken)
-		if registerWebhook {
-			newCfg.TgWebhookSecretRegistered = false
 		}
 
 		// 默认值兜底
@@ -128,13 +110,11 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 		state.Logger.Info("API settings updated in config.json", "system")
 
-		// 保存回调地址即注册 Telegram webhook，用户不必再找额外操作入口。
-		webhookWarning := ""
-		if registerWebhook {
-			if ok, msg, _ := telegram.SetWebhook(state, newCfg.WebhookURL); !ok {
-				webhookWarning = "回调地址已保存，但 webhook 注册失败：" + msg
-				state.Logger.Warn(webhookWarning, "telegram")
-			}
+		// Bot Token 变了 → 重建长轮询：poller 还拿着旧 Token 在拉的话，
+		// 新 Bot 那边一条消息都收不到，而界面上没有任何别的迹象。
+		if newCfg.TgToken != prev.TgToken {
+			state.Logger.Info("Telegram Token 已变更，重启长轮询", "telegram")
+			go RestartPoller(state)
 		}
 
 		// TG 配置变更 → 同步发一条测试消息
@@ -154,11 +134,7 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 			state.Logger.Info("未配置 Telegram Token 或 Chat ID，跳过测试消息。", "")
 		}
 
-		resp := gin.H{"status": "success"}
-		if webhookWarning != "" {
-			resp["warning"] = webhookWarning
-		}
-		c.JSON(http.StatusOK, resp)
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
 	}
 }
 

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Webhook, Network, Radar, Ban, Timer } from "lucide-react";
+import { Settings as SettingsIcon, KeyRound, Globe, Send, Database, Save, AlertTriangle, CheckCircle2, Plus, Star, RotateCw, Trash2, Pencil, BellRing, RefreshCw, Radio, Network, Radar, Ban, Timer } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { LoadFailed, LoadFailedBanner } from "@/components/common/LoadFailed";
@@ -17,7 +17,7 @@ import {
   useSaveSettings,
   useCacheInfo,
   useClearCache,
-  useTelegramWebhookInfo,
+  useTelegramPoller,
   type SettingsConfig,
 } from "@/hooks/use-settings";
 import { getApiSecretKey, setApiSecretKey } from "@/lib/api";
@@ -86,7 +86,7 @@ function SettingsPage() {
   const onSave = () => {
     // 配置没读到手的时候,form 还停在初始的 {} —— 所有输入框看上去都是"未配置"。
     // 这时候按保存,等于拿一份空配置去覆盖后端真实的 Telegram Token / Chat ID /
-    // Webhook。这不是显示错误,是直接把用户的配置删了,而且他自己看不出来
+    // 用户白名单。这不是显示错误,是直接把用户的配置删了,而且他自己看不出来
     // (界面本来就显示空,保存完还是空)。所以读失败时这个按钮必须是禁用的。
     // 访问密码只写 localStorage,不经过后端配置,配置读失败也照存不误
     if (apiKey) setApiSecretKey(apiKey);
@@ -388,6 +388,14 @@ function NotifySection({
   );
 }
 
+/**
+ * 一条轮询错误是不是"另一个进程在抢同一个 Token"。
+ * 判据跟后端日志里那段保持一致(Conflict / 409),两边说法不一致会把人绕晕。
+ */
+function isPollConflict(err: string): boolean {
+  return err.includes("Conflict") || err.includes("409");
+}
+
 function TelegramSection({
   form,
   set,
@@ -395,17 +403,127 @@ function TelegramSection({
   form: SettingsConfig;
   set: (k: keyof SettingsConfig, v: string) => void;
 }) {
-  const webhook = useTelegramWebhookInfo();
-  const onFetch = () => {
-    if (!form.tgToken) {
-      toast.error("请先填写并保存 Bot Token");
-      return;
-    }
-    webhook.refetch();
-  };
+  const poll = useTelegramPoller();
+
+  // poller 整个对象可能缺(后端还没初始化) —— 那是"没问到状态",不是"停了"。
+  // 混在一起会让用户去反复重启一个其实在正常跑的东西。
+  const poller = poll.data?.poller;
+  const hasToken = poll.data?.hasToken === true;
 
   return (
     <Section title="Telegram 通知">
+      {/* 收 update 只有长轮询一条路。webhook 那条已经删掉了:
+          它要公网 HTTPS 域名 + 受信证书,还得把回调端点放进鉴权白名单,
+          于是只能靠 secret_token 证明来源 —— 一整套只为解决"入站端点会被伪造"
+          这一个问题的东西。没有入站端点,这些连同它们的出错面一起消失了。 */}
+      <div className="rounded-2xl border border-border p-4 space-y-2.5 text-[13px]">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[13px] font-medium flex items-center gap-1.5">
+            <Radio className="w-3.5 h-3.5 text-muted-foreground" />
+            消息收取（长轮询）
+          </h3>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => poll.refetch()}
+            disabled={poll.isFetching}
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", poll.isFetching && "animate-spin")} />
+            刷新
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          程序主动去 Telegram 拉消息，<b>不需要公网地址和证书</b>，只要这台机器能访问
+          api.telegram.org。家宽、NAT 后面、没域名的机器都能用一键下单。
+        </p>
+
+        {poll.isPending ? (
+          <Skeleton className="h-20 rounded-xl" />
+        ) : poll.isError ? (
+          <LoadFailedBanner
+            title="长轮询状态没读到 —— 下面是空的不代表它停了"
+            error={poll.error}
+            onRetry={() => poll.refetch()}
+          />
+        ) : !hasToken ? (
+          <p className="text-[12px] text-warning">
+            还没保存 Bot Token，收取器不会启动。填好下面的 Token 和 Chat ID 再点「保存设置」。
+          </p>
+        ) : !poller ? (
+          // 后端没带 poller 回来 —— 看不到状态,不是停了
+          <p className="text-[12px] text-muted-foreground">
+            后端没有返回收取器状态，这里看不出它是不是真的在收消息（一般是后端版本太老或刚启动）。
+          </p>
+        ) : (
+          <>
+            <InfoRow
+              label="运行状态"
+              value={
+                poller.running ? (
+                  <Chip tone="success">
+                    <CheckCircle2 className="w-3 h-3" />
+                    运行中
+                  </Chip>
+                ) : (
+                  <Chip tone="danger">
+                    <AlertTriangle className="w-3 h-3" />
+                    已停止
+                  </Chip>
+                )
+              }
+            />
+            <InfoRow
+              label="最近一次拉取"
+              value={
+                poller.lastPollAt ? (
+                  <span className="font-mono text-[12px]">
+                    {new Date(poller.lastPollAt).toLocaleString("zh-CN")}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">还没拉到过</span>
+                )
+              }
+            />
+            <InfoRow
+              label="已确认 update_id"
+              value={<span className="font-mono text-[12px]">{poller.offset}</span>}
+            />
+            {poller.lastError ? (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 px-3 py-2 text-[12px] flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="font-semibold text-destructive">上次拉取报错</p>
+                  <p className="mt-0.5 break-words">{poller.lastError}</p>
+                  {isPollConflict(poller.lastError) && (
+                    <p className="mt-1.5 text-destructive">
+                      这是<b>同一个 Bot Token 有另一个进程也在收</b>：两边会互相把对方踢下线，
+                      表现就是「一键下单」按钮时灵时不灵、消息随机丢。
+                      先停掉另一份程序（另一台机器 / 另一个容器 / 本地调试进程），
+                      或者给这一份换一个 Bot Token。
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <InfoRow
+                label="错误状态"
+                value={
+                  <Chip tone="success">
+                    <CheckCircle2 className="w-3 h-3" />
+                    正常
+                  </Chip>
+                }
+              />
+            )}
+            {!poller.running && (
+              <p className="text-[11px] text-destructive">
+                收取器没在跑 —— 现在一条命令、一个按钮都收不到。看上面的报错，或者重启程序。
+              </p>
+            )}
+          </>
+        )}
+      </div>
       <Field label="Bot Token">
         <Input
           type="password"
@@ -413,6 +531,9 @@ function TelegramSection({
           onChange={(e) => set("tgToken", e.target.value)}
           placeholder="123456:ABCdef..."
         />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          换 Token 并保存后会自动重启收取器，不需要手动操作。
+        </p>
       </Field>
       <Field label="Chat ID">
         <Input
@@ -431,109 +552,6 @@ function TelegramSection({
           只处理名单内用户的文字命令和按钮回调；留空会拒绝所有 Telegram 用户。请填写稳定的数字 User ID，不支持用户名。
         </p>
       </Field>
-      <Field label="Telegram 回调地址（可选）">
-        <Input
-          value={form.webhookUrl || ""}
-          onChange={(e) => set("webhookUrl", e.target.value)}
-          placeholder="https://your.domain/webhook"
-        />
-        <p className="text-[11px] text-muted-foreground mt-1">
-          方向是 <b>Telegram → 本程序</b>：填了它，通知里的「一键下单」按钮才点得动。
-          想让本程序把通知<b>发出去</b>到别的地方，请看左边的「通知通道」
-        </p>
-      </Field>
-
-      <div className="pt-2">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="text-[13px] font-medium flex items-center gap-1.5">
-            <Webhook className="w-3.5 h-3.5 text-muted-foreground" />
-            Webhook 信息
-          </h3>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onFetch}
-            disabled={webhook.isFetching}
-          >
-            <Webhook className={cn("w-3.5 h-3.5", webhook.isFetching && "animate-pulse")} />
-            {webhook.isFetching ? "查询中..." : "查看 webhook 信息"}
-          </Button>
-        </div>
-
-        {webhook.isError ? (
-          <div className="border border-border rounded-2xl p-4 text-[12px] text-destructive flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-            <span>{(webhook.error as Error)?.message || "获取 webhook 信息失败"}</span>
-          </div>
-        ) : webhook.data ? (
-          <div className="border border-border rounded-2xl p-4 space-y-2 text-[12px]">
-            <InfoRow
-              label="URL"
-              value={
-                webhook.data.url ? (
-                  <code className="font-mono break-all text-foreground">{webhook.data.url}</code>
-                ) : (
-                  <Chip tone="warning">未设置</Chip>
-                )
-              }
-            />
-            <InfoRow
-              label="待处理更新"
-              value={
-                <span className="font-mono">
-                  {webhook.data.pending_update_count ?? 0}
-                </span>
-              }
-            />
-            {webhook.data.ip_address && (
-              <InfoRow
-                label="IP 地址"
-                value={<code className="font-mono">{webhook.data.ip_address}</code>}
-              />
-            )}
-            {webhook.data.max_connections != null && (
-              <InfoRow
-                label="最大连接数"
-                value={<span className="font-mono">{webhook.data.max_connections}</span>}
-              />
-            )}
-            {webhook.data.last_error_date ? (
-              <InfoRow
-                label="上次错误"
-                value={
-                  <div className="text-right">
-                    <Chip tone="danger">
-                      <AlertTriangle className="w-3 h-3" />
-                      {new Date(webhook.data.last_error_date * 1000).toLocaleString("zh-CN")}
-                    </Chip>
-                    {webhook.data.last_error_message && (
-                      <p className="mt-1 text-destructive break-words max-w-[280px]">
-                        {webhook.data.last_error_message}
-                      </p>
-                    )}
-                  </div>
-                }
-              />
-            ) : (
-              <InfoRow
-                label="错误状态"
-                value={
-                  <Chip tone="success">
-                    <CheckCircle2 className="w-3 h-3" />
-                    正常
-                  </Chip>
-                }
-              />
-            )}
-          </div>
-        ) : (
-          <p className="text-[12px] text-muted-foreground">
-            点击右上角按钮查询当前 Telegram Bot 的 webhook 状态
-          </p>
-        )}
-      </div>
-
     </Section>
   );
 }

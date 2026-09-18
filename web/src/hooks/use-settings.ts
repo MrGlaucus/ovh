@@ -15,26 +15,12 @@ export interface SettingsConfig {
   tgChatId?: string;
   /** 允许处理 Telegram 消息/回调的数字 User ID，逗号分隔；空值即拒绝全部。 */
   tgAllowedUserIds?: string;
-  /** Telegram 回调地址：Telegram 把用户点按钮的动作推到这里（进） */
-  webhookUrl?: string;
-  /** 自定义通知地址：补货/下单结果由本程序 POST 到这里（出）。和上面那个方向相反 */
+  /** 自定义通知地址：补货/下单结果由本程序 POST 到这里（出） */
   notifyWebhookUrl?: string;
   /** 新建抢购任务的默认重试间隔（秒）。网页弹窗 / TG /buy / 一键下单按钮都用它 */
   defaultRetryInterval?: number;
   /** 监控触发的自动下单用的重试间隔（秒）。货刚出现那一刻窗口很窄，默认比普通任务激进 */
   quickOrderRetryInterval?: number;
-}
-
-export interface TelegramWebhookInfo {
-  url?: string;
-  has_custom_certificate?: boolean;
-  pending_update_count?: number;
-  ip_address?: string;
-  last_error_date?: number;
-  last_error_message?: string;
-  last_synchronization_error_date?: number;
-  max_connections?: number;
-  allowed_updates?: string[];
 }
 
 /** 重试间隔的合法区间与默认值，与后端 types.ClampRetryInterval 一致 */
@@ -58,32 +44,15 @@ export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (payload: SettingsConfig) =>
-      (await api.post<{ status: string; warning?: string }>("/settings", payload)).data,
-    onSuccess: (result) => {
+      (await api.post<{ status: string }>("/settings", payload)).data,
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.settings.config() });
-      qc.invalidateQueries({ queryKey: qk.settings.telegramWebhookInfo() });
+      qc.invalidateQueries({ queryKey: qk.settings.telegramPoller() });
       // TG 配置可能变了,让监控对话框下次打开重新 verify
       qc.invalidateQueries({ queryKey: ["telegram", "verify"] });
-      if (result.warning) toast.warning(result.warning);
-      else toast.success("设置已保存");
+      toast.success("设置已保存");
     },
     onError: (e: any) => toast.error(e.response?.data?.error || "保存失败"),
-  });
-}
-
-/** Telegram Webhook 信息（按需触发，避免无 token 时报错） */
-export function useTelegramWebhookInfo() {
-  return useQuery({
-    queryKey: qk.settings.telegramWebhookInfo(),
-    queryFn: async () => {
-      const res = await api.get<{ success: boolean; webhook_info?: TelegramWebhookInfo; error?: string }>(
-        "/telegram/get-webhook-info"
-      );
-      if (!res.data?.success) throw new Error(res.data?.error || "获取 webhook 信息失败");
-      return res.data.webhook_info || {};
-    },
-    enabled: false,
-    retry: false,
   });
 }
 

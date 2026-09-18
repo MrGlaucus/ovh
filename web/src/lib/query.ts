@@ -151,7 +151,6 @@ export const qk = {
     config: () => ["settings", "config"] as const,
     cacheInfo: () => ["settings", "cache-info"] as const,
     telegramPoller: () => ["settings", "telegram-poller"] as const,
-    telegramWebhookInfo: () => ["settings", "telegram-webhook-info"] as const,
   },
 
   // 出站代理状态(右上角指示器)

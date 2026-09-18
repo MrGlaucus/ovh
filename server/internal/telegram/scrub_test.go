@@ -5,7 +5,7 @@ import "testing"
 func TestScrubRemovesToken(t *testing.T) {
 	cases := []string{
 		`Post "https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/sendMessage": dial tcp: i/o timeout`,
-		"https://api.telegram.org/bot987654321:XYZ_abc-123/getWebhookInfo",
+		"https://api.telegram.org/bot987654321:XYZ_abc-123/getMe",
 	}
 	for _, in := range cases {
 		got := scrub(in)
