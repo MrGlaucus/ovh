@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/proxy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,8 +185,10 @@ func (p *Poller) loop(gen int64) {
 	}()
 
 	fails := 0
-	// 长轮询要挂起 PollTimeoutSeconds 秒才回,客户端超时必须留出富余
-	client := &http.Client{Timeout: (PollTimeoutSeconds + 15) * time.Second}
+	// 长轮询要挂起 PollTimeoutSeconds 秒才回,客户端超时必须留出富余。
+	// 必须走 proxy.HTTPClient:裸 &http.Client 是直连,OUTBOUND_PROXY 会被无视 ——
+	// 发送类请求全在走代理、收取却直连,表现就是"能发不能收"。
+	client := proxy.HTTPClient((PollTimeoutSeconds + 15) * time.Second)
 
 	for p.stillMine(gen) {
 		updates, err := p.fetch(client)
@@ -306,7 +309,8 @@ func deleteWebhook(state *app.State) (bool, string) {
 	if token == "" {
 		return false, "未配置 Telegram Bot Token"
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	// 与 fetch 同理:必须走公共代理,否则直连环境里这一步同样失败
+	client := proxy.HTTPClient(10 * time.Second)
 	resp, err := client.Get("https://api.telegram.org/bot" + token + "/deleteWebhook")
 	if err != nil {
 		return false, scrub(err.Error())
