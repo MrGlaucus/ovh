@@ -2,6 +2,7 @@ package purchase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,6 +15,19 @@ import (
 )
 
 const concurrentBatchSize = 10
+
+// purchaseTaskTimeout 单个任务一轮执行的硬超时。
+//
+// 为什么需要:这一轮下单的 ctx 以前只有 WithCancel(用户删任务才取消) ——
+// 用户不删就没有任何超时兜底,配合无超时的 OVH HTTP client,任意一次网络
+// 黑洞能让整批任务永久挂住、队列循环停滞。现在给它加 deadline:
+// 超时后剩余步骤的请求立即中断,本轮按取消语义跳过(不记 FailureCount、
+// 不写失败历史、不动任务状态),下一轮重新执行 —— 队列永远不停滞。
+//
+// 10 分钟取值:正常一轮完整抢购约 2 秒(见 timing.go 打点),留 ~300 倍裕量;
+// 结账(checkout)故意不在这条 ctx 上(见 purchase.go 的 WithoutCancel 注释,
+// 请求一发出就不接受取消),那一步由 client 侧的 60s HTTP 超时兜底。
+const purchaseTaskTimeout = 10 * time.Minute
 
 // failNotice 把同一批任务的终止通知合并成一条。
 //
@@ -272,9 +286,10 @@ func ProcessQueueLoop(state *app.State) {
 					state.Logger.Info("重试检查任务 "+it.ID+": "+it.PlanCode+" 在 "+it.Datacenter, "queue")
 				}
 
-				// 给这一轮下单挂一个可取消的 ctx 并登记到 State。用户从任何入口删任务
-				// 都会经由 MarkTaskDeleted 调 cancel,正在进行的 OVH 调用立刻中断。
-				ctx, cancel := context.WithCancel(context.Background())
+				// 给这一轮下单挂 ctx 并登记到 State:用户从任何入口删任务都会经由
+				// MarkTaskDeleted 调 cancel,正在进行的 OVH 调用立刻中断;
+				// purchaseTaskTimeout 是无人删除时的兜底(见常量注释)。
+				ctx, cancel := context.WithTimeout(context.Background(), purchaseTaskTimeout)
 				state.RegisterTaskCancel(it.ID, cancel)
 				defer state.UnregisterTaskCancel(it.ID)
 				// 登记后复核:上面那次 IsTaskDeleted 到这里之间被删的话,
@@ -286,6 +301,11 @@ func ProcessQueueLoop(state *app.State) {
 				outcome := PurchaseServer(ctx, state, &snapshot)
 				if outcome.Cancelled {
 					// 用户删的,不是失败:不动 FailureCount、不置 failed,队列里也已经没有它了
+					// (任务还在队列里也可能走到这里:本轮执行超过 purchaseTaskTimeout
+					// 被 deadline 中断 —— 单独记一条,排查时不会误以为是被手动取消)
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						state.Logger.Warn("任务 "+it.ID+" 本轮执行超过 "+purchaseTaskTimeout.String()+" 被中断,下轮重试", "queue")
+					}
 					return
 				}
 				if outcome.DelayPending {

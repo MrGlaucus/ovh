@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/ovh/go-ovh/ovh"
 
@@ -32,6 +33,26 @@ type Factory struct {
 	cache map[string]*ovh.Client // accountID → client
 	gate  *outboundip.Gate
 }
+
+// apiTimeout 单次 OVH API 调用的硬超时。
+//
+// 为什么必须有:账户 client 的 Transport 只配了 Dial/TLS 超时(10s),没有
+// ResponseHeaderTimeout —— 连接一旦建立,对端不回数据时请求会无限挂起。
+// 队列处理是"整批并发出、每批 wg.Wait()"的结构:任意一个任务挂住,
+// 整批等待不返回,整个队列循环停滞(实测停摆一两天,日志里什么都看不到)。
+//
+// 为什么加在 http.Client 而不是 Transport 上:Transport 是共享连接池
+// (proxy.DirectHTTPClient / AccountHTTPClient 的实例),改它会影响所有
+// 调用方;client.Timeout 只作用于本账户的 OVH 请求。
+//
+// 为什么结账也靠它兜底:/order/cart/{id}/checkout 用 context.WithoutCancel
+// 发起(有意设计:请求一发出就不再接受取消,避免"OVH 已生成订单而我们不知道"),
+// 因此任务级 ctx 超时约束不到它 —— 这里是 checkout 唯一的保险丝。
+//
+// 60s 取值:正常 OVH API 响应 <5s(完整抢购流程打点总共约 2s,见 purchase/timing.go),
+// 60s 只会在真黑洞时触发;超时错误被 purchase.IsTransient 判为瞬时,
+// 任务下轮自动重试,而不是把队列拖死。
+const apiTimeout = 60 * time.Second
 
 // NewFactory 构造工厂。lookup 由 State 闭包注入。
 func NewFactory(cfg *config.Store, lookup AccountLookup) *Factory {
@@ -81,8 +102,11 @@ func (f *Factory) ClientFor(accountID string) (*ovh.Client, error) {
 		clientTransport = client.Transport
 	}
 	// 每个签名请求都会在真正出网前通过出口 IP 闸门；失败时 RoundTrip 直接返回，
-	// 不会向 OVH 发送任何请求。
-	cli.Client = &http.Client{Transport: outboundip.GuardedTransport{Base: clientTransport, Gate: f.gate, Account: acc}}
+	// 不会向 OVH 发送任何请求。Timeout 见 apiTimeout 的注释。
+	cli.Client = &http.Client{
+		Timeout:   apiTimeout,
+		Transport: outboundip.GuardedTransport{Base: clientTransport, Gate: f.gate, Account: acc},
+	}
 	f.cache[acc.ID] = cli
 	return cli, nil
 }
