@@ -29,9 +29,12 @@ var (
 	// 而 VPS 循环退出延迟很大(每订阅一次 10 秒超时的 HTTP + 下单往返)。
 	generation int64
 
-	// TG 健康检查节流。loop 每 5 分钟 verify 一次,失败自停。
+	// 通知通道体检节流。loop 每 5 分钟 verify 一次;全挂只告警不停监控。
 	tgCheckMu   sync.Mutex
 	lastTGCheck time.Time
+	// notifyChecked/notifyOK 上次体检结论,用于「不可用开始/恢复」的翻转日志。
+	notifyChecked bool
+	notifyOK      bool
 )
 
 const tgRecheckInterval = 5 * time.Minute
@@ -69,26 +72,38 @@ func clearCheckFailure(subID string) {
 	lastCheckErrMu.Unlock()
 }
 
-// checkNotifyOrStop 节流后体检所有通知通道,全挂才 Stop()。
-// 返回 true=继续 loop,false=已自停。
-func checkNotifyOrStop(state *app.State) bool {
+// checkNotifyHealth 节流后体检所有通知通道,全挂也只告警不停监控。
+//
+// 与服务器监控同源的历史缺陷:全挂时 Stop() 自停且无自动恢复,一次网络抖动
+// 就能让 VPS 监控停摆几天(状态页只剩一个"已停止",日志里那条 ERROR 早被
+// 请求日志挤出窗口)。现在与 monitor 包保持同一策略:继续跑、翻转时记日志。
+func checkNotifyHealth(state *app.State) {
 	tgCheckMu.Lock()
 	due := time.Since(lastTGCheck) >= tgRecheckInterval
 	tgCheckMu.Unlock()
 	if !due {
-		return true
+		return
 	}
-	// 与服务器监控同一口径:所有通道都不可用才停,只挂一条不影响
+	// 与服务器监控同一口径:任一通道可用即视为健康,全挂才告警
 	ok, reason := notify.AnyAvailable(state, true)
 	tgCheckMu.Lock()
+	first := !notifyChecked
+	prevOK := notifyOK
+	notifyChecked = true
+	notifyOK = ok
 	lastTGCheck = time.Now()
 	tgCheckMu.Unlock()
-	if !ok {
-		state.Logger.Error("所有通知通道都不可用,自动停止 VPS 监控("+reason+")", "vps_monitor")
-		Stop(state)
-		return false
+
+	if ok {
+		if !first && !prevOK {
+			state.Logger.Info("通知通道已恢复可用,补货通知将正常送达", "vps_monitor")
+		}
+		return
 	}
-	return true
+	if first || prevOK {
+		state.Logger.Error("所有通知通道都不可用("+reason+
+			"),VPS 补货通知暂时发不出去;监控继续运行,自动下单不受影响。请尽快修复通知通道(设置页可体检)。", "vps_monitor")
+	}
 }
 
 // vpsAPIBaseURL 把 OVH subsidiary 映射到对应区域的 base URL。
@@ -452,10 +467,8 @@ func monitorLoopGen(state *app.State, gen int64) {
 			break
 		}
 
-		// TG 失效 → 自停。checkNotifyOrStop 内部 5min 节流。
-		if !checkNotifyOrStop(state) {
-			break
-		}
+		// 通知通道体检:全挂也只告警不停监控,内部 5min 节流。
+		checkNotifyHealth(state)
 
 		state.VPSSubsMu.Lock()
 		subs := cloneSubs(state.VPSSubscriptions)

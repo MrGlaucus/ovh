@@ -57,10 +57,16 @@ type Monitor struct {
 	notificationMu sync.Mutex
 	cacheLock      sync.Mutex
 
-	// TG 健康检查时间戳:loop 每 5 分钟 verify 一次,失败就自停。
+	// 通知通道健康体检:loop 每 5 分钟 verify 一次。
+	// 全挂时只告警不停监控 —— 检查库存、库存历史与自动下单都不依赖通知通道。
+	// (以前是全挂自停且无自动恢复,一次网络抖动就让监控停摆几天,
+	// 见 loop.go 的 checkNotifyHealth。)体检结论记下来给 Status() 展示。
 	// 不放 subsMu 下,简单用单独的锁。
-	tgCheckMu   sync.Mutex
-	lastTGCheck time.Time
+	tgCheckMu     sync.Mutex
+	lastTGCheck   time.Time
+	notifyChecked bool   // 是否已经体检过(区分零值:"没体检过"≠"上次不可用")
+	notifyOK      bool   // 最近一次体检:是否至少一条通道可用
+	notifyReason  string // 不可用时各通道的失败原因(可用时为空)
 }
 
 type CachedOptions struct {
@@ -338,6 +344,11 @@ func (m *Monitor) Status() map[string]interface{} {
 			"error":      s.LastCheckError,
 		})
 	}
+	// 通知通道体检结论:全部不可用时监控仍在运行,只是通知发不出去。
+	// 前端据此在状态卡上告警(以前这种情况监控已经自停,用户只能靠翻日志发现)。
+	m.tgCheckMu.Lock()
+	notifyChecked, notifyOK, notifyReason := m.notifyChecked, m.notifyOK, m.notifyReason
+	m.tgCheckMu.Unlock()
 	return map[string]interface{}{
 		"running":             m.running,
 		"subscriptions_count": len(m.subscriptions),
@@ -345,6 +356,9 @@ func (m *Monitor) Status() map[string]interface{} {
 		"check_interval":      m.checkInterval,
 		"subscriptions":       subs,
 		"region_issues":       issues,
+		"notify_checked":      notifyChecked,
+		"notify_ok":           notifyOK,
+		"notify_reason":       notifyReason,
 	}
 }
 

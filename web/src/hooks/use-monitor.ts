@@ -40,6 +40,10 @@ export interface MonitorStatus {
   subscriptions_count: number;
   check_interval: number;
   known_servers_count: number;
+  /** 通知通道最近一次体检是否至少一条可用。全部不可用时监控仍在运行,只是通知发不出去。 */
+  notify_checked?: boolean;
+  notify_ok?: boolean;
+  notify_reason?: string;
 }
 
 export interface MonitorHistoryEntry {

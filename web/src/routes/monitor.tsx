@@ -161,6 +161,20 @@ function MonitorPage() {
                   读不到监控状态：{errorMessage(status.error)} · 点此重试
                 </button>
               )}
+              {!status.isError && status.data?.notify_checked && !status.data?.notify_ok && (
+                /* 通道全挂不再停监控:展示告警但不改变运行状态,通知恢复后会自动消失 */
+                <div className="mt-1">
+                  <Chip
+                    tone="warning"
+                    title={
+                      "补货通知暂时发不出去；监控仍在运行，自动下单不受影响" +
+                      (status.data?.notify_reason ? `。失败原因：${status.data.notify_reason}` : "")
+                    }
+                  >
+                    通知通道不可用
+                  </Chip>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex gap-6 text-sm">
@@ -374,7 +388,10 @@ function SubRow({
                 <Chip tone="danger" title={sub.lastCheckError}>
                   <AlertTriangle className="w-3 h-3" />检查异常
                 </Chip>
-              ) : hasChecked && !stale && monitorRunning ? (
+              ) : !monitorRunning ? (
+                /* 总开关停止时不再误报"检查可能停滞" — 那是运行中才有的异常 */
+                <Chip tone="default" title="监控总开关未运行，该订阅不会执行检查">监控未运行</Chip>
+              ) : hasChecked && !stale ? (
                 <Chip tone="success" title="最近一轮库存查询已完成，未报告错误">
                   <StatusDot tone="success" pulse size="xs" />监控正常
                 </Chip>

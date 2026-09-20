@@ -26,9 +26,10 @@ func GetSubscriptions(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 // AddSubscription POST /api/monitor/subscriptions
 func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 监控订阅必须有可用的 Telegram 通知,否则没意义
-		if ok, reason := notify.AnyAvailable(state, true); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "没有可用的通知通道(Telegram / Webhook 至少配一个):" + reason})
+		// 只检查"配没配",不去远端验证 —— 通道抖一下不该拦住建订阅。
+		// 通道暂时不可用时监控照跑,通知恢复后自然接上;完全没配通道才拦。
+		if ok, reason := notify.AnyAvailable(state, false); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "尚未配置任何通知通道(Telegram / Webhook 至少配一个),订阅后会收不到补货通知:" + reason})
 			return
 		}
 		var body struct {
@@ -121,9 +122,9 @@ func AddSubscription(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 // BatchAddAll POST /api/monitor/subscriptions/batch-add-all
 func BatchAddAll(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 同 AddSubscription:批量添加也要求 TG 有效
-		if ok, reason := notify.AnyAvailable(state, true); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "没有可用的通知通道(Telegram / Webhook 至少配一个):" + reason})
+		// 同 AddSubscription:只查"配没配",不因通道瞬时不可达而拦截
+		if ok, reason := notify.AnyAvailable(state, false); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "尚未配置任何通知通道(Telegram / Webhook 至少配一个),订阅后会收不到补货通知:" + reason})
 			return
 		}
 		state.ServerPlansMu.RLock()
@@ -256,9 +257,10 @@ func GetSubscriptionHistory(state *app.State, mon *monitor.Monitor) gin.HandlerF
 // StartMonitor POST /api/monitor/start
 func StartMonitor(state *app.State, mon *monitor.Monitor) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 启动前先验 TG,broken TG 不让起,免得起来一圈检查发不出去白跑
-		if ok, reason := notify.AnyAvailable(state, true); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Telegram 通知未配置或无效,无法启动监控:" + reason})
+		// 只拦"完全没配通知"的情况;通道配了但暂时不可达(网络抖动)不拦 ——
+		// 检查库存、历史与自动下单都不依赖通知通道,先跑起来,通知恢复后自然接上。
+		if ok, reason := notify.AnyAvailable(state, false); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "尚未配置任何通知通道(Telegram / Webhook 至少配一个),启动后补货通知无法送达:" + reason})
 			return
 		}
 		if mon.Start() {

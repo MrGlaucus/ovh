@@ -15,35 +15,46 @@ import (
 	"github.com/ovh-buy/server/internal/proxy"
 )
 
-// tgRecheckInterval loop 内 TG 健康检查节流间隔。5 分钟 verify 一次,
-// 失败立即调 Stop() 自停监控。
+// tgRecheckInterval 通知通道健康体检的节流间隔:5 分钟 verify 一次。
 const tgRecheckInterval = 5 * time.Minute
 
-// checkNotifyOrStop 节流后体检通知通道,**全部**不可用才自停。
+// checkNotifyHealth 节流后体检通知通道,**全部**不可用时只告警、不停监控。
 //
-// 以前这里只看 Telegram,TG 一失效就停整个监控 —— 于是 bot 被封、token 过期、
-// 或者机器一时连不上 api.telegram.org,用户失去的不是一条通知,而是整个补货监控,
-// 且只有翻日志才知道。现在只要还有一条通道能送达(比如 Webhook),监控就继续跑。
-//
-// 返回 true=继续 loop,false=已自停。
-func (m *Monitor) checkNotifyOrStop() bool {
+// 以前这里在全挂时调 Stop() 自停,本意是"发不出通知的监控等于全盲",但代价是:
+// TG/webhook 一抖(甚至只是 10 秒验证超时撞上一次),监控就停了,且没有任何自动
+// 恢复 —— 用户往往几天后才发现"上次检查"停在几万秒前。而实际上检查库存、记录
+// 库存历史、自动下单都不依赖通知通道,通道不可用最多是"这条通知发不出",
+// 远小于"整个监控停摆"的代价。现在:
+//   - 每 5 分钟体检一次,结论存下来由 Status()/前端展示;
+//   - 仅在「首次体检就失败」或「状态翻转」时各留一条日志,持续不可用不刷屏;
+//   - 监控一直跑,通道恢复后通知自然接上(下一轮体检记一条恢复日志)。
+func (m *Monitor) checkNotifyHealth() {
 	m.tgCheckMu.Lock()
 	due := time.Since(m.lastTGCheck) >= tgRecheckInterval
 	m.tgCheckMu.Unlock()
 	if !due {
-		return true
+		return
 	}
 	ok, reason := notify.AnyAvailable(m.state, true)
 	m.tgCheckMu.Lock()
+	first := !m.notifyChecked
+	prevOK := m.notifyOK
+	m.notifyChecked = true
+	m.notifyOK = ok
+	m.notifyReason = reason
 	m.lastTGCheck = time.Now()
 	m.tgCheckMu.Unlock()
-	if !ok {
-		m.state.Logger.Error("所有通知通道都不可用,自动停止服务器监控("+reason+
-			")。配一条 Webhook 作为备用通道可以避免这种全盲。", "monitor")
-		m.Stop()
-		return false
+
+	if ok {
+		if !first && !prevOK {
+			m.state.Logger.Info("通知通道已恢复可用,补货通知将正常送达", "monitor")
+		}
+		return
 	}
-	return true
+	if first || prevOK {
+		m.state.Logger.Error("所有通知通道都不可用("+reason+
+			"),补货通知暂时发不出去;监控继续运行,自动检查与自动下单不受影响。请尽快修复通知通道(设置页可体检)。", "monitor")
+	}
 }
 
 func (m *Monitor) CheckNewServers(currentServerList []map[string]interface{}) {
@@ -108,10 +119,8 @@ func (m *Monitor) monitorLoopGen(gen int64) {
 			break
 		}
 
-		// 通知通道全挂 → 自停。checkNotifyOrStop 内部已节流 5 分钟,且失败时调 Stop()。
-		if !m.checkNotifyOrStop() {
-			break
-		}
+		// 通知通道体检:全挂也只告警不停监控,内部已节流 5 分钟。
+		m.checkNotifyHealth()
 
 		m.cleanupExpiredCaches()
 

@@ -71,9 +71,9 @@ type annotatedVPSSub struct {
 // AddVPSSubscription POST /api/vps-monitor/subscriptions
 func AddVPSSubscription(state *app.State) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// VPS 监控同样要求 TG 通知可用
-		if ok, reason := notify.AnyAvailable(state, true); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "没有可用的通知通道(Telegram / Webhook 至少配一个):" + reason})
+		// 只查"配没配",不因通道瞬时不可达而拦截(与服务器监控同一策略)
+		if ok, reason := notify.AnyAvailable(state, false); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "尚未配置任何通知通道(Telegram / Webhook 至少配一个),订阅后会收不到补货通知:" + reason})
 			return
 		}
 		var body struct {
@@ -299,8 +299,9 @@ func StartVPSMonitor(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"status": "info", "message": "VPS监控已在运行中"})
 			return
 		}
-		if ok, reason := notify.AnyAvailable(state, true); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "Telegram 通知未配置或无效,无法启动 VPS 监控:" + reason})
+		// 通道配了但暂时不可达不拦:监控照跑,通知恢复后自然接上
+		if ok, reason := notify.AnyAvailable(state, false); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"status": "error", "message": "尚未配置任何通知通道(Telegram / Webhook 至少配一个),启动后补货通知无法送达:" + reason})
 			return
 		}
 		vps.Start(state)
