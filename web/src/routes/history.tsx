@@ -254,12 +254,12 @@ function HistoryPage() {
               variant="outline"
               onClick={() => refreshStatus.mutate()}
               disabled={list.isFetching || refreshStatus.isPending}
-              title="向 OVH 查询未到终态订单的支付状态,然后重载列表"
+              title="后台查询订单支付及退款状态，可离开页面，结果会自动更新"
             >
               <RefreshCw
                 className={`w-4 h-4 ${list.isFetching || refreshStatus.isPending ? "animate-spin" : ""}`}
               />
-              刷新状态
+              {refreshStatus.label}
             </Button>
             <Button
               variant="outline"

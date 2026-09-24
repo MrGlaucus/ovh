@@ -319,55 +319,6 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 	}
 }
 
-// RefreshOrderStatuses POST /api/purchase-history/refresh-status
-//
-// 手动刷新所有未到终态订单的支付状态(GET /me/order/{id}/status),
-// 并给还没标记退款的成功单查退款记录(原订单发票与退款单 originalBillId 关联)。
-// 订单状态后台每 10 分钟也会自动刷;退款查询只在手动刷新时执行,后台不轮询 ——
-// 这里是给"我刚付完款/刚取消完想马上看到"的场景。
-func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
-	// 手动刷新会对每条未终态订单各打一次 /me/order/{id},而 force=true 正是用来
-	// 跳过那个 2 分钟节流的 —— 等于把限流闸门交给用户的手速。
-	// OVH 对 /me 命名空间有自己的限流,打多了返回 429,而抢购主链路
-	// (查库存 / 建车 / 结账)跟它共用同一个账户配额:刷历史把配额刷没了,
-	// 补货那一刻就抢不到。所以入口这层必须有自己的节流。
-	var (
-		mu       sync.Mutex
-		lastCall time.Time
-	)
-	const minInterval = 15 * time.Second
-
-	return func(c *gin.Context) {
-		mu.Lock()
-		if wait := minInterval - time.Since(lastCall); !lastCall.IsZero() && wait > 0 {
-			mu.Unlock()
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"success": false,
-				"error": fmt.Sprintf("刷新太频繁,请等 %d 秒。手动刷新会对每条未完成订单各查一次 OVH,"+
-					"把账户配额刷光会影响正在跑的抢购。", int(wait.Seconds())+1),
-				"retryAfterSeconds": int(wait.Seconds()) + 1,
-			})
-			return
-		}
-		lastCall = time.Now()
-		mu.Unlock()
-
-		n := purchase.RefreshOrderStatuses(state, true)
-		// 顺带查退款：手动刷新正是"我刚在面板取消完订单,想立刻知道退了没"的场景,
-		// 退款查询跳过按小时节流(见 RefreshRefundStatuses 的 force 语义)。
-		n += purchase.RefreshRefundStatuses(state, true)
-		failed := 0
-		state.HistoryMu.Lock()
-		for _, h := range state.History {
-			if h.RefundCheckError != "" && h.Refund == nil {
-				failed++
-			}
-		}
-		state.HistoryMu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"success": true, "updated": n, "refundFailed": failed})
-	}
-}
-
 // PayPurchaseHistoryOrder POST /api/purchase-history/:id/pay
 // 仅允许对历史中原账户的待付款订单使用该账户默认支付方式付款。
 func PayPurchaseHistoryOrder(state *app.State) gin.HandlerFunc {

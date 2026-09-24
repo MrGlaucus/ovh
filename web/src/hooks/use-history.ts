@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { qk } from "@/lib/query";
@@ -67,23 +68,63 @@ export function useHistory() {
  * 并查一次未退款成功单的退款记录(退款只在手动刷新时查，后台不轮询)。
  * 给"我刚付完款想马上看到"的场景。
  */
-export function useRefreshOrderStatus() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async () =>
-      (await api.post<{ success: boolean; updated: number; refundFailed?: number }>("/purchase-history/refresh-status")).data,
-    onSuccess: (d) => {
-      qc.invalidateQueries({ queryKey: qk.history() });
-      if (d.refundFailed) {
-        toast.warning(`${d.refundFailed} 条订单退款查询未完成`, { description: "查看退款列的失败原因后重试" });
-        return;
-      }
-      toast.success(d.updated > 0 ? `${d.updated} 条订单状态有更新` : "订单状态已是最新");
-    },
-    onError: (e: any) => toast.error(e.response?.data?.error || "刷新状态失败"),
-  });
+interface HistoryRefreshStatus {
+  id: string;
+  status: "idle" | "running" | "completed" | "failed";
+  phase: string;
+  updated: number;
+  refundFailed: number;
+  error?: string;
 }
 
+export function useRefreshOrderStatus() {
+  const qc = useQueryClient();
+  const observed = useRef<string | null>(null);
+  const status = useQuery({
+    queryKey: ["history-refresh"],
+    queryFn: async ({ signal }) =>
+      (await api.get<HistoryRefreshStatus>("/purchase-history/refresh-status", { signal })).data,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: (q) => q.state.data?.status === "running" || q.state.status === "error" ? 3000 : false,
+  });
+  useEffect(() => {
+    const d = status.data;
+    if (!d) return;
+    if (d.status === "running") {
+      observed.current = d.id;
+      void qc.invalidateQueries({ queryKey: qk.history() });
+    } else if (observed.current) {
+      observed.current = null;
+      void qc.invalidateQueries({ queryKey: qk.history() });
+      if (d.status === "idle") toast.warning("刷新任务已中断，请重新刷新");
+      else if (d.status === "failed") toast.error(d.error || "刷新任务失败");
+      else if (d.refundFailed) toast.warning(`${d.refundFailed} 条订单退款查询未完成`, { description: "查看退款列的失败原因后重试" });
+      else toast.success(d.updated > 0 ? `${d.updated} 条订单状态有更新` : "订单状态已是最新");
+    }
+  }, [status.data, status.dataUpdatedAt, qc]);
+  const mutation = useMutation({
+    mutationFn: async () => {
+      await qc.cancelQueries({ queryKey: ["history-refresh"] });
+      return (await api.post<HistoryRefreshStatus>("/purchase-history/refresh-status")).data;
+    },
+    onSuccess: (d) => {
+      observed.current = d.id;
+      qc.setQueryData(["history-refresh"], d);
+    },
+    onError: (e: any) => {
+      void qc.invalidateQueries({ queryKey: ["history-refresh"] });
+      toast.warning(e.response?.data?.error || "提交请求连接中断，正在确认后台任务状态");
+    },
+  });
+  const running = status.data?.status === "running";
+  return {
+    ...mutation,
+    isPending: mutation.isPending || running,
+    label: running ? (status.isError ? "正在重连…" : status.data?.phase === "refunds" ? "查询退款中…" : "查询订单中…") : mutation.isPending ? "正在提交…" : "刷新状态",
+  };
+}
 /** 使用历史订单原账户的默认支付方式付款。 */
 export function usePayHistoryOrder() {
   const qc = useQueryClient();

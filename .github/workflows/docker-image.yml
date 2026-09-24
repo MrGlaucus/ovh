@@ -1,4 +1,5 @@
 name: Docker Image
+run-name: ${{ inputs.title || github.event.head_commit.message || format('Docker · {0} · {1}', github.ref_name, github.sha) }}
 
 # 与 Release 一样由 v* tag 触发，构建并推送多架构镜像到 Docker Hub。
 # Docker Hub 会在首次成功推送时创建 docker.io/<DOCKER_HUB_USERNAME>/ovh。
@@ -8,6 +9,10 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
+      title:
+        description: "构建说明（填写本次修改内容，显示在 Actions 构建历史中）"
+        required: true
+        type: string
       version:
         description: "版本号（不带 v 前缀；留空时从 VERSION 读取）"
         required: false
