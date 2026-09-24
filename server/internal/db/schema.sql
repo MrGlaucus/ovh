@@ -9,6 +9,14 @@
 -- ===========================================
 -- kv: 单例数据（Config / monitor & vps 全局状态）
 -- ===========================================
+CREATE TABLE IF NOT EXISTS telegram_availability_outbox (
+  id TEXT PRIMARY KEY,
+  plan_code TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tg_outbox_plan ON telegram_availability_outbox(plan_code);
+
 CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

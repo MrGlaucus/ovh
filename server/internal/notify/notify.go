@@ -44,8 +44,9 @@ type webhookPayload struct {
 
 // BroadcastResult 描述一次多通道发送的结果。Telegram 消息引用只在该通道成功时存在。
 type BroadcastResult struct {
-	Delivered int
-	Telegram  *telegram.MessageRef
+	Delivered     int
+	Telegram      *telegram.MessageRef
+	TelegramError error
 }
 
 // Broadcast 把一条消息发到所有已配置的通道。
@@ -61,6 +62,7 @@ func BroadcastWithResult(state *app.State, message string, replyMarkup map[strin
 	if strings.TrimSpace(cfg.TgToken) != "" && strings.TrimSpace(cfg.TgChatID) != "" {
 		ref, err := telegram.SendMessageWithRef(state, message, replyMarkup)
 		if err != nil {
+			result.TelegramError = err
 			state.Logger.Warn("Telegram 通知发送失败: "+err.Error(), "notify")
 		} else {
 			result.Delivered++

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ovh-buy/server/internal/catalog"
+	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/types"
 )
@@ -355,6 +356,15 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	// 订阅配置在本轮开始时取一份快照,后面统一用它 ——
 	// 边跑边读 sub.X 既有竞争,也会让一轮检查横跨用户改配置的时刻。
 	cfg := sub.checkConfig()
+	// New failures must wait for fresh inventory on the next round.
+	var pendingEntries []db.TelegramOutboxEntry
+	if m.state.DB != nil {
+		var err error
+		pendingEntries, err = m.state.DB.ListTelegramOutbox(planCode)
+		m.outboxError(err)
+	}
+	checkedStatuses := map[string]string{}
+	restocked := map[string]bool{}
 
 	// 查询账户必须按 planCode 所属大区选,不能一律落默认账户:
 	// 三个站点的库存视图独立,查错站点是 HTTP 200 + 空数组而不是报错(见 resolveQueryAccount 上的实测)。
@@ -650,6 +660,10 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			}
 
 			lastStatus[ds.statusKey] = actualStatus
+			checkedStatuses[ds.statusKey] = actualStatus
+			if notifyThis && changeType == "available" {
+				restocked[ds.statusKey] = true
+			}
 		}
 
 		// 购物车询价（同一配置只查一次）。
@@ -858,6 +872,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 	//     "首次检查"分支失效,当次有货既不通知也不触发 auto-order。
 	// 监控范围内的机房在上面的主循环里已经写过规范化状态了,所以这里不再补写。
 	sub.replaceLastStatus(lastStatus)
+	m.retryPendingAvailability(sub, pendingEntries, checkedStatuses, restocked)
 	// 状态动过就标脏,循环末尾统一落一次库。不标的话 LastStatus 只活在内存里,
 	// 重启后当次有货会被当成"初始存量"吞掉(既不通知也不自动下单)。
 	m.dirty.Store(true)

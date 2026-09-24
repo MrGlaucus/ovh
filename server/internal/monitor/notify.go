@@ -503,13 +503,15 @@ func (m *Monitor) SendAvailabilityAlertGrouped(planCode string, availableDCs []m
 		}
 	}
 	m.state.Logger.Info(fmt.Sprintf("正在发送汇总Telegram通知: %s%s - %d个机房", planCode, configDesc, len(availableDCs)), "monitor")
+	entry, pending := m.enqueueAvailability(planCode, availableDCs, configInfo, serverName, priceErrorMessage)
 	result := notify.BroadcastWithResult(m.state, msgText, replyMarkup)
 	if result.Telegram != nil {
 		m.saveTelegramAvailabilitySession(planCode, configInfo, msgText, *result.Telegram, availableDCs)
 	}
-	if result.Delivered > 0 {
+	m.finishPending(entry, pending, result.Telegram, result.TelegramError)
+	if result.Telegram != nil {
 		m.state.Logger.Info(fmt.Sprintf("✅ Telegram汇总通知发送成功: %s%s", planCode, configDesc), "monitor")
-	} else {
+	} else if result.TelegramError != nil {
 		m.state.Logger.Warn(fmt.Sprintf("⚠️ Telegram汇总通知发送失败: %s%s", planCode, configDesc), "monitor")
 	}
 }

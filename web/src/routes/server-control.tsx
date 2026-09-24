@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { OverviewTab } from "@/components/server-control/OverviewTab";
+import { DiagnosticTools } from "@/components/server-control/DiagnosticTools";
 import { PowerTab } from "@/components/server-control/PowerTab";
 import { MaintenanceTab } from "@/components/server-control/MaintenanceTab";
 import { AdvancedTab } from "@/components/server-control/AdvancedTab";
@@ -106,6 +107,8 @@ function ServerControlPage() {
           </div>
         }
       />
+
+      <DiagnosticTools />
 
       {q.isPending ? (
         <Skeleton className="h-[500px] rounded-2xl" />

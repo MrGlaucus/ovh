@@ -104,6 +104,12 @@ func SendMessage(state *app.State, message string, replyMarkup map[string]interf
 // SendMessageWithRef 发送 HTML 安全的文本并返回 Telegram 消息 ID。
 // 调用方传入纯文本；本函数统一转义，避免服务器名称等动态内容被当成 HTML。
 func SendMessageWithRef(state *app.State, message string, replyMarkup map[string]interface{}) (MessageRef, error) {
+	return retrySend(func() (MessageRef, error) {
+		return sendMessageOnce(state, message, replyMarkup)
+	}, time.Sleep)
+}
+
+func sendMessageOnce(state *app.State, message string, replyMarkup map[string]interface{}) (MessageRef, error) {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
 		return MessageRef{}, fmt.Errorf("未配置 Telegram Bot Token")
@@ -128,18 +134,31 @@ func SendMessageWithRef(state *app.State, message string, replyMarkup map[string
 	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
 	if err != nil {
 		// url.Error 通常会携带完整请求 URL，其中包含 Bot Token。
-		return MessageRef{}, fmt.Errorf("请求 Telegram API 失败: %s", scrub(err.Error()))
+		return MessageRef{}, &SendError{Message: fmt.Sprintf("请求 Telegram API 失败: %s", scrub(err.Error())), Temporary: true}
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return MessageRef{}, fmt.Errorf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, scrub(string(respBody)))
+		var failure struct {
+			Parameters struct {
+				RetryAfter int `json:"retry_after"`
+			} `json:"parameters"`
+		}
+		_ = json.Unmarshal(respBody, &failure)
+		return MessageRef{}, &SendError{
+			Message:    fmt.Sprintf("Telegram API 返回 HTTP %d: %s", resp.StatusCode, scrub(string(respBody))),
+			Temporary:  resp.StatusCode == 429 || resp.StatusCode >= 500,
+			RetryAfter: time.Duration(failure.Parameters.RetryAfter) * time.Second,
+		}
 	}
 	var result struct {
 		OK     bool `json:"ok"`
 		Result struct {
 			MessageID int64 `json:"message_id"`
 		} `json:"result"`
+	}
+	if readErr != nil {
+		return MessageRef{}, &SendError{Message: "读取 Telegram 响应失败: " + scrub(readErr.Error()), Temporary: true}
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil || !result.OK || result.Result.MessageID == 0 {
 		return MessageRef{}, fmt.Errorf("Telegram API 未返回有效 message_id")

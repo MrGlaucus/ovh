@@ -123,6 +123,9 @@ func (m *Monitor) monitorLoopGen(gen int64) {
 		m.checkNotifyHealth()
 
 		m.cleanupExpiredCaches()
+		if m.state.DB != nil {
+			m.outboxError(m.state.DB.ExpireTelegramOutbox(time.Now().Add(-availabilityRetryTTL).Unix()))
+		}
 
 		m.subsMu.Lock()
 		count := len(m.subscriptions)
