@@ -322,7 +322,7 @@ func UpdateQueueStatus(state *app.State) gin.HandlerFunc {
 // RefreshOrderStatuses POST /api/purchase-history/refresh-status
 //
 // 手动刷新所有未到终态订单的支付状态(GET /me/order/{id}/status),
-// 并给还没标记退款的成功单查退款记录(GET /me/refund?orderId=)。
+// 并给还没标记退款的成功单查退款记录(原订单发票与退款单 originalBillId 关联)。
 // 订单状态后台每 10 分钟也会自动刷;退款查询只在手动刷新时执行,后台不轮询 ——
 // 这里是给"我刚付完款/刚取消完想马上看到"的场景。
 func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
@@ -356,7 +356,15 @@ func RefreshOrderStatuses(state *app.State) gin.HandlerFunc {
 		// 顺带查退款：手动刷新正是"我刚在面板取消完订单,想立刻知道退了没"的场景,
 		// 退款查询跳过按小时节流(见 RefreshRefundStatuses 的 force 语义)。
 		n += purchase.RefreshRefundStatuses(state, true)
-		c.JSON(http.StatusOK, gin.H{"success": true, "updated": n})
+		failed := 0
+		state.HistoryMu.Lock()
+		for _, h := range state.History {
+			if h.RefundCheckError != "" && h.Refund == nil {
+				failed++
+			}
+		}
+		state.HistoryMu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"success": true, "updated": n, "refundFailed": failed})
 	}
 }
 

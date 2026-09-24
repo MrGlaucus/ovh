@@ -1783,6 +1783,29 @@
       "response": "nichandle.Nichandle"
     }
   },
+  "GET /me/bill/{billId}": {
+    "CA": {
+      "params": [
+        "path:billId:string:true"
+      ],
+      "response": "billing.Bill",
+      "status": "PRODUCTION"
+    },
+    "EU": {
+      "params": [
+        "path:billId:string:true"
+      ],
+      "response": "billing.Bill",
+      "status": "PRODUCTION"
+    },
+    "US": {
+      "params": [
+        "path:billId:string:true"
+      ],
+      "response": "billing.Invoice",
+      "status": "PRODUCTION"
+    }
+  },
   "GET /me/bill": {
     "CA": {
       "status": "PRODUCTION",

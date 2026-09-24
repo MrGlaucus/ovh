@@ -33,7 +33,8 @@ func TestHistoryRefundRoundTrip(t *testing.T) {
 			Price:  &types.PriceInfo{WithTax: &amount, CurrencyCode: "EUR"},
 			PDFURL: "https://example.invalid/refund.pdf",
 		},
-		RefundCheckedAt: types.NowISO(),
+		RefundCheckedAt:  types.NowISO(),
+		RefundCheckError: "退款详情查询失败",
 	}
 	if err := database.ReplaceHistory([]types.PurchaseHistoryEntry{want}); err != nil {
 		t.Fatalf("replace: %v", err)
@@ -46,6 +47,9 @@ func TestHistoryRefundRoundTrip(t *testing.T) {
 		t.Fatalf("期望 1 条,实际 %d", len(got))
 	}
 	g := got[0]
+	if g.RefundCheckError != want.RefundCheckError {
+		t.Fatal("退款查询错误未持久化")
+	}
 	if g.Refund == nil {
 		t.Fatal("Refund 没存住 —— 已退款标记重启即丢")
 	}

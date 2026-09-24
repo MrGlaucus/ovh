@@ -37,10 +37,12 @@ export interface PurchaseHistory {
   };
   /**
    * 已确认的退款记录（OVH billing.Refund）。有值 = 已退款。
-   * 后端只在手动点「刷新状态」时查 GET /me/refund?orderId= 落库（后台不轮询）；
+   * 后端只在手动点「刷新状态」时通过原发票关联退款并落库（后台不轮询）；
    * OVH 退款单没有状态机，只有"有/没有"，到账时间差在支付渠道侧。
    */
   refund?: {
+    originalBillId?: string;
+    refundOrderId?: string;
     id: string;
     date?: string;
     price?: { withTax?: number; currencyCode?: string };
@@ -49,6 +51,7 @@ export interface PurchaseHistory {
   };
   /** 上次查退款的时间（后端节流用；手动刷新跳过它，一般不用展示） */
   refundCheckedAt?: string;
+  refundCheckError?: string;
 }
 
 /** 抢购历史 */
@@ -68,9 +71,13 @@ export function useRefreshOrderStatus() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async () =>
-      (await api.post<{ success: boolean; updated: number }>("/purchase-history/refresh-status")).data,
+      (await api.post<{ success: boolean; updated: number; refundFailed?: number }>("/purchase-history/refresh-status")).data,
     onSuccess: (d) => {
       qc.invalidateQueries({ queryKey: qk.history() });
+      if (d.refundFailed) {
+        toast.warning(`${d.refundFailed} 条订单退款查询未完成`, { description: "查看退款列的失败原因后重试" });
+        return;
+      }
       toast.success(d.updated > 0 ? `${d.updated} 条订单状态有更新` : "订单状态已是最新");
     },
     onError: (e: any) => toast.error(e.response?.data?.error || "刷新状态失败"),

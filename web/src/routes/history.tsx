@@ -103,10 +103,15 @@ function HistoryPrice({ item, strike }: { item: PurchaseHistory; strike: boolean
  *
  * OVH 的退款单没有状态机（schema 里连 status 字段都没有），记录出现即"已退款"；
  * "钱到没到账"是支付渠道侧的几天~几十天时间差，API 看不到，不做假状态。
- * 数据由后端刷新订单状态时顺带查 GET /me/refund?orderId= 落库。
+ * 手动刷新时由后端通过原发票关联退款并落库。
  */
-function RefundInfoView({ refund }: { refund?: PurchaseHistory["refund"] }) {
-  if (!refund) return <span className="text-muted-foreground">—</span>;
+function RefundInfoView({ item }: { item: PurchaseHistory }) {
+  const { refund } = item;
+  if (!refund) {
+    if (item.status !== "success" || !item.orderId) return <span className="text-muted-foreground">—</span>;
+    if (item.refundCheckError) return <span className="text-warning text-[11px] break-words" title={item.refundCheckError}>查询失败：{item.refundCheckError}</span>;
+    return <span className="text-muted-foreground text-[11px]" title="点击顶部刷新状态同步退款记录">{item.refundCheckedAt ? "未发现关联退款" : "未查询"}</span>;
+  }
   const value = refund.price?.withTax;
   const currency = (refund.price?.currencyCode || "").trim();
   const dateLabel = refund.date
@@ -118,6 +123,8 @@ function RefundInfoView({ refund }: { refund?: PurchaseHistory["refund"] }) {
         <RotateCcw className="w-3 h-3" />
         已退款
       </Chip>
+      {refund.refundOrderId && <span className="text-[10px] text-muted-foreground break-all">退款订单 #{refund.refundOrderId}</span>}
+      {refund.originalBillId && <span className="text-[10px] text-muted-foreground break-all">原发票 {refund.originalBillId}</span>}
       <span className="flex items-center gap-2 text-[11px] flex-wrap">
         {value != null && (
           <span className="font-mono text-muted-foreground">
@@ -443,7 +450,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
   // 自动取消)。窗口只跟下单时间走,交付快慢不影响。窗口内显示倒计时,
   // 过期后换灰色的"已结束" —— 还能不能退款,答案都要在列表上。
   const refundDeadlineMs = st.paid ? getRefundDeadlineMs(item) : 0;
-  const hasRefundWindow = item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
+  const hasRefundWindow = !item.refund && item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
   const showRefund = hasRefundWindow && refundDeadlineMs > now;
   const refundExpired = hasRefundWindow && refundDeadlineMs <= now;
   const refundRemainingMs = showRefund ? refundDeadlineMs - now : 0;
@@ -454,6 +461,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
       <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
         <div className="min-w-0">
           <div className="truncate font-mono font-semibold" title={displayName || item.planCode}>{displayName || item.planCode}</div>
+          {item.orderId && <div className="mt-1 text-[11px] font-mono text-muted-foreground break-all select-all">原订单 #{item.orderId}</div>}
           <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
             {displayName && <span className="font-mono">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
@@ -490,7 +498,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
         </div>
       </td>
       <td className="px-3 py-3">
-        <RefundInfoView refund={item.refund} />
+        <RefundInfoView item={item} />
       </td>
       <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
         {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
@@ -514,7 +522,7 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
   const canPay = item.orderStatus === "notPaid" && !!item.accountId && !isExpired;
   const isUrgent = showCountdown && !isExpired && remainingMs < 24 * 60 * 60 * 1000;
   const refundDeadlineMs = st.paid ? getRefundDeadlineMs(item) : 0;
-  const hasRefundWindow = item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
+  const hasRefundWindow = !item.refund && item.status === "success" && !!item.orderId && refundDeadlineMs > 0;
   const showRefund = hasRefundWindow && refundDeadlineMs > now;
   const refundExpired = hasRefundWindow && refundDeadlineMs <= now;
   const refundRemainingMs = showRefund ? refundDeadlineMs - now : 0;
@@ -535,11 +543,12 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
             <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
           </Chip>
         </div>
+        {item.orderId && <div className="text-[11px] font-mono text-muted-foreground break-all select-all">原订单 #{item.orderId}</div>}
         <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ")}>
           {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
         </div>
-        {/* 没退款就不占位 —— 手机卡片是堆叠布局，空占位纯浪费一屏 */}
-        {item.refund && <RefundInfoView refund={item.refund} />}
+        {/* 手机端也显示查询状态，避免失败被空占位掩盖。 */}
+        <RefundInfoView item={item} />
         <div className="flex items-center justify-between gap-2 text-[11px]">
           <span className="text-muted-foreground font-mono">{parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
           {item.price?.withTax != null && <HistoryPrice item={item} strike={isExpired} />}
