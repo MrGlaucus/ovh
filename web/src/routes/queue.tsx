@@ -944,14 +944,16 @@ function QueueRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
-  // 只在已发现有货后的等待状态驱动倒计时；到期后后端会重新确认库存再下单。
+  // 每秒更新相对时间；实际执行状态由后端提供，不用倒计时推测。
   const delaying = item.status === "delaying" && !!item.orderNotBefore;
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (!delaying) return;
     const t = setInterval(() => setTick((n) => n + 1), 1000);
     return () => clearInterval(t);
-  }, [delaying]);
+  }, []);
+  const now = Date.now() / 1000;
+  const elapsed = item.lastCheckTime ? Math.max(0, Math.floor(now - item.lastCheckTime)) : 0;
+  const nextLeft = item.lastCheckTime ? Math.ceil(item.lastCheckTime + item.retryInterval - now) : 0;
   const delayLeft = delaying
     ? Math.max(0, Math.ceil(item.orderNotBefore! - Date.now() / 1000))
     : 0;
@@ -1044,27 +1046,36 @@ function QueueRow({
           </div>
           <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
             <Clock className="w-3 h-3" />
+            <span title={item.lastCheckTime ? new Date(item.lastCheckTime * 1000).toLocaleString() : undefined}>
+              {item.lastCheckTime ? `上次检查 ${elapsed}s 前` : "尚未检查"}
+            </span>
+            <span>·</span>
             {/* failed / completed 是终态,不会再重试 —— 再显示"下次尝试"会让用户以为还在排队。
                 失败原因写在抢购历史里,这里给一句指引。 */}
             {item.status === "failed" ? (
               <span>已停止重试（原因见抢购历史）</span>
             ) : item.status === "completed" ? (
               <span>已完成</span>
+            ) : item.status === "paused" ? (
+              <span>{item.checkInProgress ? "已暂停，本轮正在结束" : "已暂停，不再调度"}</span>
+            ) : item.checkInProgress ? (
+              <span className={elapsed > 60 ? "text-amber-600" : undefined}>
+                本轮检查 / 下单中，已耗时 {elapsed}s{elapsed > 60 ? "（耗时较长，请查看日志）" : ""}
+              </span>
             ) : inDelayWindow ? (
               <span>延迟下单中，还剩 {delayLeft} 秒后开始</span>
             ) : (
-              <span className="inline-flex items-center gap-1">
-                下次尝试
-                {item.retryCount > 0 ? (
-                  <>
-                    <IntervalEditor id={item.id} value={item.retryInterval} />
-                    秒后（第 {item.retryCount + 1} 次）
-                  </>
-                ) : (
-                  "即将开始"
-                )}
+              <span className={nextLeft < -15 && item.status === "running" ? "text-amber-600" : undefined}>
+                {item.status === "pending" ? "等待启动" : item.status === "delaying" ? "延迟已结束，等待重新检查"
+                  : nextLeft > 0 ? `下次检查约 ${nextLeft}s 后`
+                  : nextLeft < -15 ? `等待调度，已超出预计 ${-nextLeft}s（请查看日志）` : "等待调度检查"}
               </span>
             )}
+            <span>·</span>
+            <span className="inline-flex items-center gap-1">
+              检查间隔 <IntervalEditor id={item.id} value={item.retryInterval} /> 秒
+              · 已检查 {item.retryCount} 次
+            </span>
             {timing && (
               <>
                 <span>·</span>

@@ -29,6 +29,7 @@ export interface QueueItem {
   /** 后端 types.QueueItem 还会传回这几个字段（多为 omitempty），前端目前不渲染但保留类型对齐 */
   maxRetries?: number;
   lastCheckTime?: number;
+  checkInProgress?: boolean;
   quickOrder?: boolean;
   priority?: number;
   fromTelegram?: boolean;

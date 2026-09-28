@@ -123,9 +123,6 @@ func (m *Monitor) monitorLoopGen(gen int64) {
 		m.checkNotifyHealth()
 
 		m.cleanupExpiredCaches()
-		if m.state.DB != nil {
-			m.outboxError(m.state.DB.ExpireTelegramOutbox(time.Now().Add(-availabilityRetryTTL).Unix()))
-		}
 
 		m.subsMu.Lock()
 		count := len(m.subscriptions)
@@ -184,6 +181,13 @@ func (m *Monitor) monitorLoopGen(gen int64) {
 		}
 
 		// 等下次（可中断 sleep）
+		// 有待补发事件时最多等待 30 秒；仍经同一库存检查链路串行处理，避免重复发送。
+		if m.state.DB != nil && interval > 30 {
+			var pending int
+			if err := m.state.DB.Get(&pending, "SELECT count(*) FROM telegram_availability_outbox"); err == nil && pending > 0 {
+				interval = 30
+			}
+		}
 		running := m.stillMine(gen)
 		if running {
 			m.state.Logger.Info(fmt.Sprintf("等待 %d 秒后进行下次检查...", interval), "monitor")

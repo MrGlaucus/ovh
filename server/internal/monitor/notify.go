@@ -650,6 +650,9 @@ func (m *Monitor) SendAvailabilityAlert(planCode, datacenter, status, changeType
 		} else {
 			msg.WriteString("（价格校验未通过，已跳过自动下单）")
 		}
+		if retry, _ := configInfo["retry_pending"].(bool); retry {
+			msg.WriteString("\n上货通知暂未送达：将每 30 秒重新检查并重试；确认下架后取消，本次上货不重复提醒故障。")
+		}
 	default:
 		msg.WriteString("📦 服务器下架通知\n\n")
 		if serverName != "" {

@@ -167,9 +167,11 @@ type QueueItem struct {
 	FailureCount  int     `json:"failureCount,omitempty"`
 	MaxRetries    int     `json:"maxRetries,omitempty"`
 	LastCheckTime float64 `json:"lastCheckTime"`
-	QuickOrder    bool    `json:"quickOrder,omitempty"`
-	Priority      int     `json:"priority,omitempty"`
-	FromTelegram  bool    `json:"fromTelegram,omitempty"`
+	// CheckInProgress 仅保存在内存，表示本轮实际执行中；重启后不恢复。
+	CheckInProgress bool `json:"checkInProgress"`
+	QuickOrder      bool `json:"quickOrder,omitempty"`
+	Priority        int  `json:"priority,omitempty"`
+	FromTelegram    bool `json:"fromTelegram,omitempty"`
 	// AutoPay 下单成功后让 OVH 用账户默认支付方式自动付款
 	// (checkout 的 autoPayWithPreferredPaymentMethod,schema 描述:
 	// "order will be automatically paid with preferred payment method")。

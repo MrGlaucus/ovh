@@ -12,7 +12,7 @@ import (
 	"github.com/ovh-buy/server/internal/telegram"
 )
 
-const availabilityRetryTTL = 15 * time.Minute
+const availabilityRetryInterval = 30 * time.Second
 
 type pendingAvailability struct {
 	Config                map[string]interface{}   `json:"config"`
@@ -22,6 +22,7 @@ type pendingAvailability struct {
 	Destination           string                   `json:"destination"`
 	SubscriptionCreatedAt string                   `json:"subscriptionCreatedAt"`
 	NextAttempt           int64                    `json:"nextAttempt"`
+	AwaitingValidation    bool                     `json:"awaitingValidation,omitempty"`
 }
 
 func (m *Monitor) telegramDestination() string {
@@ -74,7 +75,7 @@ func (m *Monitor) finishPending(entry db.TelegramOutboxEntry, pending pendingAva
 		m.outboxError(m.state.DB.DeleteTelegramOutbox(entry.ID))
 		return
 	}
-	delay := time.Minute
+	delay := availabilityRetryInterval
 	var failure *telegram.SendError
 	if errors.As(err, &failure) && failure.RetryAfter > delay {
 		delay = failure.RetryAfter
@@ -82,6 +83,25 @@ func (m *Monitor) finishPending(entry db.TelegramOutboxEntry, pending pendingAva
 	pending.NextAttempt = time.Now().Add(delay).Unix()
 	m.savePending(entry, pending)
 	m.state.Logger.Warn("Telegram 上货通知未送达，已保留待补发记录: "+entry.PlanCode, "monitor")
+}
+
+// Back off account-level validation without suppressing fresh public inventory checks.
+func pendingValidationWaiting(entries []db.TelegramOutboxEntry, key, dc string, now int64) bool {
+	for _, entry := range entries {
+		var p pendingAvailability
+		if json.Unmarshal([]byte(entry.Payload), &p) != nil || !p.AwaitingValidation || p.NextAttempt <= now {
+			continue
+		}
+		if p.Config["config_key"] != key {
+			continue
+		}
+		for _, item := range p.DCs {
+			if item["dc"] == dc {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Fresh checked statuses only: never use last round's available state to resend.
@@ -112,7 +132,7 @@ func (m *Monitor) retryPendingAvailability(sub *Subscription, entries []db.Teleg
 		var pending pendingAvailability
 		err := json.Unmarshal([]byte(entry.Payload), &pending)
 		if err != nil || !cfg.NotifyAvailable || pending.SubscriptionCreatedAt != sub.CreatedAt ||
-			pending.Destination != m.telegramDestination() || time.Since(time.Unix(entry.CreatedAt, 0)) > availabilityRetryTTL {
+			pending.Destination != m.telegramDestination() {
 			m.outboxError(m.state.DB.DeleteTelegramOutbox(entry.ID))
 			continue
 		}
@@ -124,6 +144,9 @@ func (m *Monitor) retryPendingAvailability(sub *Subscription, entries []db.Teleg
 			continue
 		}
 		if len(ready) == 0 || time.Now().Unix() < pending.NextAttempt {
+			if pending.AwaitingValidation && time.Now().Unix() >= pending.NextAttempt {
+				pending.NextAttempt = time.Now().Add(availabilityRetryInterval).Unix()
+			}
 			m.savePending(entry, pending)
 			continue
 		}

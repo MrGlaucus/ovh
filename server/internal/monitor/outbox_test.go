@@ -90,7 +90,7 @@ func TestAvailabilityOutbox502RestartRecovery(t *testing.T) {
 }
 
 func TestAvailabilityOutboxCancelsStaleEvents(t *testing.T) {
-	for _, scenario := range []string{"sold out", "missing", "new restock", "disabled", "destination changed", "expired", "recreated subscription"} {
+	for _, scenario := range []string{"sold out", "missing", "new restock", "disabled", "destination changed", "recreated subscription"} {
 		t.Run(scenario, func(t *testing.T) {
 			m := outboxMonitor(t)
 			entry, p := m.enqueueAvailability("plan", []map[string]interface{}{{"dc": "gra"}}, map[string]interface{}{"config_key": "fqn"}, "Server", "")
@@ -108,11 +108,6 @@ func TestAvailabilityOutboxCancelsStaleEvents(t *testing.T) {
 			case "destination changed":
 				p.Destination = "other"
 				m.savePending(entry, p)
-			case "expired":
-				_, err := m.state.DB.Exec(`UPDATE telegram_availability_outbox SET created_at=?`, time.Now().Add(-16*time.Minute).Unix())
-				if err != nil {
-					t.Fatal(err)
-				}
 			case "recreated subscription":
 				p.SubscriptionCreatedAt = "old"
 				m.savePending(entry, p)
@@ -133,6 +128,57 @@ func TestFilterPendingDCsPartialAvailability(t *testing.T) {
 	keep, ready := filterPendingDCs(dcs, "fqn", map[string]string{"gra|fqn": "available", "fra|fqn": "unavailable", "rbx|fqn": "price_check_failed"}, nil)
 	if len(keep) != 2 || len(ready) != 1 || ready[0]["dc"] != "gra" {
 		t.Fatalf("keep=%v ready=%v", keep, ready)
+	}
+}
+
+func TestPendingValidationSurvivesLongOutageAndSendsOnce(t *testing.T) {
+	m := outboxMonitor(t)
+	entry, p := m.enqueueAvailability("plan", []map[string]interface{}{{"dc": "gra"}}, map[string]interface{}{"config_key": "fqn"}, "Server", "")
+	p.AwaitingValidation = true
+	p.NextAttempt = time.Now().Add(30 * time.Second).Unix()
+	m.savePending(entry, p)
+	if _, err := m.state.DB.Exec(`UPDATE telegram_availability_outbox SET created_at=?`, time.Now().Add(-time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	rows := outboxRows(t, m)
+	if !pendingValidationWaiting(rows, "fqn", "gra", time.Now().Unix()) {
+		t.Fatal("missing validation backoff")
+	}
+	if pendingValidationWaiting(rows, "fqn", "rbx", time.Now().Unix()) {
+		t.Fatal("backoff leaked to another DC")
+	}
+	if pendingValidationWaiting(rows, "fqn", "gra", p.NextAttempt) {
+		t.Fatal("retry not due after 30 seconds")
+	}
+	calls := 0
+	old := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = old })
+	http.DefaultTransport = outboxTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":44}}`)), Header: make(http.Header)}, nil
+	})
+	m.retryPendingAvailability(m.subscriptions[0], rows, map[string]string{"gra|fqn": "price_check_failed"}, nil)
+	if calls != 0 || len(outboxRows(t, m)) != 1 {
+		t.Fatal("lost pending event or sent before validation")
+	}
+	p.NextAttempt = 0
+	m.savePending(entry, p)
+	m.retryPendingAvailability(m.subscriptions[0], outboxRows(t, m), map[string]string{"gra|fqn": "available"}, nil)
+	m.retryPendingAvailability(m.subscriptions[0], outboxRows(t, m), map[string]string{"gra|fqn": "available"}, nil)
+	if calls != 1 || len(outboxRows(t, m)) != 0 {
+		t.Fatal("recovery did not send exactly once")
+	}
+}
+
+func TestPendingValidationCancelledDuringBackoff(t *testing.T) {
+	m := outboxMonitor(t)
+	entry, p := m.enqueueAvailability("plan", []map[string]interface{}{{"dc": "gra"}}, map[string]interface{}{"config_key": "fqn"}, "Server", "")
+	p.AwaitingValidation = true
+	p.NextAttempt = time.Now().Add(30 * time.Second).Unix()
+	m.savePending(entry, p)
+	m.retryPendingAvailability(m.subscriptions[0], outboxRows(t, m), map[string]string{"gra|fqn": "unavailable"}, nil)
+	if len(outboxRows(t, m)) != 0 {
+		t.Fatal("sold out event retained until retry deadline")
 	}
 }
 

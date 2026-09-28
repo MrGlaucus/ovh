@@ -27,7 +27,7 @@ import (
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
-	"github.com/ovh-buy/server/internal/notify"
+
 	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/secret"
@@ -36,16 +36,12 @@ import (
 	"github.com/ovh-buy/server/internal/updater"
 )
 
+// 代理健康检查只更新状态和日志；通知由实际受影响的上货事件发出。
 func notifyOutboundIPChanges(state *app.State, changes []app.OutboundIPChange) {
 	for _, change := range changes {
-		if change.Status == "verified" {
-			notify.Broadcast(state, fmt.Sprintf("[账户代理恢复] %s 出口 IP 已确认一致\n预期: %s\n实际: %s\n已恢复携带账户鉴权的 OVH API 请求。", change.AccountName, change.ExpectedIP, change.ActualIP), nil)
-			continue
-		}
-		notify.Broadcast(state, fmt.Sprintf("[账户代理告警] %s 出口 IP 校验失败，已阻断携带账户鉴权的 OVH API 请求。\n预期: %s\n实际: %s\n原因: %s\n系统将每 30 秒自动重试。", change.AccountName, change.ExpectedIP, change.ActualIP, change.Reason), nil)
+		state.Logger.Info(fmt.Sprintf("账户代理状态变化: %s -> %s (%s)", change.AccountName, change.Status, change.Reason), "proxy")
 	}
 }
-
 func main() {
 	// envPath 就是 godotenv 读的那个文件。密钥自动生成时会追加到这里,
 	// 所以路径必须和 Load() 用的完全一致 —— 分叉了就会出现

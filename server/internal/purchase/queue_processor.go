@@ -274,11 +274,22 @@ func ProcessQueueLoop(state *app.State) {
 					current.RetryInterval = state.Config.RetryInterval()
 				}
 				current.LastCheckTime = float64(time.Now().Unix())
+				current.CheckInProgress = true
 				current.RetryCount++
 				current.UpdatedAt = types.NowISO()
 				finalRetry := current.RetryCount
 				snapshot := *current
 				state.QueueMu.Unlock()
+				defer func() {
+					state.QueueMu.Lock()
+					defer state.QueueMu.Unlock()
+					for i := range state.Queue {
+						if state.Queue[i].ID == it.ID {
+							state.Queue[i].CheckInProgress = false
+							break
+						}
+					}
+				}()
 
 				if isFirstAttempt {
 					state.Logger.Info("首次尝试任务 "+it.ID+": "+it.PlanCode+" 在 "+it.Datacenter, "queue")

@@ -13,6 +13,7 @@ import (
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -421,6 +422,10 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 		if reason != prevErr {
 			m.state.Logger.Warn(fmt.Sprintf("无法获取 %s 的可用性信息: %s", planCode, reason), "monitor")
 		}
+		// 成功查询为空表示已无可售配置；网络失败则保留待发事件等待下一次确认。
+		if availErr == nil && choice.degradeReason == "" {
+			m.retryPendingAvailability(sub, pendingEntries, checkedStatuses, restocked)
+		}
 		return
 	}
 
@@ -519,6 +524,12 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				go func(dc string) {
 					defer wg.Done()
 					defer func() { <-sem }()
+					if pendingValidationWaiting(pendingEntries, configKey, dc, time.Now().Unix()) {
+						pcMu.Lock()
+						priceCheckResults[dc] = [2]interface{}{false, "上货通知等待重试"}
+						pcMu.Unlock()
+						return
+					}
 					ok, errMsg := m.verifyPriceAvailable(planCode, dc, priceCfg)
 					pcMu.Lock()
 					priceCheckResults[dc] = [2]interface{}{ok, errMsg}
@@ -814,7 +825,19 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			configInfoFailed := copyMap(priceCfg)
 			if mp := m.monthlyPriceText(planCode, choice.accountID, configData.Options); mp != "" {
 				configInfoFailed["cached_price"] = mp
-				configInfoFailed["price_check_error"] = n.priceCheckError
+			}
+			if ip := m.installPriceText(planCode, choice.accountID, configData.Options); ip != "" {
+				configInfoFailed["install_price"] = ip
+			}
+			if purchase.IsTransient(errors.New(n.priceCheckError)) {
+				dcs := []map[string]interface{}{{"dc": n.dc, "raw_status": n.rawStatus, "detected_time": n.detectedTime}}
+				entry, pending := m.enqueueAvailability(planCode, dcs, configInfoFailed, cfg.ServerName, "")
+				pending.AwaitingValidation = true
+				pending.NextAttempt = time.Now().Add(availabilityRetryInterval).Unix()
+				if entry.ID != "" {
+					m.savePending(entry, pending)
+				}
+				configInfoFailed["retry_pending"] = true
 			}
 			m.SendAvailabilityAlert(planCode, n.dc, "unavailable", "price_check_failed",
 				configInfoFailed, cfg.ServerName, "", n.priceCheckError, traceID, n.configTraceID, n.detectedTime)
