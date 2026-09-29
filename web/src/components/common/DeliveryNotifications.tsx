@@ -32,7 +32,7 @@ export function DeliveryNotifications() {
       <Switch id="delivery-notifications" checked={status.data?.enabled ?? false} disabled={!status.data || status.isError || change.isPending}
         onCheckedChange={(enabled) => change.mutate({ enabled, id: status.data!.accountId })} />
     </div>
-    <p className="text-xs text-muted-foreground">仅对当前账户生效。每 30 秒检测新增服务器，通知包含实际配置和快捷操作；关闭后停止检测及发送。</p>
+    <p className="text-xs text-muted-foreground">仅对当前账户生效。每 60 秒检测新增服务器，通知包含实际配置和快捷操作；关闭后停止检测及发送。</p>
     <p className="text-xs text-muted-foreground">所有账户默认开启。关闭会清空基线并取消待发通知；再次开启会以最新服务器列表重新建立基线，不补发已有机器。</p>
     {status.isError ? <div className="text-xs text-destructive">读取设置失败<Button variant="link" size="sm" onClick={() => status.refetch()}>重试</Button></div>
       : status.data?.enabled && <p className="text-xs text-muted-foreground">{status.data.lastError || (!status.data.initialized ? "等待首次成功检查，建立服务器基线…" : status.data.lastCheck ? `上次检查：${new Date(status.data.lastCheck * 1000).toLocaleString()}` : "等待检查…")}</p>}

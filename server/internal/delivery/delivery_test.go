@@ -270,3 +270,24 @@ func TestOldRequestCannotRebuildBaselineAfterToggle(t *testing.T) {
 		t.Fatal("stale response established new baseline")
 	}
 }
+
+func TestRetryDoesNotPollServerList(t *testing.T) {
+	w, f, _, _ := fixture(t)
+	w.scan("a")
+	f.names = append(f.names, "new")
+	w.send = func(string, map[string]interface{}) (telegram.MessageRef, error) {
+		return telegram.MessageRef{}, errors.New("offline")
+	}
+	w.scan("a")
+	f.paths = nil
+	w.state.DB.Exec("UPDATE delivery_servers SET next_attempt=0 WHERE sent_at=0")
+	sent := 0
+	w.send = func(string, map[string]interface{}) (telegram.MessageRef, error) {
+		sent++
+		return telegram.MessageRef{ChatID: "123", MessageID: 1}, nil
+	}
+	w.scanWithList("a", false)
+	if sent != 1 || len(f.paths) != 0 {
+		t.Fatalf("retry should only send TG: sent=%d paths=%v", sent, f.paths)
+	}
+}

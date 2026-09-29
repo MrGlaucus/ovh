@@ -33,6 +33,7 @@ func Run(state *app.State) {
 	}}
 	var active sync.Map
 	var next sync.Map
+	var nextList sync.Map
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -55,7 +56,13 @@ func Run(state *app.State) {
 						state.Logger.Error(fmt.Sprintf("发货检测异常: %v", r), "delivery")
 					}
 				}()
-				w.scan(id)
+				// 待发消息仍每 30 秒重试，服务器名单独立按 60 秒检测。
+				due, exists := nextList.Load(id)
+				checkList := !exists || !time.Now().Before(due.(time.Time))
+				if checkList {
+					nextList.Store(id, time.Now().Add(time.Minute))
+				}
+				w.scanWithList(id, checkList)
 			}(id)
 		}
 		<-tick.C
@@ -74,6 +81,10 @@ func (w *watcher) failure(id string, err error) {
 	}
 }
 func (w *watcher) scan(id string) {
+	w.scanWithList(id, true)
+}
+
+func (w *watcher) scanWithList(id string, checkList bool) {
 	settings, settingsErr := w.state.DB.DeliverySettings(id)
 	if settingsErr != nil || !settings.Enabled {
 		return
@@ -91,14 +102,16 @@ func (w *watcher) scan(id string) {
 		w.failure(id, err)
 	} else {
 		client = &guardedGetter{w: w, account: id, client: client, generation: settings.Generation}
-		var names []string
-		if err = client.Get("/dedicated/server", &names); err != nil {
-			w.failure(id, err)
-		} else if names == nil {
-			w.failure(id, fmt.Errorf("服务器列表返回 null，保留原基线"))
-		} else if err = w.state.DB.ObserveDeliveryServers(id, names, time.Now().Unix(), settings.Generation); err != nil {
-			w.failure(id, err)
-			return
+		if checkList {
+			var names []string
+			if err = client.Get("/dedicated/server", &names); err != nil {
+				w.failure(id, err)
+			} else if names == nil {
+				w.failure(id, fmt.Errorf("服务器列表返回 null，保留原基线"))
+			} else if err = w.state.DB.ObserveDeliveryServers(id, names, time.Now().Unix(), settings.Generation); err != nil {
+				w.failure(id, err)
+				return
+			}
 		}
 	}
 	// Persisted pending deliveries are independent of later server-list failures/removals.
