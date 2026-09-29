@@ -24,6 +24,7 @@ import (
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/config"
 	"github.com/ovh-buy/server/internal/db"
+	"github.com/ovh-buy/server/internal/delivery"
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
@@ -552,6 +553,8 @@ func main() {
 		api.GET("/ovh/account/refunds", handlers.GetAccountRefunds(state))
 		api.GET("/ovh/account/credit-balance", handlers.GetCreditBalance(state))
 		api.GET("/ovh/account/email-history", handlers.GetEmailHistory(state))
+		api.GET("/ovh/account/delivery-notifications", handlers.DeliveryNotificationSettings(state))
+		api.PUT("/ovh/account/delivery-notifications", handlers.DeliveryNotificationSettings(state))
 		api.GET("/ovh/contact-change-requests", handlers.GetContactChangeRequests(state))
 		api.GET("/ovh/contact-change-requests/:task_id", handlers.GetContactChangeRequestDetail(state))
 		api.POST("/ovh/contact-change-requests/:task_id/accept", handlers.AcceptContactChangeRequest(state))
@@ -578,6 +581,7 @@ func main() {
 	}()
 	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
 	go purchase.OrderStatusLoop(state)
+	go delivery.Run(state)
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,
 	// 首次解析放在抢购链路上会白白慢 2-7 秒
 	go catalog.WarmRegionCache(state)

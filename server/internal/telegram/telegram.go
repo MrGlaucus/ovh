@@ -289,11 +289,22 @@ func EditMessageReplyMarkup(state *app.State, chatID interface{}, messageID int6
 
 // SendReplyWithMarkup 回复指定消息并附带内联按钮。
 func SendReplyWithMarkup(state *app.State, chatID interface{}, text string, replyToMessageID int64, replyMarkup map[string]interface{}) bool {
+	return sendReplyWithFormat(state, chatID, text, replyToMessageID, replyMarkup, "")
+}
+
+func SendCodeReply(state *app.State, chatID interface{}, command string, replyToMessageID int64) bool {
+	return sendReplyWithFormat(state, chatID, "<pre>"+html.EscapeString(command)+"</pre>", replyToMessageID, nil, "HTML")
+}
+
+func sendReplyWithFormat(state *app.State, chatID interface{}, text string, replyToMessageID int64, replyMarkup map[string]interface{}, parseMode string) bool {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
 		return false
 	}
 	payload := map[string]interface{}{"chat_id": chatID, "text": text, "reply_to_message_id": replyToMessageID, "reply_markup": replyMarkup}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
+	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+cfg.TgToken+"/sendMessage", bytes.NewReader(body))
 	if err != nil {

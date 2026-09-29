@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { User, Mail, RefreshCw, FileText, Inbox, ShieldCheck, type LucideIcon } from "lucide-react";
 import { useState } from "react";
+import { DeliveryNotifications } from "@/components/common/DeliveryNotifications";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ function AccountPage() {
   return (
     <div className="space-y-3 sm:space-y-6">
       <PageHeader icon={User} title="账户管理" description="查看和管理您的 OVH 账户信息" />
+      <DeliveryNotifications />
 
       {/* 后端在 /me 响应上打的 X-Subsidiary-Mismatch:账户里配的 zone 与 OVH 认定的
           ovhSubsidiary 不在一起。凭据是有效的,所以别的地方一切正常,只有目录/价格/下单

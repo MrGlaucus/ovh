@@ -299,6 +299,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 
 	action := strOr(callbackObj, "a", "action")
 	buttonID := strOr(callbackObj, "u", "uuid")
+	if action == "dr" || action == "dn" || action == "dh" {
+		handleDeliveryCallback(state, action, buttonID, fmt.Sprint(cb["id"]), chatID, int64(messageID))
+		u.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action == "favorite" || action == "fav" {
 		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
 		if action == "fav" {

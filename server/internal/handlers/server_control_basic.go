@@ -17,6 +17,7 @@ import (
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/numconv"
 	"github.com/ovh-buy/server/internal/ovh"
+	"github.com/ovh-buy/server/internal/serverops"
 )
 
 // noOVHResp 当前账户取不到 OVH 客户端时的统一响应。
@@ -190,8 +191,8 @@ func Reboot(state *app.State) gin.HandlerFunc {
 			noOVHResp(c)
 			return
 		}
-		var result map[string]interface{}
-		if err := client.Post("/dedicated/server/"+svc+"/reboot", map[string]interface{}{}, &result); err != nil {
+		result, err := serverops.Reboot(client, svc)
+		if err != nil {
 			state.Logger.Error("重启服务器 "+svc+" 失败: "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
