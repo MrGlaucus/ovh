@@ -41,7 +41,7 @@ func TestRenderTelegramNotificationUnavailableStrikesOnlyClosedDatacenter(t *tes
 		},
 	}
 	text, markup := renderTelegramNotificationUnavailable(snapshot)
-	for _, want := range []string{"🟡 部分机房已下架", "<s>GRA (🇫🇷 法国·格拉沃利讷) — 24小时内有货</s>", "在库时长：2分5秒", "FRA (🇩🇪 德国·法兰克福) — 72小时内有货"} {
+	for _, want := range []string{"🟡 部分机房已下架", "<s>GRA (🇫🇷 法国·格拉沃利讷) — 24小时内有货</s>", "下架时间：1970-01-01 08:03:45（在库时长：2分5秒）", "FRA (🇩🇪 德国·法兰克福) — 72小时内有货"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("原地更新内容缺少 %q：%s", want, text)
 		}
@@ -60,7 +60,7 @@ func TestRenderTelegramNotificationUnavailableStrikesSingleDatacenterBlock(t *te
 		},
 	}
 	text, markup := renderTelegramNotificationUnavailable(snapshot)
-	for _, want := range []string{"⚫ 服务器已下架", "<s>📍 数据中心: WAW (🇵🇱 波兰·华沙)</s>", "<s>✅ 可用性: 1小时内有货 - 低库存</s>", "在库时长：1分40秒"} {
+	for _, want := range []string{"⚫ 服务器已下架", "<s>📍 数据中心: WAW (🇵🇱 波兰·华沙)</s>", "<s>✅ 可用性: 1小时内有货 - 低库存</s>", "下架时间：1970-01-01 08:03:20（在库时长：1分40秒）"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("原地更新内容缺少 %q：%s", want, text)
 		}

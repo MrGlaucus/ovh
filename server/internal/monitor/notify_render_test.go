@@ -89,8 +89,8 @@ func TestAlertWarnsAboutExistingQueue(t *testing.T) {
 	dcs := []map[string]interface{}{{"dc": "gra"}}
 	msg, _ := m.buildAvailabilityAlert("24sk602", dcs, nil, "KS-LE-B", "", "", "")
 
-	if !contains(msg, "已经有 2 个任务在抢") {
-		t.Fatalf("应提醒已有 2 个进行中的任务，实际通知：\n%s", msg)
+	if !contains(msg, "已经有 1 个任务在抢") {
+		t.Fatalf("应只统计 GRA 的 1 个任务，实际通知：\n%s", msg)
 	}
 
 	fmt.Println("\n┌────── 已在抢时的提醒 ──────")
@@ -107,6 +107,34 @@ func TestAlertNoQueueWarningWhenIdle(t *testing.T) {
 		[]map[string]interface{}{{"dc": "gra"}}, nil, "KS-LE-B", "", "", "")
 	if contains(msg, "个任务在抢") {
 		t.Fatalf("没有进行中的任务时不该有这句提醒：\n%s", msg)
+	}
+}
+
+func TestAlertQueueWarningRequiresExactTarget(t *testing.T) {
+	m := renderTestMonitor(t)
+	options := []string{"ram-32g", "disk-2x450nvme"}
+	m.state.Queue = []types.QueueItem{
+		{PlanCode: "ks2", Datacenter: "gra", Options: options, Status: "running"},
+		{PlanCode: "ks2", Datacenter: "bhs", Options: []string{"ram-32g"}, Status: "running"},
+		{PlanCode: "ks2", Datacenter: "bhs", Status: "running"},
+		{PlanCode: "other", Datacenter: "bhs", Options: options, Status: "running"},
+		{PlanCode: "ks2", Datacenter: "bhs", Options: options, Status: "completed"},
+	}
+	config := map[string]interface{}{"options": options}
+	dcs := []map[string]interface{}{{"dc": "bhs"}}
+	msg, _ := m.buildAvailabilityAlert("ks2", dcs, config, "KS-2", "", "", "")
+	if contains(msg, "个任务在抢") {
+		t.Fatalf("unrelated tasks counted: %s", msg)
+	}
+	m.state.Queue = append(m.state.Queue, types.QueueItem{PlanCode: "ks2", Datacenter: "BHS", Options: []string{"disk-2x450nvme", "ram-32g"}, Status: "delaying"})
+	msg, _ = m.buildAvailabilityAlert("ks2", dcs, config, "KS-2", "", "", "")
+	if !contains(msg, "BHS 同型号同配置已经有 1 个任务") {
+		t.Fatalf("exact target missing: %s", msg)
+	}
+	dcs = append(dcs, map[string]interface{}{"dc": "gra"})
+	msg, _ = m.buildAvailabilityAlert("ks2", dcs, config, "KS-2", "", "", "")
+	if !contains(msg, "GRA 同型号同配置已经有 1 个任务") || !contains(msg, "BHS 同型号同配置已经有 1 个任务") {
+		t.Fatalf("grouped DC counts incorrect: %s", msg)
 	}
 }
 

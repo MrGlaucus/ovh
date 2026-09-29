@@ -858,6 +858,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			unavailDCs := make([]map[string]interface{}, 0, len(unavailables))
 			for _, n := range unavailables {
 				dcInfo := map[string]interface{}{"dc": n.dc, "status": n.status}
+				dcInfo["detected_time"] = n.detectedTime
 				isBecame := n.changeType == "unavailable" && n.hasOld && n.oldStatus != "unavailable"
 				if isBecame {
 					if d := m.calcDuration(sub, n.dc, configDisplay, []string{"available"}); d != "" {

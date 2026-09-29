@@ -195,7 +195,8 @@ func (m *Monitor) updateTelegramUnavailable(planCode string, configInfo map[stri
 	fallback := make([]map[string]interface{}, 0, len(dcs))
 	for _, item := range dcs {
 		dcName, _ := item["dc"].(string)
-		snapshot, found, err := m.state.DB.CloseTelegramNotificationDatacenter(planCode, configKey, dcName, float64(time.Now().Unix()))
+		closed := unavailableDetectedTime(item)
+		snapshot, found, err := m.state.DB.CloseTelegramNotificationDatacenter(planCode, configKey, dcName, float64(closed.Unix()))
 		if err != nil || !found {
 			fallback = append(fallback, item)
 			if err != nil {
@@ -260,17 +261,18 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 		}
 		escapedLine := html.EscapeString(dc.LineText)
 		duration := humanDuration(time.Duration((dc.ClosedAt - dc.OpenedAt) * float64(time.Second)))
+		closedText := "\n    ⚫ 下架时间：" + time.Unix(int64(dc.ClosedAt), 0).In(types.NowChina().Location()).Format("2006-01-02 15:04:05") + "（在库时长：" + duration + "）"
 		var replacement string
 		if strings.HasPrefix(escapedLine, "   ✅ ") {
 			// 多机房列表:整行划掉,行首图标保留
-			replacement = "   ✅ <s>" + strings.TrimPrefix(escapedLine, "   ✅ ") + "</s>\n    ⚫ 已下架 · 在库时长：" + duration
+			replacement = "   ✅ <s>" + strings.TrimPrefix(escapedLine, "   ✅ ") + "</s>" + closedText
 		} else {
 			// 单机房是"数据中心 / 可用性"两行一块,整块划掉,不留孤行
 			lines := strings.Split(escapedLine, "\n")
 			for i := range lines {
 				lines[i] = "<s>" + lines[i] + "</s>"
 			}
-			replacement = strings.Join(lines, "\n") + "\n    ⚫ 已下架 · 在库时长：" + duration
+			replacement = strings.Join(lines, "\n") + closedText
 		}
 		text = strings.Replace(text, escapedLine, replacement, 1)
 	}
@@ -298,6 +300,16 @@ func humanDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%d秒", seconds)
 	}
+}
+
+// 使用检测时间，避免消息编辑或发送延迟被误算为下架时间。
+func unavailableDetectedTime(info map[string]interface{}) time.Time {
+	if raw, ok := info["detected_time"].(string); ok {
+		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return t.In(types.NowChina().Location())
+		}
+	}
+	return types.NowChina()
 }
 
 // CompatibleOrderAccounts 返回与参照账户同一区域的可下单账户。
@@ -440,8 +452,17 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	// 这套配置已经有几个任务在抢。
 	// 补货常连着来好几条通知,对同一台机器按两次就是两笔真实订单,
 	// 而按钮的一次性 claim 只挡得住同一颗按钮按两次。
-	if n := m.activeQueueCount(planCode, optionsFromConfig(configInfo)); n > 0 {
-		msg.WriteString(fmt.Sprintf("\n⚠️ 这套配置已经有 %d 个任务在抢了（发 /queue 查看）\n", n))
+	seenDCs := map[string]bool{}
+	for _, dcInfo := range availableDCs {
+		dc, _ := dcInfo["dc"].(string)
+		dc = strings.ToLower(strings.TrimSpace(dc))
+		if dc == "" || seenDCs[dc] {
+			continue
+		}
+		seenDCs[dc] = true
+		if n := m.activeQueueCount(planCode, optionsFromConfig(configInfo), dc); n > 0 {
+			msg.WriteString(fmt.Sprintf("\n⚠️ %s 同型号同配置已经有 %d 个任务在抢购队列中（含暂停，发 /queue 查看）\n", strings.ToUpper(dc), n))
+		}
 	}
 
 	pushTime := m.nowBeijing()
@@ -542,8 +563,9 @@ func (m *Monitor) SendUnavailableAlertGrouped(planCode string, unavailableDCs []
 	for _, dcInfo := range unavailableDCs {
 		dc, _ := dcInfo["dc"].(string)
 		msg.WriteString("  • " + dcDisplayCN(dc) + " (" + strings.ToUpper(dc) + ")")
+		msg.WriteString("\n    ⚫ 下架时间：" + unavailableDetectedTime(dcInfo).Format("2006-01-02 15:04:05"))
 		if dt, ok := dcInfo["duration_text"].(string); ok && dt != "" {
-			msg.WriteString(" - ⏱️ 本次上架持续: " + strings.TrimPrefix(dt, "历时 "))
+			msg.WriteString("（在库时长：" + strings.TrimPrefix(dt, "历时 ") + "）")
 		}
 		msg.WriteString("\n")
 	}
@@ -698,16 +720,8 @@ func (m *Monitor) SendNewServerAlert(server map[string]interface{}) {
 	m.state.Logger.Info(fmt.Sprintf("发送新服务器提醒: %v", server["planCode"]), "monitor")
 }
 
-// activeQueueCount 当前有几个进行中的任务会抢"这套配置"。
-//
-// 用来在上架通知里提醒"你已经在抢这台了"。补货往往连着来好几条通知,
-// 用户在手机上对同一台机器按两次按钮是很自然的动作,而那就是两笔真实订单。
-// 按钮自己的一次性 claim 只挡得住同一颗按钮按两次,挡不住两条通知各按一次。
-//
-// configOptions 是这套配置(FQN 内存/存储段)匹配出的 addon。以前这里只
-// 匹配 planCode —— 同型号下别的配置的任务也被算进来,用户明明没抢这套
-// 配置也看到"有 N 个任务在抢"。现在按 queueTaskTargetsConfig 收窄。
-func (m *Monitor) activeQueueCount(planCode string, configOptions []string) int {
+// activeQueueCount 仅统计型号、配置集合和机房均一致的未结束任务。
+func (m *Monitor) activeQueueCount(planCode string, configOptions []string, datacenter string) int {
 	if m.state == nil {
 		return 0
 	}
@@ -718,7 +732,10 @@ func (m *Monitor) activeQueueCount(planCode string, configOptions []string) int 
 		if it.PlanCode != planCode {
 			continue
 		}
-		if it.Status != "running" && it.Status != "pending" && it.Status != "paused" {
+		if strings.TrimSpace(datacenter) == "" || !strings.EqualFold(strings.TrimSpace(it.Datacenter), strings.TrimSpace(datacenter)) {
+			continue
+		}
+		if it.Status != "running" && it.Status != "pending" && it.Status != "paused" && it.Status != "delaying" {
 			continue
 		}
 		if !queueTaskTargetsConfig(it.Options, configOptions) {
@@ -729,21 +746,9 @@ func (m *Monitor) activeQueueCount(planCode string, configOptions []string) int 
 	return n
 }
 
-// queueTaskTargetsConfig 判断一个抢购任务会不会抢到"这套配置"。
-//
-// 任一方向子集成立都算"覆盖到这套":
-//   - 任务⊆本套:任务只勾了部分维度(如"ram-64g 的任意存储"),会抢到本套;
-//   - 本套⊆任务:任务比本套多勾 —— 网页下单是逐组选择,带宽等不入 FQN 的
-//     项也会进任务 options,它一样会抢本套。
-//
-// 两边的配置维度有一处不一致(如内存选得不同)时两个方向都不成立 → 不算。
-// 缺可比信息(任务 options 空 = 裸 planCode 机型,configOptions 空 = 目录缺
-// 数据)时退回"算":提醒的目的是防用户手滑重复下单,漏提醒的代价更大。
+// 配置按集合严格匹配，不把部分配置或缺失数据视为相同配置。
 func queueTaskTargetsConfig(taskOptions, configOptions []string) bool {
-	if len(taskOptions) == 0 || len(configOptions) == 0 {
-		return true
-	}
-	return subsetOf(taskOptions, configOptions) || subsetOf(configOptions, taskOptions)
+	return subsetOf(taskOptions, configOptions) && subsetOf(configOptions, taskOptions)
 }
 
 // subsetOf sub 里的每一项都在 super 里。
