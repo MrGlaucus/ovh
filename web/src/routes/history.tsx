@@ -30,6 +30,7 @@ import {
   type PurchaseHistory,
 } from "@/hooks/use-history";
 import { useServers } from "@/hooks/use-servers";
+import { useAccounts } from "@/hooks/use-accounts";
 import { describeOptionCodes } from "@/lib/option-groups";
 
 /**
@@ -201,6 +202,7 @@ function refundExpiredTitle(deadlineMs: number): string {
 
 function HistoryPage() {
   const list = useHistory();
+  const accounts = useAccounts();
   const clear = useClearHistory();
   const clearFailed = useClearFailedHistory();
   const remove = useRemoveHistoryItem();
@@ -210,6 +212,7 @@ function HistoryPage() {
   const servers = useServers();
   const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
   const [search, setSearch] = useState("");
+  const [accountFilter, setAccountFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmClearFailed, setConfirmClearFailed] = useState(false);
@@ -224,6 +227,13 @@ function HistoryPage() {
   }, []);
 
   const items = list.data || [];
+  const accountOptions = useMemo(() => {
+    const options = new Map((accounts.data || []).map((account) => [account.id, `${account.name} · ${account.zone}`]));
+    for (const item of list.data || []) {
+      if (item.accountId && !options.has(item.accountId)) options.set(item.accountId, `未知账户 · ${item.accountId}`);
+    }
+    return Array.from(options, ([id, label]) => ({ id, label }));
+  }, [accounts.data, list.data]);
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
     const timeOf = (i: PurchaseHistory) => {
@@ -232,6 +242,7 @@ function HistoryPage() {
     };
     return items
       .filter((i) => {
+        if (accountFilter !== "all" && (accountFilter === "unassigned" ? !!i.accountId : i.accountId !== accountFilter)) return false;
         if (statusFilter !== "all" && i.status !== statusFilter) return false;
         if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
         return true;
@@ -239,7 +250,7 @@ function HistoryPage() {
       // 后端按写入顺序返回（最早的在最前），展示一律最新的在最上 —— 打开页面
       // 第一眼就是刚下完的那单，不用先滚到底。
       .sort((a, b) => timeOf(b) - timeOf(a));
-  }, [items, search, serverNames, statusFilter]);
+  }, [items, search, serverNames, statusFilter, accountFilter]);
   const failedCount = useMemo(() => items.filter((i) => i.status === "failed").length, [items]);
 
   return (
@@ -280,10 +291,9 @@ function HistoryPage() {
 
       <Card>
         <CardContent className="p-3 sm:p-5">
-          {/* 手机端两个控件并排:搜索框和状态下拉各占一整行时白吃 ~70px,
-              而「所有状态」这种下拉本来就不需要整行宽 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-            <div className="relative">
+          {/* 手机端搜索独占一行，账户与状态并排；桌面端三项同排。 */}
+          <div className="grid grid-cols-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 sm:gap-3">
+            <div className="relative col-span-2 sm:col-span-1">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
               <Input
                 placeholder="搜索型号 / 机房 / 订单号..."
@@ -292,6 +302,16 @@ function HistoryPage() {
                 className="pl-9 rounded-full"
               />
             </div>
+            <Select value={accountFilter} onValueChange={setAccountFilter}>
+              <SelectTrigger className="rounded-full min-w-0" aria-label="筛选所属账户">
+                <SelectValue placeholder="全部账户" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部账户</SelectItem>
+                {accountOptions.map((account) => <SelectItem key={account.id} value={account.id}>{account.label}</SelectItem>)}
+                {items.some((item) => !item.accountId) && <SelectItem value="unassigned">未关联账户</SelectItem>}
+              </SelectContent>
+            </Select>
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
               <SelectTrigger className="rounded-full">
                 <SelectValue placeholder="所有状态" />
@@ -461,7 +481,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
       <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
         <div className="min-w-0">
           <div className="truncate font-mono font-semibold" title={displayName || item.planCode}>{displayName || item.planCode}</div>
-          {item.orderId && <div className="mt-1 text-[11px] font-mono text-muted-foreground break-all select-all">原订单 #{item.orderId}</div>}
+          {item.orderId && <div className="mt-1 text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span></div>}
           <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
             {displayName && <span className="font-mono">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
@@ -543,7 +563,7 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
             <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
           </Chip>
         </div>
-        {item.orderId && <div className="text-[11px] font-mono text-muted-foreground break-all select-all">原订单 #{item.orderId}</div>}
+        {item.orderId && <div className="text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span></div>}
         <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ")}>
           {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
         </div>

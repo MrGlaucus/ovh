@@ -283,7 +283,7 @@ func (w *rescueWatcher) scan(account string, now time.Time) {
 				continue
 			}
 		}
-		text := fmt.Sprintf("🛟 救援模式登录信息\n\n👤 所属账户：%s · %s\n🖥 设备 ID：%s\n🌐 IP：<code>%s</code>\n👤 用户名：<code>%s</code>\n🔑 密码：<code>%s</code>\n\n连接命令：<code>ssh %s@%s</code>",
+		text := fmt.Sprintf("🛟 救援模式登录信息\n\n👤 所属账户：%s · %s\n🖥 设备 ID：%s\n🌐 IP：<code>%s</code>\n👤 用户名：<code>%s</code>\n🔑 密码：<code>%s</code>\n\n连接命令：<code>ssh %s@%s</code>\n\n🌐 测速命令：\n<code>curl -sL yabs.sh | bash -s -- -fg</code>\n\n🛠 硬件检测命令：\n<code>curl -sL https://ba.sh/sick | bash -s -- -cn</code>",
 			html.EscapeString(a.Name), html.EscapeString(a.Zone), html.EscapeString(j.Service),
 			html.EscapeString(cred.IP), html.EscapeString(cred.User), html.EscapeString(cred.Password),
 			html.EscapeString(cred.User), html.EscapeString(cred.IP))

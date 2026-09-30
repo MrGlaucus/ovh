@@ -59,8 +59,17 @@ type refundDetail struct {
 //
 // 核对原发票上的 orderId，再匹配退款单 originalBillId；不比较退款订单号。
 func FetchOrderRefund(client refundClient, orderID string) (*types.RefundInfo, error) {
-	index := loadRefundIndex(client)
-	return index.find(client, orderID)
+	return fetchRefundAfterInvoice(client, orderID, func() refundIndex { return loadRefundIndex(client) })
+}
+
+// Check original invoices first. Cancelled unpaid orders have no invoice and
+// must not trigger a scan of the account's refund list.
+func fetchRefundAfterInvoice(client refundClient, orderID string, index func() refundIndex) (*types.RefundInfo, error) {
+	bills, err := originalOrderBills(client, orderID)
+	if err != nil || len(bills) == 0 {
+		return nil, err
+	}
+	return index().findBills(bills)
 }
 
 // 一次手动刷新中每账户只读一次退款列表，避免每张历史订单重复扫描。
@@ -95,11 +104,19 @@ func loadRefundIndex(client refundClient) refundIndex {
 }
 
 func (index refundIndex) find(client refundClient, orderID string) (*types.RefundInfo, error) {
+	bills, err := originalOrderBills(client, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return index.findBills(bills)
+}
+
+func originalOrderBills(client refundClient, orderID string) ([]string, error) {
 	var billIDs []string
 	if err := client.Get("/me/bill?orderId="+url.QueryEscape(orderID), &billIDs); err != nil {
 		return nil, fmt.Errorf("读取原订单发票失败: %w", err)
 	}
-	var refunds []types.RefundInfo
+	var verified []string
 	for _, billID := range billIDs {
 		var bill struct {
 			OrderID int64 `json:"orderId"`
@@ -110,6 +127,14 @@ func (index refundIndex) find(client refundClient, orderID string) (*types.Refun
 		if strconv.FormatInt(bill.OrderID, 10) != orderID {
 			continue
 		}
+		verified = append(verified, billID)
+	}
+	return verified, nil
+}
+
+func (index refundIndex) findBills(billIDs []string) (*types.RefundInfo, error) {
+	var refunds []types.RefundInfo
+	for _, billID := range billIDs {
 		for _, d := range index.byBill[billID] {
 			info := types.RefundInfo{ID: d.RefundID, Date: d.Date, PDFURL: d.PDFURL, OriginalBillID: billID, RefundOrderID: strconv.FormatInt(d.OrderID, 10)}
 			if d.Price != nil {
@@ -149,7 +174,7 @@ func RefreshRefundStatuses(state *app.State, force bool) int {
 			continue
 		}
 		// 没付款的订单不会产生退款：未付款被取消是作废，不是退款
-		if !force && h.OrderStatus == "notPaid" {
+		if h.OrderStatus == "notPaid" {
 			continue
 		}
 		// 自动调用仍限制账龄；手动刷新允许追溯旧单及延迟退款。
@@ -202,8 +227,10 @@ func RefreshRefundStatuses(state *app.State, force bool) int {
 				return
 			}
 			cache := indexes[t.accountID]
-			cache.once.Do(func() { cache.index = loadRefundIndex(client) })
-			info, err := cache.index.find(client, t.orderID)
+			info, err := fetchRefundAfterInvoice(client, t.orderID, func() refundIndex {
+				cache.once.Do(func() { cache.index = loadRefundIndex(client) })
+				return cache.index
+			})
 			if err != nil {
 				// 网络/权限问题：不更新 checkedAt，下一轮会重试
 				state.Logger.Warn(fmt.Sprintf("查询订单 %s 退款记录失败: %s", t.orderID, err.Error()), "purchase")

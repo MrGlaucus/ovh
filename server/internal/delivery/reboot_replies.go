@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"errors"
+	"html"
 	"time"
 
 	"github.com/ovh-buy/server/internal/app"
@@ -21,6 +22,10 @@ func runRebootReplies(state *app.State) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
+		flushCommandReplies(state, time.Now(), func(r commandReply) error {
+			_, err := telegram.SendHTMLReplyChecked(state, r.ChatID, "<pre>"+html.EscapeString(r.Command)+"</pre>", r.MessageID)
+			return err
+		})
 		flushRebootReplies(state, time.Now(), func(r rebootReply) error {
 			_, err := telegram.SendReplyChecked(state, r.ChatID, r.Text, r.MessageID)
 			return err

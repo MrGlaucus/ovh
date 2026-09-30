@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS delivery_rescue_jobs (
  next_attempt INTEGER NOT NULL DEFAULT 0, credentials TEXT NOT NULL DEFAULT '',
  sent_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS delivery_command_replies (
+ delivery_id TEXT NOT NULL REFERENCES delivery_servers(id) ON DELETE CASCADE,
+ action TEXT NOT NULL, command TEXT NOT NULL, next_attempt INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(delivery_id, action)
+);
 `
 
 type DeliverySettings struct {
@@ -161,5 +166,11 @@ func (db *DB) ClaimDeliveryReboot(id string, emailBaseline ...string) (bool, err
 func (db *DB) SaveDeliveryRebootReply(id, text string) error {
 	_, err := db.Exec(`INSERT INTO delivery_reboot_replies(delivery_id,text,next_attempt) VALUES(?,?,0)
  ON CONFLICT(delivery_id) DO UPDATE SET text=excluded.text,next_attempt=0`, id, text)
+	return err
+}
+
+// Repeated clicks share a pending send; a later click after success can send again.
+func (db *DB) QueueDeliveryCommand(id, action, command string) error {
+	_, err := db.Exec(`INSERT OR IGNORE INTO delivery_command_replies(delivery_id,action,command) VALUES(?,?,?)`, id, action, command)
 	return err
 }

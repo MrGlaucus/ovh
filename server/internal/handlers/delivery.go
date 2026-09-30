@@ -68,10 +68,12 @@ func handleDeliveryCallback(state *app.State, action, id, callbackID string, cha
 		if action == "dh" {
 			command = "curl -sL https://ba.sh/sick | bash -s -- -cn"
 		}
-		telegram.AnswerCallback(state, callbackID, "请复制命令到服务器执行", false)
-		if !telegram.SendCodeReply(state, chatID, command, messageID) {
-			telegram.AnswerCallback(state, callbackID, "命令发送失败，请重试", true)
+		if err := state.DB.QueueDeliveryCommand(row.ID, action, command); err != nil {
+			state.Logger.Error("保存 TG 检测命令回复失败: "+err.Error(), "delivery")
+			telegram.AnswerCallback(state, callbackID, "命令发送任务保存失败，请重试", true)
+			return
 		}
+		telegram.AnswerCallback(state, callbackID, "正在发送命令消息，失败会自动重试", false)
 		return
 	}
 	// Resolve credentials before claiming; never fall back to another/default account.

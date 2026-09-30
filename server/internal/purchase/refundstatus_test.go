@@ -4,11 +4,58 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/ovh-buy/server/internal/app"
+	"github.com/ovh-buy/server/internal/types"
 )
 
 type refundFixture struct {
 	responses map[string]string
 	calls     map[string]int
+}
+
+func TestManualRefundRefreshSkipsUnpaid(t *testing.T) {
+	state := &app.State{History: []types.PurchaseHistoryEntry{{ID: "unpaid", Status: "success", OrderID: "100", AccountID: "a", OrderStatus: "notPaid"}}}
+	// No client or DB is configured: a manual refresh must make no requests.
+	if got := RefreshRefundStatuses(state, true); got != 0 {
+		t.Fatalf("updated=%d", got)
+	}
+	if state.History[0].RefundCheckedAt != "" {
+		t.Fatal("unpaid order marked as queried")
+	}
+}
+
+func TestRefundRequiresVerifiedOriginalInvoice(t *testing.T) {
+	for _, scenario := range []string{"no invoice", "unrelated invoice", "invoice error", "paid then cancelled"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := &refundFixture{calls: map[string]int{}, responses: map[string]string{
+				"/me/bill?orderId=100": `[]`,
+				"/me/bill/B":           `{"orderId":100}`,
+				"/me/refund":           `["R"]`,
+				"/me/refund/R":         `{"refundId":"R","orderId":900,"originalBillId":"B"}`,
+			}}
+			switch scenario {
+			case "unrelated invoice":
+				f.responses["/me/bill?orderId=100"] = `["B"]`
+				f.responses["/me/bill/B"] = `{"orderId":999}`
+			case "invoice error":
+				delete(f.responses, "/me/bill?orderId=100")
+			case "paid then cancelled":
+				f.responses["/me/bill?orderId=100"] = `["B"]`
+			}
+			info, err := FetchOrderRefund(f, "100")
+			if (err != nil) != (scenario == "invoice error") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if scenario == "paid then cancelled" {
+				if info == nil || info.ID != "R" || f.calls["/me/refund"] != 1 {
+					t.Fatal("paid cancelled order refund missed")
+				}
+			} else if info != nil || f.calls["/me/refund"] != 0 || f.calls["/me/refund/R"] != 0 {
+				t.Fatal("refund API called without verified invoice")
+			}
+		})
+	}
 }
 
 func (f *refundFixture) Get(path string, out interface{}) error {
