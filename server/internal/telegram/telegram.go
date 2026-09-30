@@ -110,18 +110,40 @@ func SendMessageWithRef(state *app.State, message string, replyMarkup map[string
 }
 
 func sendMessageOnce(state *app.State, message string, replyMarkup map[string]interface{}) (MessageRef, error) {
+	return sendTextOnce(state, state.Config.Get().TgChatID, message, 0, replyMarkup)
+}
+
+// SendReplyChecked sends once; the durable caller owns retries without replaying actions.
+func SendReplyChecked(state *app.State, chatID, message string, replyTo int64) (MessageRef, error) {
+	return sendTextOnce(state, chatID, message, replyTo, nil)
+}
+
+func sendTextOnce(state *app.State, chatID, message string, replyTo int64, replyMarkup map[string]interface{}) (MessageRef, error) {
+	return sendHTMLOnce(state, chatID, html.EscapeString(message), replyTo, replyMarkup)
+}
+
+// SendHTMLReplyChecked accepts trusted markup. Callers must HTML-escape all dynamic values.
+// Like SendReplyChecked, the durable caller owns retries.
+func SendHTMLReplyChecked(state *app.State, chatID, message string, replyTo int64) (MessageRef, error) {
+	return sendHTMLOnce(state, chatID, message, replyTo, nil)
+}
+
+func sendHTMLOnce(state *app.State, chatID, message string, replyTo int64, replyMarkup map[string]interface{}) (MessageRef, error) {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
 		return MessageRef{}, fmt.Errorf("未配置 Telegram Bot Token")
 	}
-	if cfg.TgChatID == "" {
+	if chatID == "" {
 		return MessageRef{}, fmt.Errorf("未配置 Telegram Chat ID")
 	}
 
 	url := "https://api.telegram.org/bot" + cfg.TgToken + "/sendMessage"
 	// 新消息与后续 editMessageText 必须使用相同的 HTML 语义：发送时先转义纯文本，
 	// 下架编辑时再仅插入受控的 <s> 标签。否则原消息和编辑消息的字符解释会不一致。
-	payload := map[string]interface{}{"chat_id": cfg.TgChatID, "text": html.EscapeString(message), "parse_mode": "HTML"}
+	payload := map[string]interface{}{"chat_id": chatID, "text": message, "parse_mode": "HTML"}
+	if replyTo > 0 {
+		payload["reply_parameters"] = map[string]interface{}{"message_id": replyTo, "allow_sending_without_reply": true}
+	}
 	if replyMarkup != nil {
 		payload["reply_markup"] = replyMarkup
 	}
@@ -163,7 +185,7 @@ func sendMessageOnce(state *app.State, message string, replyMarkup map[string]in
 	if err := json.Unmarshal(respBody, &result); err != nil || !result.OK || result.Result.MessageID == 0 {
 		return MessageRef{}, fmt.Errorf("Telegram API 未返回有效 message_id")
 	}
-	return MessageRef{ChatID: cfg.TgChatID, MessageID: result.Result.MessageID}, nil
+	return MessageRef{ChatID: chatID, MessageID: result.Result.MessageID}, nil
 }
 
 // EditMessageText 原地更新 Bot 自己发送的消息正文和按钮。

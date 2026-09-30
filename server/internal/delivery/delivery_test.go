@@ -39,7 +39,7 @@ func (f *fakeClient) Get(path string, out interface{}) error {
 	case strings.HasSuffix(path, "/specifications/hardware"):
 		value = map[string]interface{}{"processorName": "ACTUAL CPU", "memorySize": map[string]interface{}{"value": 64, "unit": "GB"}, "diskGroups": []interface{}{map[string]interface{}{"numberOfDisks": 2, "diskType": "NVMe", "diskSize": map[string]interface{}{"value": 960, "unit": "GB"}}}}
 	case strings.HasSuffix(path, "/specifications/network"):
-		value = map[string]interface{}{"switching": map[string]interface{}{"name": "actual-switch"}, "bandwidth": map[string]interface{}{"OvhToInternet": map[string]interface{}{"value": 500, "unit": "Mbps"}}}
+		value = map[string]interface{}{"connection": map[string]interface{}{"value": 1000, "unit": "Mbps"}, "switching": map[string]interface{}{"name": "actual-switch"}, "bandwidth": map[string]interface{}{"OvhToInternet": map[string]interface{}{"value": 500, "unit": "Mbps"}}}
 	default:
 		value = map[string]interface{}{"commercialRange": "ACTUAL MODEL", "datacenter": "bhs", "ip": "192.0.2.1"}
 	}
@@ -92,7 +92,7 @@ func TestDisabledBaselineRestartAndActualConfiguration(t *testing.T) {
 	if len(*messages) != 1 {
 		t.Fatal("new server not notified")
 	}
-	for _, part := range []string{"Account A", "new-server", "ACTUAL MODEL", "ACTUAL CPU", "64 GB", "960 GB", "actual-switch", "500 Mbps", "192.0.2.1"} {
+	for _, part := range []string{"Account A", "new-server", "ACTUAL MODEL", "ACTUAL CPU", "64 GB", "960 GB", "actual-switch", "端口速率：1000 Mbps", "192.0.2.1"} {
 		if !strings.Contains((*messages)[0], part) {
 			t.Fatalf("missing actual field %s: %s", part, (*messages)[0])
 		}
@@ -101,6 +101,9 @@ func TestDisabledBaselineRestartAndActualConfiguration(t *testing.T) {
 		if strings.Contains(path, "availability") || strings.Contains(path, "email") {
 			t.Fatal("wrong API source")
 		}
+	}
+	if strings.Contains((*messages)[0], "来源：") || strings.Contains((*messages)[0], "500 Mbps") {
+		t.Fatal("notification must use port speed and omit source")
 	}
 	w.state.DB.Close()
 	database, err := db.Open(dir)
@@ -289,5 +292,19 @@ func TestRetryDoesNotPollServerList(t *testing.T) {
 	w.scanWithList("a", false)
 	if sent != 1 || len(f.paths) != 0 {
 		t.Fatalf("retry should only send TG: sent=%d paths=%v", sent, f.paths)
+	}
+}
+
+func TestDatacenterLocation(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"eri1", "LON 🇬🇧 英国·伦敦（ERI1）"},
+		{" ERI2 ", "LON 🇬🇧 英国·伦敦（ERI2）"},
+		{"bhs1", "加拿大·博阿尔诺（BHS1）"},
+		{"unknown1", "unknown1"},
+		{"", "未获取到"},
+	} {
+		if got := datacenterLocation(tc.input); got != tc.want {
+			t.Errorf("%q: %q != %q", tc.input, got, tc.want)
+		}
 	}
 }

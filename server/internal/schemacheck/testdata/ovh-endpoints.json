@@ -1874,6 +1874,23 @@
       "response": "long[]"
     }
   },
+  "GET /me/notification/email/history/{id}": {
+    "CA": {
+      "status": "PRODUCTION",
+      "response": "nichandle.EmailNotification",
+      "params": ["path:id:long:true"]
+    },
+    "EU": {
+      "status": "PRODUCTION",
+      "response": "nichandle.EmailNotification",
+      "params": ["path:id:long:true"]
+    },
+    "US": {
+      "status": "PRODUCTION",
+      "response": "nichandle.EmailNotification",
+      "params": ["path:id:long:true"]
+    }
+  },
   "GET /me/order": {
     "CA": {
       "status": "PRODUCTION",
@@ -3676,6 +3693,18 @@
         "body::order.cart.GenericProductCreation:true",
         "path:cartId:string:true"
       ]
+    }
+  },
+  "POST /secret/retrieve": {
+    "EU": {
+      "status": "PRODUCTION",
+      "response": "secret.Secret",
+      "params": ["body:id:password:true"]
+    },
+    "US": {
+      "status": "PRODUCTION",
+      "response": "secret.Secret",
+      "params": ["body:id:password:true"]
     }
   },
   "POST /services/{serviceId}/billing/engagement/request": {

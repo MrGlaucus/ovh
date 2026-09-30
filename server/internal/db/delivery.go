@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS delivery_servers (
  UNIQUE(account_id, service_name)
 );
 CREATE INDEX IF NOT EXISTS delivery_pending ON delivery_servers(account_id, sent_at, next_attempt);
+CREATE TABLE IF NOT EXISTS delivery_reboot_replies (
+ delivery_id TEXT PRIMARY KEY REFERENCES delivery_servers(id) ON DELETE CASCADE,
+ text TEXT NOT NULL, next_attempt INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS delivery_rescue_jobs (
+ delivery_id TEXT PRIMARY KEY REFERENCES delivery_servers(id) ON DELETE CASCADE,
+ baseline TEXT NOT NULL, started_at INTEGER NOT NULL,
+ next_attempt INTEGER NOT NULL DEFAULT 0, credentials TEXT NOT NULL DEFAULT '',
+ sent_at INTEGER NOT NULL DEFAULT 0
+);
 `
 
 type DeliverySettings struct {
@@ -118,12 +128,38 @@ func (db *DB) GetDelivery(id string) (DeliveryServer, error) {
 	err := db.Get(&r, "SELECT * FROM delivery_servers WHERE id=?", id)
 	return r, err
 }
-func (db *DB) ClaimDeliveryReboot(id string) (bool, error) {
+func (db *DB) ClaimDeliveryReboot(id string, emailBaseline ...string) (bool, error) {
 	// A notification permits a single reboot. Persist before requesting it: uncertain outcomes are never retried automatically.
-	r, err := db.Exec("UPDATE delivery_servers SET reboot_claimed=? WHERE id=? AND reboot_claimed=0 AND sent_at>0", time.Now().Unix(), id)
+	tx, err := db.Beginx()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	r, err := tx.Exec("UPDATE delivery_servers SET reboot_claimed=? WHERE id=? AND reboot_claimed=0 AND sent_at>0", now.Unix(), id)
 	if err != nil {
 		return false, err
 	}
 	n, err := r.RowsAffected()
-	return n == 1, err
+	if err != nil || n != 1 {
+		return false, err
+	}
+	// If the process stops during the OVH call, eventually report uncertainty instead of replaying it.
+	_, err = tx.Exec(`INSERT INTO delivery_reboot_replies(delivery_id,text,next_attempt)
+ SELECT id, '⚠️ 重启请求结果未确认：' || service_name || char(10) || '请在服务器控制页核实，本按钮不会自动重复提交。', ? FROM delivery_servers WHERE id=?`, now.Add(2*time.Minute).Unix(), id)
+	if err != nil {
+		return false, err
+	}
+	if len(emailBaseline) > 0 {
+		if _, err = tx.Exec(`INSERT INTO delivery_rescue_jobs(delivery_id,baseline,started_at,next_attempt) VALUES(?,?,?,?)`, id, emailBaseline[0], now.Unix(), now.Add(30*time.Second).Unix()); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
+}
+
+func (db *DB) SaveDeliveryRebootReply(id, text string) error {
+	_, err := db.Exec(`INSERT INTO delivery_reboot_replies(delivery_id,text,next_attempt) VALUES(?,?,0)
+ ON CONFLICT(delivery_id) DO UPDATE SET text=excluded.text,next_attempt=0`, id, text)
+	return err
 }

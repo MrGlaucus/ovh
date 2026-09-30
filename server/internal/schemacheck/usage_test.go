@@ -37,6 +37,7 @@ var clientMethods = map[string]string{
 	"Get": "GET", "Post": "POST", "Put": "PUT", "Delete": "DELETE",
 	"GetWithContext": "GET", "PostWithContext": "POST",
 	"PutWithContext": "PUT", "DeleteWithContext": "DELETE",
+	"PostUnAuth": "POST", "PostUnAuthWithContext": "POST",
 }
 
 func unquote(e ast.Expr) (string, bool) {

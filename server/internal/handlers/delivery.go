@@ -1,12 +1,16 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/db"
+	"github.com/ovh-buy/server/internal/secret"
 	"github.com/ovh-buy/server/internal/serverops"
 	"github.com/ovh-buy/server/internal/telegram"
 )
@@ -76,7 +80,26 @@ func handleDeliveryCallback(state *app.State, action, id, callbackID string, cha
 		telegram.AnswerCallback(state, callbackID, "账户暂不可用，请在服务器控制页检查", true)
 		return
 	}
-	claimed, err := state.DB.ClaimDeliveryReboot(row.ID)
+	if row.RebootClaimed != 0 {
+		telegram.AnswerCallback(state, callbackID, "该通知已提交过重启，请到服务器控制页查看", true)
+		return
+	}
+	if !secret.Enabled() {
+		telegram.AnswerCallback(state, callbackID, "凭据加密未就绪，重启未提交", true)
+		return
+	}
+	telegram.AnswerCallback(state, callbackID, "正在准备重启及救援邮件监听", false)
+	// Snapshot before reboot so a previous rescue password can never be reused.
+	var emailIDs []int64
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	err = client.GetWithContext(ctx, "/me/notification/email/history", &emailIDs)
+	cancel()
+	if err != nil || emailIDs == nil {
+		telegram.SendReplyChecked(state, row.ChatID, "⚠️ 读取邮件基线失败，重启未提交，请稍后重试。", messageID)
+		return
+	}
+	baseline, _ := json.Marshal(emailIDs)
+	claimed, err := state.DB.ClaimDeliveryReboot(row.ID, string(baseline))
 	if err != nil || !claimed {
 		telegram.AnswerCallback(state, callbackID, "该通知已提交过重启，请到服务器控制页查看", true)
 		return
@@ -85,10 +108,16 @@ func handleDeliveryCallback(state *app.State, action, id, callbackID string, cha
 	result, err := serverops.Reboot(client, row.ServiceName)
 	if err != nil {
 		state.Logger.Warn("TG 发货通知重启请求未确认: "+row.ServiceName, "delivery")
-		telegram.SendReply(state, chatID, "⚠️ 重启请求未确认："+row.ServiceName+"\n请在服务器控制页核实，本按钮不会自动重复提交。", messageID)
+		saveRebootReply(state, row.ID, "⚠️ 重启请求未确认："+row.ServiceName+"\n请在服务器控制页核实，本按钮不会自动重复提交。")
 		return
 	}
-	telegram.SendReply(state, chatID, fmt.Sprintf("✅ 重启请求已提交\n设备：%s\n任务：%v", row.ServiceName, result["taskId"]), messageID)
+	saveRebootReply(state, row.ID, fmt.Sprintf("✅ 重启请求已提交\n设备：%s\n任务：%v", row.ServiceName, result["taskId"]))
+}
+
+func saveRebootReply(state *app.State, id, text string) {
+	if err := state.DB.SaveDeliveryRebootReply(id, text); err != nil {
+		state.Logger.Error("保存重启结果回复失败: "+err.Error(), "delivery")
+	}
 }
 
 func validDeliveryCallback(row db.DeliveryServer, chatID interface{}, messageID int64) bool {

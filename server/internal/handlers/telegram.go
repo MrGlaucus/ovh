@@ -299,6 +299,28 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 
 	action := strOr(callbackObj, "a", "action")
 	buttonID := strOr(callbackObj, "u", "uuid")
+	if action == "add_to_queue" || action == "text" || action == "pb" || action == "tb" {
+		if buttonID == "" {
+			telegram.AnswerCallback(state, fmt.Sprint(cb["id"]), "按钮已失效，请重新选择", true)
+			u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
+			return
+		}
+		telegram.AnswerCallback(state, fmt.Sprint(cb["id"]), "正在加载选项", false)
+		if err := showTelegramPaymentStep(state, cb, buttonID, action); err != nil && !telegram.IsMessageNotModified(err) {
+			telegram.SendReply(state, chatID, "❌ 无法加载选项："+err.Error(), int64(messageID))
+			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "payment_selection_unavailable"})
+		}
+		return
+	}
+	autoPay := false
+	switch action {
+	case "py", "pn":
+		autoPay = action == "py"
+		action = "add_to_queue"
+	case "ty", "tn":
+		autoPay = action == "ty"
+		action = "text"
+	}
 	if action == "dr" || action == "dn" || action == "dh" {
 		handleDeliveryCallback(state, action, buttonID, fmt.Sprint(cb["id"]), chatID, int64(messageID))
 		u.JSON(http.StatusOK, gin.H{"ok": true})
@@ -444,7 +466,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			Quantity int `json:"quantity"`
 		}
 		_ = json.Unmarshal([]byte(row.ConfigInfo), &meta)
-		result := telegram.ProcessOrder(state, row.AccountID, row.PlanCode, row.Datacenter, meta.Quantity, db.ParseTelegramButtonOptions(row.Options))
+		result := telegram.ProcessOrder(state, row.AccountID, row.PlanCode, row.Datacenter, meta.Quantity, db.ParseTelegramButtonOptions(row.Options), autoPay)
 		message, _ := cb["message"].(map[string]interface{})
 		chatID := getNested(message, "chat", "id")
 		messageID, _ := getNumOrFloat(message["message_id"])
@@ -456,7 +478,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			return
 		}
 		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已创建抢购任务", false)
-		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。", result.CreatedOrders, result.TotalOrders), int64(messageID))
+		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。\n付款方式：%s", result.CreatedOrders, result.TotalOrders, telegramPaymentLabel(autoPay)), int64(messageID))
 		u.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
@@ -674,6 +696,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		RetryCount:    0,
 		LastCheckTime: 0,
 		FromTelegram:  true,
+		AutoPay:       autoPay,
 	}
 	// 入队 + 落库统一走 EnqueueItems:失败会自动撤回内存里的那条,
 	// 这里只需要把按钮归还、告诉用户
@@ -696,7 +719,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	state.Logger.Info(fmt.Sprintf("Telegram用户 %v 通过按钮添加到队列: %s@%s, 配置选项: %s, 账户: %s",
 		userID, planCode, dc, optsStr, accLabel), "telegram")
 	confirmMsg := fmt.Sprintf("✅ 已添加到抢购队列！\n\n型号: %s\n机房: %s\n配置: %s\n账户: %s\n\n系统将自动尝试下单。",
-		planCode, strings.ToUpper(dc), optsStr, accLabel)
+		planCode, strings.ToUpper(dc), optsStr, accLabel) + "\n付款方式：" + telegramPaymentLabel(autoPay)
 	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已添加到队列！", false)
 	telegram.SendReply(state, chatID, confirmMsg, int64(messageID))
 	u.JSON(http.StatusOK, gin.H{"ok": true})
@@ -1130,9 +1153,9 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 			continue
 		}
 		seen[account.ID] = struct{}{}
-		// 账户按钮是最终下单按钮：把该候选的 FQN 一并写入 ConfigInfo，
+		// 账户按钮进入付款选择：把该候选的 FQN 一并写入 ConfigInfo，
 		// 下单回调据此按 FQN 精确校验"这个账户目录里的这条配置"是否仍可下单。
-		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true}, candidate.ConfigKey)
+		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display}, candidate.ConfigKey)
 		if err != nil {
 			return fmt.Errorf("保存账户选项失败: %w", err)
 		}
@@ -1152,7 +1175,7 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 }
 
 // sendTextOrderAccountChoices 为手动文本下单创建明确账户绑定的一次性按钮。
-func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID int64, order *telegram.OrderInfo) bool {
+func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID int64, order *telegram.OrderInfo, edit ...bool) bool {
 	if state.DB == nil || order == nil {
 		return false
 	}
@@ -1162,10 +1185,7 @@ func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID
 	if len(accounts) == 0 {
 		return false
 	}
-	type button struct {
-		Text         string `json:"text"`
-		CallbackData string `json:"callback_data"`
-	}
+	type button = telegramMenuButton
 	keyboard := make([][]button, 0, (len(accounts)+1)/2)
 	line := make([]button, 0, 2)
 	for _, account := range accounts {
@@ -1189,6 +1209,10 @@ func sendTextOrderAccountChoices(state *app.State, chatID interface{}, messageID
 	}
 	if len(keyboard) == 0 {
 		return false
+	}
+	if len(edit) > 0 && edit[0] {
+		err := editBuyMenu(state, chatID, messageID, "请选择用于创建抢购任务的账户：", keyboard)
+		return err == nil || telegram.IsMessageNotModified(err)
 	}
 	return telegram.SendReplyWithMarkup(state, chatID, "请选择用于创建抢购任务的账户：", messageID, map[string]interface{}{"inline_keyboard": keyboard})
 }

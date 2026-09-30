@@ -48,6 +48,7 @@ var namespaces = []string{
 	"me",
 	"services",
 	"ip",
+	"secret",
 }
 
 // endpointSig 一个端点在某个区的签名。字段都是"变了就该有人看一眼"的那些。
@@ -231,6 +232,8 @@ var usedEndpoints = []string{
 	"GET /me/bill/{billId}",
 	"GET /me/credit/balance",
 	"GET /me/notification/email/history",
+	"GET /me/notification/email/history/{id}",
+	"POST /secret/retrieve",
 	"GET /me/order",
 	"GET /me/order/{orderId}",
 	"GET /me/order/{orderId}/availableRegisteredPaymentMean",
@@ -283,6 +286,11 @@ func fetchSchema(region, ns string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// Some namespaces are regional (e.g. /secret is absent in CA).
+	// Endpoint coverage below still rejects entries missing from every region.
+	if resp.StatusCode == http.StatusNotFound {
+		return map[string]interface{}{"apis": []interface{}{}}, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s %s: HTTP %d", region, ns, resp.StatusCode)
 	}

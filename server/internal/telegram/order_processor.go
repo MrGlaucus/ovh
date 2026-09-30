@@ -62,7 +62,8 @@ func emptyAvailabilityReason(state *app.State, accountID, planCode string, acc t
 }
 
 // ProcessOrder 使用调用方明确指定的账户创建文本下单任务；空账户绝不回退默认账户。
-func ProcessOrder(state *app.State, accountID, planCode, datacenter string, quantity int, options []string) OrderResult {
+func ProcessOrder(state *app.State, accountID, planCode, datacenter string, quantity int, options []string, payment ...bool) OrderResult {
+	autoPay := len(payment) > 0 && payment[0]
 	if quantity < 1 {
 		quantity = 1
 	}
@@ -181,6 +182,7 @@ func ProcessOrder(state *app.State, accountID, planCode, datacenter string, quan
 			for i := 0; i < quantity; i++ {
 				now := types.NowISO()
 				item := types.QueueItem{
+					AutoPay:       autoPay,
 					ID:            uuid.NewString(),
 					AccountID:     accountID,
 					PlanCode:      planCode,

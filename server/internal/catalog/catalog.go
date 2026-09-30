@@ -796,6 +796,10 @@ var dcRegionMap = map[string][2]string{
 
 // lookupDCName 把 OVH 返回的机房码解析成 (中文名, 地区)。
 // 三区通用,兼容三种写法:短码 gra、带编号 gra1/sgp02、长码 eu-west-par-a。
+func DatacenterLocation(code string) (string, string, bool) {
+	return lookupDCName(code)
+}
+
 func lookupDCName(code string) (string, string, bool) {
 	c := strings.ToLower(strings.TrimSpace(code))
 	if c == "" {

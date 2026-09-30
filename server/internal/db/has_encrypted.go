@@ -25,6 +25,14 @@ func (d *DB) HasEncryptedSecrets() (bool, error) {
 	if n > 0 {
 		return true, nil
 	}
+	// Pending rescue passwords must survive key-loss detection even if account
+	// credentials have since been cleared. Never replace their encryption key.
+	if err := d.QueryRow(`SELECT COUNT(*) FROM delivery_rescue_jobs WHERE credentials LIKE 'enc:v1:%'`).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
 
 	// 账户表可能是空的,但全局配置里的 Telegram token 一样是加密存的
 	var raw string
