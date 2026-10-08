@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/ovh-buy/server/internal/app"
 	"github.com/ovh-buy/server/internal/db"
+	"github.com/ovh-buy/server/internal/ovh"
 	"github.com/ovh-buy/server/internal/secret"
 	"github.com/ovh-buy/server/internal/serverops"
 	"github.com/ovh-buy/server/internal/telegram"
@@ -109,6 +110,11 @@ func handleDeliveryCallback(state *app.State, action, id, callbackID string, cha
 	telegram.AnswerCallback(state, callbackID, "正在提交重启请求", false)
 	result, err := serverops.Reboot(client, row.ServiceName)
 	if err != nil {
+		if ovh.IsRebootAlreadyRequested(err) {
+			saveRebootReply(state, row.ID, "⏳ 已有重启请求在进行中\n设备："+row.ServiceName+"\n请等待完成，无需重复提交。")
+			return
+		}
+
 		state.Logger.Warn("TG 发货通知重启请求未确认: "+row.ServiceName, "delivery")
 		saveRebootReply(state, row.ID, "⚠️ 重启请求未确认："+row.ServiceName+"\n请在服务器控制页核实，本按钮不会自动重复提交。")
 		return

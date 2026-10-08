@@ -35,6 +35,7 @@ import (
 	"github.com/ovh-buy/server/internal/storage"
 	"github.com/ovh-buy/server/internal/telegram"
 	"github.com/ovh-buy/server/internal/updater"
+	"github.com/ovh-buy/server/internal/vps"
 )
 
 // 代理健康检查只更新状态和日志；通知由实际受影响的上货事件发出。
@@ -596,6 +597,13 @@ func main() {
 	if len(mon.Snapshot()) > 0 {
 		mon.Start()
 		state.Logger.Info("自动启动服务器监控", "system")
+	}
+
+	state.VPSSubsMu.Lock()
+	hasVPSSubscriptions := len(state.VPSSubscriptions) > 0
+	state.VPSSubsMu.Unlock()
+	if hasVPSSubscriptions {
+		vps.Start(state)
 	}
 
 	state.Logger.Info("Server started", "system")

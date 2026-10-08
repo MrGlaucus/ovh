@@ -84,7 +84,17 @@ func SelfUpdate(state *app.State, restart func(exePath string)) gin.HandlerFunc 
 			return
 		}
 
-		setProgress(updater.Progress{Phase: "downloading", Message: "正在下载 v" + latest, Version: latest})
+		// 在同一临界区复核并占用更新状态，避免同时发起多个安装。
+		updateMu.Lock()
+		switch updateProgress.Phase {
+		case "downloading", "verifying", "installing", "restarting":
+			progress := updateProgress
+			updateMu.Unlock()
+			c.JSON(http.StatusConflict, gin.H{"success": false, "error": "已有更新正在进行", "progress": progress})
+			return
+		}
+		updateProgress = updater.Progress{Phase: "downloading", Message: "正在下载 v" + latest, Version: latest}
+		updateMu.Unlock()
 		state.Logger.Info("[更新] 开始自更新: "+Version+" → "+latest, "version")
 
 		go func() {

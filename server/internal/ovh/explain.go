@@ -112,3 +112,9 @@ func hintFor(e *ovhsdk.APIError) string {
 	}
 	return "调用 OVH 失败"
 }
+
+// IsRebootAlreadyRequested 只识别 OVH 明确的重复重启拒绝，不代表重启已完成。
+func IsRebootAlreadyRequested(err error) bool {
+	var apiErr *ovhsdk.APIError
+	return errors.As(err, &apiErr) && apiErr.Code == 403 && strings.Contains(strings.ToLower(apiErr.Message), "reboot has already been requested")
+}

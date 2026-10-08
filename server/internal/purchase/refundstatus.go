@@ -247,7 +247,7 @@ func RefreshRefundStatuses(state *app.State, force bool) int {
 	wg.Wait()
 
 	// 每条目标的 checkedAt 都刷新过（命中与否都算查过），统一落一次盘
-	go state.SaveHistory()
+	state.PersistHistory()
 	return updated
 }
 

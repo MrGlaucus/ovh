@@ -716,3 +716,10 @@ func (s *State) SaveAll() {
 		s.Logger.Error("save servers: "+err.Error(), "system")
 	}
 }
+
+// PersistHistory 在调用方释放 HistoryMu 后同步保存，并显式记录失败。
+func (s *State) PersistHistory() {
+	if err := s.SaveHistory(); err != nil {
+		s.Logger.Error("保存抢购历史失败: "+err.Error(), "purchase")
+	}
+}

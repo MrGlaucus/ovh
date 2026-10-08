@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -267,7 +268,9 @@ func (p *Poller) fetch(client *http.Client) ([]map[string]interface{}, error) {
 		ErrorCode   int                      `json:"error_code"`
 		Result      []map[string]interface{} `json:"result"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&result); err != nil {
 		return nil, fmt.Errorf("响应不是合法 JSON(HTTP %d)", resp.StatusCode)
 	}
 	if !result.OK {

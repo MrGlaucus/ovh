@@ -28,6 +28,7 @@ var (
 	// 同一次补货下两次单。VPS 侧界面就一个 停止/启动 按钮,点两下即可复现,
 	// 而 VPS 循环退出延迟很大(每订阅一次 10 秒超时的 HTTP + 下单往返)。
 	generation int64
+	loopDone   chan struct{}
 
 	// 通知通道体检节流。loop 每 5 分钟 verify 一次;全挂只告警不停监控。
 	tgCheckMu   sync.Mutex
@@ -397,8 +398,7 @@ var statusMap = map[string]string{
 // 必须带上子公司:同一个 planCode 在 EU / US / CA 三个站点是三份互不相干的库存,
 // 不写子公司的话,同时监控 IE 和 US 的用户收到的两条通知长得一模一样,分不清该去哪买。
 func SendSummaryNotification(state *app.State, planCode, ovhSubsidiary string, dcs []map[string]interface{}, changeType string) bool {
-	cfg := state.Config.Get()
-	if cfg.TgToken == "" || cfg.TgChatID == "" || len(dcs) == 0 {
+	if len(dcs) == 0 {
 		return false
 	}
 	planDisplay := vpsPlanDisplay(planCode)
@@ -621,6 +621,23 @@ func monitorLoopGen(state *app.State, gen int64) {
 				if len(sub.History) > 100 {
 					sub.History = sub.History[len(sub.History)-100:]
 				}
+				// 状态跳变后立即保存；没有跳变的检查仍在轮末统一保存。
+				if isFirstCheckOverall || len(newAvailable) > 0 || len(newUnavailable) > 0 {
+					// 每个订阅完成后立即合并检查状态，避免后续慢订阅扩大重启重放窗口。
+					state.VPSSubsMu.Lock()
+					for i := range state.VPSSubscriptions {
+						if state.VPSSubscriptions[i].ID == sub.ID {
+							state.VPSSubscriptions[i].LastStatus = sub.LastStatus
+							state.VPSSubscriptions[i].History = sub.History
+							break
+						}
+					}
+					state.VPSSubsMu.Unlock()
+					if err := SaveSubscriptions(state); err != nil {
+						state.Logger.Error("保存 VPS 检查状态失败: "+err.Error(), "vps_monitor")
+					}
+				}
+
 				time.Sleep(time.Second)
 			}
 			// 按 ID 合并写回：保留循环中对 LastStatus/History 的更新，不覆盖循环期间用户新增/删除的订阅
@@ -671,12 +688,23 @@ func Start(state *app.State) bool {
 	// 每个循环记住自己出生时的代际号,不是当前代就退出。
 	generation++
 	gen := generation
+	previous := loopDone
+	done := make(chan struct{})
+	loopDone = done
 	runningMu.Unlock()
 	// 重置 TG 检查时间戳,保证启动后第一轮一定 verify
 	tgCheckMu.Lock()
 	lastTGCheck = time.Time{}
 	tgCheckMu.Unlock()
-	go monitorLoopGen(state, gen)
+	go func() {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		if stillMine(gen) {
+			monitorLoopGen(state, gen)
+		}
+	}()
 	state.Logger.Info(fmt.Sprintf("VPS监控已启动 (检查间隔: %d秒)", state.VPSCheckInterval), "vps_monitor")
 	return true
 }
@@ -690,7 +718,9 @@ func Stop(state *app.State) bool {
 	}
 	running = false
 	runningMu.Unlock()
-	state.Logger.Info("正在停止VPS监控...", "vps_monitor")
+	if state != nil {
+		state.Logger.Info("正在停止VPS监控...", "vps_monitor")
+	}
 	return true
 }
 

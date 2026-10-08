@@ -329,7 +329,7 @@ func RefreshOrderStatuses(state *app.State, force bool) int {
 		}
 	}
 	if updated > 0 {
-		go state.SaveHistory()
+		state.PersistHistory()
 	}
 	return updated
 }

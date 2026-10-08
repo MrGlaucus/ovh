@@ -307,6 +307,7 @@ func lookupVPSPricing(state *app.State, client *ovhsdk.Client, cartID, planCode 
 // recordVPSPurchase 把下单结果写进抢购历史,和独服共用一张表 ——
 // 用户不关心"这是独服还是 VPS 的历史",只关心"我到底买到了什么"。
 func recordVPSPurchase(state *app.State, sub types.VPSSubscription, dcCode string, out Outcome) {
+	defer state.PersistHistory()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	entry := types.PurchaseHistoryEntry{
@@ -329,7 +330,7 @@ func recordVPSPurchase(state *app.State, sub types.VPSSubscription, dcCode strin
 		entry.ErrorMessage = &reason
 	}
 	state.History = append(state.History, entry)
-	go state.SaveHistory()
+
 }
 
 // autoOrderOnRestock 补货时自动下单。
@@ -371,6 +372,13 @@ func autoOrderDcs(state *app.State, sub types.VPSSubscription, dcs []map[string]
 		if code == "" {
 			continue
 		}
+		if !Running() || !vpsAutoOrderStillWanted(state, sub.ID) {
+			return
+		}
+		if recentVPSPurchase(state, sub, code, time.Now()) {
+			state.Logger.Info("同一 VPS 订阅在该机房 120 秒内已下单，跳过重复补货", "vps_purchase")
+			continue
+		}
 		out := PurchaseVPS(state, sub, code)
 		recordVPSPurchase(state, sub, code, out)
 
@@ -378,10 +386,10 @@ func autoOrderDcs(state *app.State, sub types.VPSSubscription, dcs []map[string]
 			// 同独服:checkout 是 autoPayWithPreferredPaymentMethod:false,
 			// "成功"= 订单已创建、未付款、逾期作废。通知里必须说清楚。
 			payNote := "⚠️ 订单尚未付款：请尽快打开订单链接完成付款,逾期未付订单会自动作废。\n" +
-				"(下单时已按惯例放弃 14 天撤销期,付款即开通)"
+				"(请以 OVH 订单页显示的付款与撤销期限为准)"
 			if sub.AutoPay {
 				payNote = "💳 已请求用账户默认支付方式自动付款,请打开订单链接核对扣款是否成功。\n" +
-					"(下单时已按惯例放弃 14 天撤销期)"
+					"(请以 OVH 订单页显示的付款与撤销期限为准)"
 			}
 			// 同独服:通知里发需要登录的控制面板深链,不发 checkout 那个带凭证的 url。
 			// 带凭证那份存在本地历史里,界面上照样一键可付。
@@ -424,3 +432,17 @@ func vpsAutoOrderStillWanted(state *app.State, subID string) bool {
 // autoOrderFlags 每个订阅一个在飞标记,防延迟窗口内重复下单。
 // 条目数 = 历史上触发过自动下单的订阅数,量级极小,无需清理。
 var autoOrderFlags sync.Map // subID -> *atomic.Bool
+
+func recentVPSPurchase(state *app.State, sub types.VPSSubscription, dc string, now time.Time) bool {
+	state.HistoryMu.Lock()
+	defer state.HistoryMu.Unlock()
+	for _, h := range state.History {
+		if h.TaskID != "vps:"+sub.ID || h.AccountID != sub.AutoOrderAccountID || h.PlanCode != sub.PlanCode || h.Datacenter != dc || h.Status != "success" {
+			continue
+		}
+		if t, ok := types.ParseTS(h.PurchaseTime); ok && now.Sub(t) >= 0 && now.Sub(t) < 120*time.Second {
+			return true
+		}
+	}
+	return false
+}

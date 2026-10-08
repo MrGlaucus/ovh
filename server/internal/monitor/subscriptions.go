@@ -172,6 +172,21 @@ func (m *Monitor) MessageUUIDCacheLookup(id string) *CachedMessage {
 	return nil
 }
 
+// MessageUUIDCacheTake 原子消费旧按钮，避免并发回调重复下单。
+func (m *Monitor) MessageUUIDCacheTake(id string) *CachedMessage {
+	m.cacheLock.Lock()
+	defer m.cacheLock.Unlock()
+	if cm, ok := m.messageUUIDCache[id]; ok {
+		delete(m.messageUUIDCache, id)
+		if time.Now().Unix()-int64(cm.Timestamp) < int64(m.messageUUIDCacheTTL.Seconds()) {
+			return cm
+		}
+		delete(m.messageUUIDCache, id)
+		m.state.Logger.Warn("UUID缓存已过期: "+id, "telegram")
+	}
+	return nil
+}
+
 // OptionsCacheLookup 兼容旧机制
 func (m *Monitor) OptionsCacheLookup(key string) []string {
 	m.cacheLock.Lock()

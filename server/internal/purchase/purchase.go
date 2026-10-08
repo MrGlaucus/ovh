@@ -25,6 +25,8 @@ import (
 // 一个手滑选错区的任务能刷满整个抢购历史。Fatal 就是用来终止这类任务的。
 type Outcome struct {
 	Success bool
+	// PauseTask:结账结果不明确，暂停后由用户核对订单，禁止自动重试。
+	PauseTask bool
 	// Fatal:确定性失败,重试多少次结果都一样。队列处理器据此把任务直接置 failed。
 	// 只有"换个时间点重试也必然是同一个结果"才允许置 true ——
 	// 网络 / 429 / OVH 5xx / 无货 一律不是 Fatal。
@@ -542,8 +544,13 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 		state.Logger.Error(fmt.Sprintf("购买 %s 时发生 OVH API 错误: %s (%s)", item.PlanCode, errMsg, tl.String()), "purchase")
 		// checkout 这一步最要紧:补货瞬间大家都在下单,429 是常态。
 		// 把它记成一次"真正的失败尝试"会让任务在唯一有货的那一分钟里自己判死；
-		// failOutcome 里 429/408 这类瞬时错误既不计重试额度也不写历史,
-		// 历史里留下的都是真业务失败的原因。
+		// 明确的 429 拒绝不计重试额度；超时或网关失败可能已生成订单，
+		// 必须暂停核对，不能继续自动重试。
+		if checkoutUncertain(err) {
+			// 不删除结果不明的购物车，保留核对线索。
+			success = true
+			return pauseUnknownCheckout(state, item, cartID, errMsg)
+		}
 		return failOutcome(state, item, err, errMsg)
 	}
 	tl.mark("下单")
@@ -551,6 +558,10 @@ func PurchaseServer(ctx context.Context, state *app.State, item *types.QueueItem
 
 	orderID := numconv.ToString(checkoutResult["orderId"])
 	orderURL, _ := checkoutResult["url"].(string)
+	if orderID == "" {
+		success = true
+		return pauseUnknownCheckout(state, item, cartID, "结账响应没有订单号")
+	}
 
 	// checkout 已返回订单 ID,cart 已成功转 order,标记成功阻止 defer 删除
 	success = true
@@ -884,6 +895,7 @@ func extract(v interface{}) *float64 {
 }
 
 func recordSuccess(state *app.State, item *types.QueueItem, orderID, orderURL, expirationTime string, priceInfo *types.PriceInfo) {
+	defer state.PersistHistory()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	now := types.NowISO()
@@ -905,7 +917,6 @@ func recordSuccess(state *app.State, item *types.QueueItem, orderID, orderURL, e
 				state.History[i].Price = priceInfo
 			}
 			state.Logger.Info("更新抢购历史(成功) 任务ID: "+item.ID, "purchase")
-			go state.SaveHistory()
 			return
 		}
 	}
@@ -932,10 +943,10 @@ func recordSuccess(state *app.State, item *types.QueueItem, orderID, orderURL, e
 	}
 	state.History = append(state.History, entry)
 	state.Logger.Info("创建抢购历史(成功) 任务ID: "+item.ID, "purchase")
-	go state.SaveHistory()
 }
 
 func recordFailure(state *app.State, item *types.QueueItem, errMsg string) {
+	defer state.PersistHistory()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	now := types.NowISO()
@@ -953,7 +964,6 @@ func recordFailure(state *app.State, item *types.QueueItem, errMsg string) {
 			state.History[i].Options = item.Options
 			state.History[i].DelaySeconds = item.DelaySeconds
 			state.Logger.Info("更新抢购历史(失败) 任务ID: "+item.ID, "purchase")
-			go state.SaveHistory()
 			return
 		}
 	}
@@ -973,7 +983,6 @@ func recordFailure(state *app.State, item *types.QueueItem, errMsg string) {
 	}
 	state.History = append(state.History, entry)
 	state.Logger.Info("创建抢购历史(失败) 任务ID: "+item.ID, "purchase")
-	go state.SaveHistory()
 }
 
 // backfillOrderDetail 下单成功后异步补 history 行的 expirationTime + price。
@@ -1058,6 +1067,12 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 		return
 	}
 
+	dirty := false
+	defer func() {
+		if dirty {
+			state.PersistHistory()
+		}
+	}()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	for i := range state.History {
@@ -1083,9 +1098,9 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 			changed = true
 		}
 		if changed {
+			dirty = true
 			state.Logger.Info(fmt.Sprintf("补全订单 %s 详情: 过期时间=%q 价格=%v",
 				orderID, expirationTime, priceInfo != nil), "purchase")
-			go state.SaveHistory()
 		}
 		return
 	}

@@ -141,6 +141,18 @@ func AddSecondaryDNS(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Post("/dedicated/server/"+svc+"/secondaryDnsDomains", map[string]interface{}{"domain": body.Domain}, nil); err != nil {
+			if code := ovhAPICode(err); code == 400 || code == 409 {
+				var domains []string
+				if client.Get("/dedicated/server/"+svc+"/secondaryDnsDomains", &domains) == nil {
+					for _, domain := range domains {
+						if domain == body.Domain {
+							c.JSON(http.StatusOK, gin.H{"success": true, "message": "从 DNS 域名已添加"})
+							return
+						}
+					}
+				}
+			}
+
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}
@@ -159,6 +171,11 @@ func DeleteSecondaryDNS(state *app.State) gin.HandlerFunc {
 			return
 		}
 		if err := client.Delete("/dedicated/server/"+svc+"/secondaryDnsDomains/"+domain, nil); err != nil {
+			if ovhIsNotFound(err) {
+				c.JSON(http.StatusOK, gin.H{"success": true, "message": "从 DNS 域名已删除"})
+				return
+			}
+
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}

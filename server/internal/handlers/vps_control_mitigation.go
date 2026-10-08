@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,7 +24,8 @@ import (
 // isIPv4 简单判 IPv4 地址(含点号、不含冒号)。OVH 的 anti-DDoS mitigation 只支持 IPv4,
 // IPv6 传过去会 400 "[ipOnMitigation] Given data is not valid for type ipv4"
 func isIPv4(s string) bool {
-	return strings.Contains(s, ".") && !strings.Contains(s, ":")
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil && !strings.Contains(s, ":")
 }
 
 // resolveIPBlock 把裸 IP 换成它所属的真实 ipBlock(带掩码)。
@@ -173,6 +175,16 @@ func EnableVpsMitigation(state *app.State) gin.HandlerFunc {
 		var result map[string]interface{}
 		if err := client.Post("/ip/"+encoded+"/mitigation",
 			map[string]interface{}{"ipOnMitigation": ip}, &result); err != nil {
+			if code := ovhAPICode(err); code == 400 || code == 409 {
+				var existing struct {
+					Permanent bool `json:"permanent"`
+				}
+				if client.Get("/ip/"+encoded+"/mitigation/"+ip, &existing) == nil && existing.Permanent {
+					c.JSON(http.StatusOK, gin.H{"success": true, "message": "永久 DDoS 缓解已启用"})
+					return
+				}
+			}
+
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}
@@ -201,6 +213,11 @@ func DisableVpsMitigation(state *app.State) gin.HandlerFunc {
 		}
 		encoded := strings.ReplaceAll(resolveIPBlock(client, ipBlock), "/", "%2F")
 		if err := client.Delete("/ip/"+encoded+"/mitigation/"+ip, nil); err != nil {
+			if ovhIsNotFound(err) {
+				c.JSON(http.StatusOK, gin.H{"success": true, "message": "永久 DDoS 缓解已关闭"})
+				return
+			}
+
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}

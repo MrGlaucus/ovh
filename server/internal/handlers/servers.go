@@ -351,7 +351,7 @@ func MonitorPrice(state *app.State) gin.HandlerFunc {
 		if body.Datacenter == "" {
 			body.Datacenter = defaultDatacenterFor(state, body.AccountID, body.PlanCode)
 		}
-		result := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, body.Options)
+		result := price.GetInternalCached(state, body.AccountID, body.PlanCode, body.Datacenter, body.Options)
 		c.JSON(http.StatusOK, result)
 	}
 }

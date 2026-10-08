@@ -22,6 +22,10 @@ import (
 	"github.com/ovh-buy/server/internal/types"
 )
 
+// 下单按钮的外部查询边界，生产环境始终使用账户感知的原有实现。
+var telegramButtonAvailability = catalog.CheckServerAvailabilityWithConfigs
+var telegramButtonProcessOrder = telegram.ProcessOrder
+
 // updateCtx 处理一条 Telegram update 的上下文。
 //
 // 为什么不直接用 *gin.Context：update 只有长轮询一条路（见 telegram/poller.go），
@@ -53,9 +57,15 @@ func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]inter
 	if !authorized {
 		state.Logger.Warn("拒绝未授权的 Telegram 请求(未写入幂等表)", "telegram")
 		if cb, ok := data["callback_query"].(map[string]interface{}); ok {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "无权限", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "无权限", true)
 		}
 		u.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
+		return u
+	}
+
+	// 可重复按钮依赖每次点击的 update_id 防重；缺少持久化条件时拒绝执行。
+	if parseUpdateID(data["update_id"]) <= 0 || state.DB == nil {
+		u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "update_dedup_unavailable"})
 		return u
 	}
 
@@ -66,10 +76,12 @@ func ProcessUpdate(state *app.State, mon *monitor.Monitor, data map[string]inter
 		claimed, err := state.DB.TryClaimTelegramUpdate(updateID)
 		if err != nil {
 			state.Logger.Warn("update_id 幂等写入失败: "+err.Error(), "telegram")
+			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "update_dedup_failed"})
+			return u
 		} else if !claimed {
 			state.Logger.Info(fmt.Sprintf("忽略重复投递的 update_id=%d", updateID), "telegram")
 			if cb, ok := data["callback_query"].(map[string]interface{}); ok {
-				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该操作已处理", false)
+				telegram.AnswerCallback(state, idToString(cb["id"]), "该操作已处理", false)
 			}
 			u.JSON(http.StatusOK, gin.H{"ok": true, "duplicate": true})
 			return u
@@ -274,7 +286,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	// 4) 发送者授权：只有配置的那个 chat 能下单
 	if !telegram.IsAuthorizedActor(state, chatID, fromUser["id"]) {
 		state.Logger.Warn(fmt.Sprintf("拒绝未授权的 Telegram 回调: chat_id=%v, user_id=%v", chatID, userID), "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "无权限", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "无权限", true)
 		u.JSON(http.StatusForbidden, gin.H{"ok": false, "error": "unauthorized_actor"})
 		return
 	}
@@ -285,21 +297,21 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		rateKey = telegram.ChatIDString(fromUser["id"])
 	}
 	if !telegram.AllowRate(rateKey) {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "操作过于频繁，请稍后再试", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "操作过于频繁，请稍后再试", true)
 		u.JSON(http.StatusTooManyRequests, gin.H{"ok": false, "error": "rate_limited"})
 		return
 	}
 
 	callbackObj, ok := decodeCallbackData(state, cbData)
 	if !ok {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮数据异常，请等待新的通知", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "按钮数据异常，请等待新的通知", true)
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Invalid callback data format"})
 		return
 	}
 
 	action := strOr(callbackObj, "a", "action")
 	buttonID := strOr(callbackObj, "u", "uuid")
-	if action == "add_to_queue" || action == "text" || action == "pb" || action == "tb" {
+	if action == "pb" || action == "tb" {
 		if buttonID == "" {
 			telegram.AnswerCallback(state, fmt.Sprint(cb["id"]), "按钮已失效，请重新选择", true)
 			u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
@@ -312,14 +324,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		}
 		return
 	}
-	autoPay := false
 	switch action {
-	case "py", "pn":
-		autoPay = action == "py"
-		action = "add_to_queue"
-	case "ty", "tn":
-		autoPay = action == "ty"
-		action = "text"
+	case "py", "pn", "ty", "tn":
+		telegram.AnswerCallback(state, fmt.Sprint(cb["id"]), "付款选项已取消，请返回账户选择重新下单（不自动付款）", true)
+		u.JSON(http.StatusGone, gin.H{"ok": false, "error": "payment_step_removed"})
+		return
 	}
 	if action == "dr" || action == "dn" || action == "dh" {
 		handleDeliveryCallback(state, action, buttonID, fmt.Sprint(cb["id"]), chatID, int64(messageID))
@@ -331,7 +340,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		if action == "fav" {
 			row, exists, err := state.DB.GetTelegramButton(buttonID)
 			if err != nil || validBuyMenuButton(row, exists) != nil {
-				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "型号选择已失效，请重新发送 /buy", true)
+				telegram.AnswerCallback(state, idToString(cb["id"]), "型号选择已失效，请重新发送 /buy", true)
 				u.JSON(http.StatusGone, gin.H{"ok": false, "error": "favorite_menu_expired"})
 				return
 			}
@@ -339,11 +348,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		}
 		isFavorite, err := state.DB.IsServerFavorite(planCode)
 		if err != nil || !isFavorite {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "收藏已不存在，请重新发送 /buy", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "收藏已不存在，请重新发送 /buy", true)
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "favorite_not_found"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载配置", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在加载配置", false)
 		if err := sendBuyConfigurationChoices(state, chatID, int64(messageID), planCode); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载配置选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
@@ -360,16 +369,16 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		planCode := strings.TrimSpace(strOr(callbackObj, "p", "planCode"))
 		datacenter := strings.TrimSpace(strOr(callbackObj, "d", "datacenter"))
 		if planCode == "" {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效，请等待新的通知", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "按钮已失效，请等待新的通知", true)
 			u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_plan_code"})
 			return
 		}
 		if state.DB == nil {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "数据库不可用", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "数据库不可用", true)
 			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载选购菜单", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在加载选购菜单", false)
 		// 就地在原通知消息上展开：整条「机房 → 配置 → 账户」链（含各级返回）
 		// 都在同一条消息里切换，不再每次点击都新发一条消息。
 		var menuErr error
@@ -390,7 +399,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		return
 	}
 	if action == "cfg" {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载机房", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在加载机房", false)
 		if err := sendBuyDatacenterChoices(state, chatID, int64(messageID), buttonID); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载机房选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "datacenter_selection_unavailable"})
@@ -400,7 +409,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		return
 	}
 	if action == "dc" {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载账户", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在加载账户", false)
 		if err := sendBuyAccountChoices(state, chatID, int64(messageID), buttonID); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载账户选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "account_selection_unavailable"})
@@ -412,11 +421,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	if action == "bc" {
 		row, exists, err := state.DB.GetTelegramButton(buttonID)
 		if err != nil || validBuyMenuButton(row, exists) != nil {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "菜单已失效，请重新发送 /buy", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "菜单已失效，请重新发送 /buy", true)
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "configuration_menu_expired"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回配置选择", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在返回配置选择", false)
 		if err := sendBuyConfigurationChoices(state, chatID, int64(messageID), row.PlanCode); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载配置选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "configuration_selection_unavailable"})
@@ -428,11 +437,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	if action == "bm" {
 		row, exists, err := state.DB.GetTelegramButton(buttonID)
 		if err != nil || validBuyMenuButton(row, exists) != nil {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "菜单已失效，请重新发送 /buy", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "菜单已失效，请重新发送 /buy", true)
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "favorite_menu_expired"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回型号选择", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在返回型号选择", false)
 		if err := editFavoriteOrderMenu(state, chatID, int64(messageID)); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载型号选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "favorite_selection_unavailable"})
@@ -442,7 +451,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		return
 	}
 	if action == "bd" {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回机房选择", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在返回机房选择", false)
 		if err := sendBuyDatacenterChoices(state, chatID, int64(messageID), buttonID); err != nil {
 			telegram.SendReply(state, chatID, "❌ 无法加载机房选择："+err.Error(), int64(messageID))
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "datacenter_selection_unavailable"})
@@ -456,9 +465,9 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			u.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database_unavailable"})
 			return
 		}
-		row, claimed, err := state.DB.ClaimTelegramButton(buttonID)
-		if err != nil || !claimed || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效，请重新发送 /buy", true)
+		row, exists, err := state.DB.GetTelegramButton(buttonID)
+		if err != nil || !exists || time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
+			telegram.AnswerCallback(state, idToString(cb["id"]), "按钮已失效，请重新发送 /buy", true)
 			u.JSON(http.StatusGone, gin.H{"ok": false, "error": "text_order_button_unavailable"})
 			return
 		}
@@ -466,24 +475,23 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			Quantity int `json:"quantity"`
 		}
 		_ = json.Unmarshal([]byte(row.ConfigInfo), &meta)
-		result := telegram.ProcessOrder(state, row.AccountID, row.PlanCode, row.Datacenter, meta.Quantity, db.ParseTelegramButtonOptions(row.Options), autoPay)
+		result := telegramButtonProcessOrder(state, row.AccountID, row.PlanCode, row.Datacenter, meta.Quantity, db.ParseTelegramButtonOptions(row.Options))
 		message, _ := cb["message"].(map[string]interface{})
 		chatID := getNested(message, "chat", "id")
 		messageID, _ := getNumOrFloat(message["message_id"])
 		if !result.Success {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-			telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "创建任务失败", true)
+			telegram.AnswerCallback(state, idToString(cb["id"]), "创建任务失败", true)
 			telegram.SendReply(state, chatID, "❌ 下单失败\n\n"+result.Message, int64(messageID))
 			u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "text_order_failed"})
 			return
 		}
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已创建抢购任务", false)
-		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。\n付款方式：%s", result.CreatedOrders, result.TotalOrders, telegramPaymentLabel(autoPay)), int64(messageID))
+		telegram.AnswerCallback(state, idToString(cb["id"]), "已创建抢购任务", false)
+		telegram.SendReply(state, chatID, fmt.Sprintf("✅ 已用所选账户创建 %d/%d 个抢购任务。\n仅下单，不自动付款。\n再次点击同一账户可继续创建任务。", result.CreatedOrders, result.TotalOrders), int64(messageID))
 		u.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
 	if action == "back" {
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在返回机房选择", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在返回机房选择", false)
 		if err := restoreTelegramDatacenterChoices(state, mon, cb, buttonID); err != nil {
 			state.Logger.Warn("恢复 Telegram 机房选择失败: "+err.Error(), "telegram")
 			telegram.SendReply(state, chatID, "❌ 无法恢复机房选择："+err.Error()+"。请等待下一条有货通知后重试。", int64(messageID))
@@ -495,7 +503,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	}
 	if action == "choose" {
 		// 先应答停止 Telegram 的 loading；消息编辑失败也会给用户可见提示。
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在加载账户", false)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在加载账户", false)
 		if err := showTelegramAccountChoices(state, mon, cb, buttonID); err != nil {
 			state.Logger.Warn("打开 Telegram 账户选择失败: "+err.Error(), "telegram")
 			telegram.SendReply(state, chatID, "❌ 无法打开账户选择："+err.Error()+"。请等待下一条有货通知后重试。", int64(messageID))
@@ -511,20 +519,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		return
 	}
 
-	// 没有按钮 id 就不许下单。
-	//
-	// 以前 claim / 过期 / 重放三道判定全在 if buttonID != "" 里面 ——
-	// callback_data 里不带 u,planCode/机房/配置就直接取 JSON 的 p/d/o,
-	// telegram_order_buttons 一次都不查。于是 README 承诺的
-	// 「同一个按钮只能下单一次、超 24h 作废」对任何能构造 body 的人都不成立:
-	// 同一组 {"a":"add_to_queue","p":"...","d":"..."} 换个 update_id 就能重放,
-	// 想下几单下几单。
-	//
-	// 正常 TG 客户端改不了 callback_data,所以这条要配合兼容模式或 secret 泄漏;
-	// 但既然一次性 nonce 是我们唯一的防重放,就不该留一条绕过它的路。
+	// 按钮保存账户和完整配置，可在有效期内反复使用。
+	// 同一次点击的重复投递由 ProcessUpdate 的持久化 update_id 去重。
 	if buttonID == "" {
-		state.Logger.Warn("拒绝没有按钮 id 的下单回调(无法防重放)", "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
+		state.Logger.Warn("拒绝没有按钮 id 的下单回调(无法确认配置)", "telegram")
+		telegram.AnswerCallback(state, idToString(cb["id"]), "按钮已失效,请等下一条通知", true)
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "missing_button_id"})
 		return
 	}
@@ -542,24 +541,21 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		options = toStringSlice(optsRaw)
 	}
 
-	claimed := false // 是否占用了 DB 里的一次性按钮（失败要回滚）
 	if buttonID != "" {
-		row, ok, err := state.DB.ClaimTelegramButton(buttonID)
+		row, ok, err := state.DB.GetTelegramButton(buttonID)
 		if err != nil {
-			state.Logger.Error("认领一键下单按钮失败: "+err.Error(), "telegram")
-			u.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "claim_button_failed"})
+			state.Logger.Error("读取一键下单按钮失败: "+err.Error(), "telegram")
+			u.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "read_button_failed"})
 			return
 		}
 		if ok {
-			// 按钮过期（默认 24h）→ 归还并拒绝，避免用很久以前的库存信息下单
+			// 按钮过期（默认 24h）后拒绝，避免使用过期配置。
 			if time.Since(time.Unix(int64(row.CreatedAt), 0)) > telegram.ButtonTTL {
-				_ = state.DB.UnclaimTelegramButton(buttonID)
 				state.Logger.Warn("一键下单按钮已过期: "+buttonID, "telegram")
-				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该按钮已过期，请等待新的上架通知", true)
+				telegram.AnswerCallback(state, idToString(cb["id"]), "该按钮已过期，请等待新的上架通知", true)
 				u.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_expired"})
 				return
 			}
-			claimed = true
 			planCode = row.PlanCode
 			dc = row.Datacenter
 			options = db.ParseTelegramButtonOptions(row.Options)
@@ -568,18 +564,11 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 			if menu, err := readBuyMenuState(row); err == nil {
 				explicitOptions = menu.ExplicitOptions
 			}
-			state.Logger.Info(fmt.Sprintf("✅ 按钮已认领: id=%s, %s@%s, options=%v, account=%s",
+			state.Logger.Info(fmt.Sprintf("✅ 读取下单按钮: id=%s, %s@%s, options=%v, account=%s",
 				buttonID, planCode, dc, options, btnAccountID), "telegram")
 		} else {
-			// 认领失败：要么已经点过（重放），要么这条按钮根本不存在
-			if _, exists, _ := state.DB.GetTelegramButton(buttonID); exists {
-				state.Logger.Warn("一键下单按钮已被使用过，拒绝重复下单: "+buttonID, "telegram")
-				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "该按钮已使用过", true)
-				u.JSON(http.StatusConflict, gin.H{"ok": false, "error": "button_already_used"})
-				return
-			}
 			// 库里没有 → 退回内存缓存（升级前发出、只存在内存里的老按钮）
-			if cached := mon.MessageUUIDCacheLookup(buttonID); cached != nil {
+			if cached := mon.MessageUUIDCacheTake(buttonID); cached != nil {
 				planCode = cached.PlanCode
 				dc = cached.Datacenter
 				options = cached.Options
@@ -596,7 +585,7 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 				// 按钮行被 DeleteExpiredTelegramButtons 清掉、换库、换机器都会落进
 				// 这个分支,等于防重放形同虚设。
 				state.Logger.Warn("按钮 UUID 不存在,拒绝下单: "+buttonID, "telegram")
-				telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "按钮已失效,请等下一条通知", true)
+				telegram.AnswerCallback(state, idToString(cb["id"]), "按钮已失效,请等下一条通知", true)
 				u.JSON(http.StatusGone, gin.H{"ok": false, "error": "button_not_found"})
 				return
 			}
@@ -604,9 +593,6 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	}
 
 	if planCode == "" || dc == "" {
-		if claimed {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-		}
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "Missing planCode or datacenter"})
 		return
 	}
@@ -627,21 +613,15 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	if !hasAcc && btnAccountID != "" {
 		// 账户选择是用户的显式决定；账户已删除时绝不能偷偷换到默认账户，
 		// 否则会绕开该账户的专属代理与出口 IP 约束，甚至在另一个账户产生真实订单。
-		if claimed {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-		}
 		state.Logger.Warn("Telegram 一键下单被拒绝：按钮指定的账户已不存在: "+btnAccountID, "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "所选账户已不存在", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "所选账户已不存在", true)
 		telegram.SendReply(state, chatID, "❌ 所选下单账户已被删除，未创建抢购任务。请等待下一条有货通知后重新选择账户。", int64(messageID))
 		u.JSON(http.StatusGone, gin.H{"ok": false, "error": "selected_account_not_found"})
 		return
 	}
 	if !hasAcc {
-		if claimed {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-		}
 		state.Logger.Warn("Telegram 一键下单被拒绝：系统里没有任何 OVH 账户", "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "未配置 OVH 账户", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "未配置 OVH 账户", true)
 		telegram.SendReply(state, chatID, "❌ 未配置任何 OVH 账户，无法下单。请先在控制台添加账户。", int64(messageID))
 		u.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": "no_account"})
 		return
@@ -662,20 +642,17 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	}
 
 	// 通知发出后库存可能已变化；这里必须按最终选中的账户、机房和完整配置再次查询。
-	// 未通过时归还一次性按钮，不创建"明知无货"的抢购任务，用户可在补货消息仍有效时重试。
+	// 未通过时保留按钮，不创建"明知无货"的抢购任务，用户可在补货消息仍有效时重试。
 	//
 	// 解析出的 resolvedOptions 是"选中配置对应的实时 options"：配置一旦选定就必须定死，
 	// 无货时明确拒绝，绝不允许换一套配置下单（旧版会因空快照/空匹配静默买成别的配置）。
-	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "正在实时检查库存", false)
-	configs := catalog.CheckServerAvailabilityWithConfigs(state, planCode, accountID)
+	telegram.AnswerCallback(state, idToString(cb["id"]), "正在实时检查库存", false)
+	configs := telegramButtonAvailability(state, planCode, accountID)
 	resolvedOptions, targetOK := resolveTelegramOrderOptions(configs, configKey, dc, options)
 	if !targetOK {
-		if claimed {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-		}
 		state.Logger.Info(fmt.Sprintf("Telegram 通知一键下单库存检查未通过: %s@%s, config=%s, options=%v, account=%s",
 			planCode, dc, configKey, options, accountID), "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "库存已变化，未创建任务", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "库存已变化，未创建任务", true)
 		telegram.SendReply(state, chatID,
 			"⚠️ 所选配置（或机房）已经无货，未创建抢购任务，也不会用其他配置代下单。\n\n请等待下一条有货通知，或重新发送 /buy 选择当前可下单的配置。",
 			int64(messageID))
@@ -696,16 +673,13 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		RetryCount:    0,
 		LastCheckTime: 0,
 		FromTelegram:  true,
-		AutoPay:       autoPay,
+		AutoPay:       false,
 	}
 	// 入队 + 落库统一走 EnqueueItems:失败会自动撤回内存里的那条,
-	// 这里只需要把按钮归还、告诉用户
+	// 按钮保持可用，失败后用户可再次点击。
 	if err := state.EnqueueItems([]types.QueueItem{item}, false); err != nil {
-		if claimed {
-			_ = state.DB.UnclaimTelegramButton(buttonID)
-		}
 		state.Logger.Error("一键下单落库失败,已撤回: "+err.Error(), "telegram")
-		telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "没能保存，请重试", true)
+		telegram.AnswerCallback(state, idToString(cb["id"]), "没能保存，请重试", true)
 		telegram.SendReply(state, chatID,
 			"❌ 任务没能写进数据库，已撤回（避免出现重启就消失的假任务）：\n"+err.Error(), int64(messageID))
 		u.JSON(http.StatusInternalServerError, gin.H{"ok": false, "error": "save_failed"})
@@ -719,8 +693,8 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 	state.Logger.Info(fmt.Sprintf("Telegram用户 %v 通过按钮添加到队列: %s@%s, 配置选项: %s, 账户: %s",
 		userID, planCode, dc, optsStr, accLabel), "telegram")
 	confirmMsg := fmt.Sprintf("✅ 已添加到抢购队列！\n\n型号: %s\n机房: %s\n配置: %s\n账户: %s\n\n系统将自动尝试下单。",
-		planCode, strings.ToUpper(dc), optsStr, accLabel) + "\n付款方式：" + telegramPaymentLabel(autoPay)
-	telegram.AnswerCallback(state, fmt.Sprintf("%v", cb["id"]), "已添加到队列！", false)
+		planCode, strings.ToUpper(dc), optsStr, accLabel) + "\n仅下单，不自动付款。\n再次点击同一账户可继续创建任务。"
+	telegram.AnswerCallback(state, idToString(cb["id"]), "已添加到队列！", false)
 	telegram.SendReply(state, chatID, confirmMsg, int64(messageID))
 	u.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -1153,7 +1127,7 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 			continue
 		}
 		seen[account.ID] = struct{}{}
-		// 账户按钮进入付款选择：把该候选的 FQN 一并写入 ConfigInfo，
+		// 账户按钮直接下单：把该候选的 FQN 一并写入 ConfigInfo，
 		// 下单回调据此按 FQN 精确校验"这个账户目录里的这条配置"是否仍可下单。
 		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display}, candidate.ConfigKey)
 		if err != nil {
@@ -1642,6 +1616,9 @@ func getNested(m map[string]interface{}, keys ...string) interface{} {
 
 func getNumOrFloat(v interface{}) (float64, bool) {
 	switch x := v.(type) {
+	case json.Number:
+		n, err := x.Float64()
+		return n, err == nil
 	case float64:
 		return x, true
 	case int:

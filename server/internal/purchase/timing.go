@@ -141,13 +141,20 @@ func recordTimingToHistory(state *app.State, taskID string, t *timeline) {
 	if t == nil || len(t.items) == 0 {
 		return
 	}
+	dirty := false
+	defer func() {
+		if dirty {
+			state.PersistHistory()
+		}
+	}()
 	state.HistoryMu.Lock()
 	defer state.HistoryMu.Unlock()
 	for i := range state.History {
 		if state.History[i].TaskID == taskID {
+			dirty = true
 			state.History[i].Timing = t.entries()
 			state.History[i].TotalMs = t.total().Milliseconds()
-			go state.SaveHistory()
+
 			return
 		}
 	}

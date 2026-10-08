@@ -122,7 +122,7 @@ func QuickOrder(state *app.State) gin.HandlerFunc {
 			return
 		}
 
-		priceResult := price.GetInternal(state, body.AccountID, body.PlanCode, body.Datacenter, options)
+		priceResult := price.GetInternalCached(state, body.AccountID, body.PlanCode, body.Datacenter, options)
 		if !priceResult.Success {
 			err := priceResult.Error
 			if err == "" {

@@ -186,6 +186,11 @@ func EnterRescue(state *app.State) gin.HandlerFunc {
 		// 改完 netboot 以为就进救援了,其实机器还在正常系统里。
 		var task map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/reboot", nil, &task); err != nil {
+			if ovh.IsRebootAlreadyRequested(err) {
+				c.JSON(http.StatusOK, gin.H{"success": true, "bootId": bootID, "message": "启动项已设置，已有重启请求在进行中。请等待并核实实际启动模式"})
+				return
+			}
+
 			state.Logger.Error("服务器 "+svc+" 重启失败(救援启动已设置): "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
@@ -257,6 +262,11 @@ func ExitRescue(state *app.State) gin.HandlerFunc {
 		}
 		var task map[string]interface{}
 		if err := client.Post("/dedicated/server/"+svc+"/reboot", nil, &task); err != nil {
+			if ovh.IsRebootAlreadyRequested(err) {
+				c.JSON(http.StatusOK, gin.H{"success": true, "bootId": bootID, "message": "启动项已设置，已有重启请求在进行中。请等待并核实实际启动模式"})
+				return
+			}
+
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
 				"error":   "已改回硬盘启动,但重启没发出去(" + ovh.Explain(err) + ")。手动重启一次即可",

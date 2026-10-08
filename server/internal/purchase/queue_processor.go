@@ -310,6 +310,10 @@ func ProcessQueueLoop(state *app.State) {
 				}
 
 				outcome := PurchaseServer(ctx, state, &snapshot)
+				if outcome.PauseTask {
+					return
+				}
+
 				if outcome.Cancelled {
 					// 用户删的,不是失败:不动 FailureCount、不置 failed,队列里也已经没有它了
 					// (任务还在队列里也可能走到这里:本轮执行超过 purchaseTaskTimeout
@@ -322,7 +326,7 @@ func ProcessQueueLoop(state *app.State) {
 				if outcome.DelayPending {
 					state.QueueMu.Lock()
 					for i := range state.Queue {
-						if state.Queue[i].ID == it.ID {
+						if state.Queue[i].ID == it.ID && state.Queue[i].Status == "running" {
 							state.Queue[i].Status = "delaying"
 							state.Queue[i].OrderNotBefore = float64(time.Now().Add(time.Duration(snapshot.DelaySeconds) * time.Second).Unix())
 							state.Queue[i].DelayReady = false
@@ -337,7 +341,7 @@ func ProcessQueueLoop(state *app.State) {
 				if outcome.ResetDelay {
 					state.QueueMu.Lock()
 					for i := range state.Queue {
-						if state.Queue[i].ID == it.ID {
+						if state.Queue[i].ID == it.ID && state.Queue[i].Status == "running" {
 							state.Queue[i].Status = "running"
 							state.Queue[i].OrderNotBefore = 0
 							state.Queue[i].DelayReady = false

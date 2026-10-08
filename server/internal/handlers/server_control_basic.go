@@ -193,6 +193,11 @@ func Reboot(state *app.State) gin.HandlerFunc {
 		}
 		result, err := serverops.Reboot(client, svc)
 		if err != nil {
+			if ovh.IsRebootAlreadyRequested(err) {
+				c.JSON(http.StatusOK, gin.H{"success": true, "message": "已有重启请求在进行中，请等待完成，无需重复提交"})
+				return
+			}
+
 			state.Logger.Error("重启服务器 "+svc+" 失败: "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
