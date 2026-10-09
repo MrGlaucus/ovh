@@ -71,10 +71,17 @@ func TestPaymentMenuAndBackPreserveSelection(t *testing.T) {
 		if e != nil || !exists || row.UsedAt != 0 || telegramButtonConfigKey(row.ConfigInfo) != "plan.ram32" {
 			t.Fatal("selection changed or navigation consumed order")
 		}
+		payload.Text = ""
 		if err := showTelegramPaymentStep(state, cb, id, "pb"); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(payload.Text, "选择下单账户") {
+		if notification && payload.Text != "" {
+			t.Fatal("notification back navigation overwrote body")
+		}
+		if len(payload.ReplyMarkup.Keyboard) == 0 || !strings.Contains(payload.ReplyMarkup.Keyboard[0][0].Text, "Account A") {
+			t.Fatal("account buttons not restored")
+		}
+		if !notification && !strings.Contains(payload.Text, "选择下单账户") {
 			t.Fatal("back did not restore accounts")
 		}
 		_, ok, e := database.ClaimTelegramButton(id)

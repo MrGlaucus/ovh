@@ -62,6 +62,18 @@ func FetchOrderRefund(client refundClient, orderID string) (*types.RefundInfo, e
 	return fetchRefundAfterInvoice(client, orderID, func() refundIndex { return loadRefundIndex(client) })
 }
 
+// NewOrderRefundLookup 为同一账户的一轮刷新复用退款索引；先核对原发票，失败不作为无退款。
+func NewOrderRefundLookup(client refundClient) func(string) (*types.RefundInfo, error) {
+	var once sync.Once
+	var index refundIndex
+	return func(orderID string) (*types.RefundInfo, error) {
+		return fetchRefundAfterInvoice(client, orderID, func() refundIndex {
+			once.Do(func() { index = loadRefundIndex(client) })
+			return index
+		})
+	}
+}
+
 // Check original invoices first. Cancelled unpaid orders have no invoice and
 // must not trigger a scan of the account's refund list.
 func fetchRefundAfterInvoice(client refundClient, orderID string, index func() refundIndex) (*types.RefundInfo, error) {

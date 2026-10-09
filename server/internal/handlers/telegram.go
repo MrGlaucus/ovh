@@ -845,6 +845,11 @@ func telegramDatacenterMenuCallback(planCode, datacenter string) string {
 	return string(data)
 }
 
+// editNotificationButtons 只替换通知键盘，保留正文、格式及下架后更新的内容。
+func editNotificationButtons(state *app.State, chatID interface{}, messageID int64, buttons [][]telegramMenuButton) error {
+	return telegram.EditMessageReplyMarkup(state, chatID, messageID, map[string]interface{}{"inline_keyboard": buttons})
+}
+
 func editBuyMenu(state *app.State, chatID interface{}, messageID int64, text string, buttons [][]telegramMenuButton) error {
 	return telegram.EditMessageText(state, telegram.ChatIDString(chatID), messageID, text,
 		map[string]interface{}{"inline_keyboard": buttons})
@@ -946,7 +951,7 @@ func sendBuyConfigurationChoicesForDatacenter(state *app.State, chatID interface
 
 	groups := map[string]*buyMenuState{}
 	for _, account := range accounts {
-		for configKey, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
+		for configKey, config := range telegramButtonAvailability(state, planCode, account.ID) {
 			status, ok := config.Datacenters[datacenter]
 			if !ok || !catalog.IsAvailableForOrder(status) {
 				continue
@@ -1000,7 +1005,7 @@ func sendBuyConfigurationChoicesForDatacenter(state *app.State, chatID interface
 	}
 	// 上一级是该型号的机房选择页：原地重建（实时库存），无需落库按钮。
 	keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: telegramPlanMenuCallback(planCode)}})
-	return editBuyMenu(state, chatID, messageID, "选择配置：\n\n机房："+monitor.DisplayDatacenterShortName(datacenter)+"\n\n仅展示该机房当前可下单的配置。", keyboard)
+	return editNotificationButtons(state, chatID, messageID, keyboard)
 }
 
 // sendBuyDatacenterChoicesForPlan 打开上架通知链的机房选择页：
@@ -1016,7 +1021,7 @@ func sendBuyDatacenterChoicesForPlan(state *app.State, chatID interface{}, messa
 
 	dcSet := map[string]struct{}{}
 	for _, account := range accounts {
-		for _, config := range catalog.CheckServerAvailabilityWithConfigs(state, planCode, account.ID) {
+		for _, config := range telegramButtonAvailability(state, planCode, account.ID) {
 			for dc, status := range config.Datacenters {
 				if catalog.IsAvailableForOrder(status) {
 					dcSet[dc] = struct{}{}
@@ -1047,7 +1052,7 @@ func sendBuyDatacenterChoicesForPlan(state *app.State, chatID interface{}, messa
 	if len(line) > 0 {
 		keyboard = append(keyboard, line)
 	}
-	return editBuyMenu(state, chatID, messageID, "选择机房：\n\n型号："+planCode+"\n\n仅展示当前可下单的机房。", keyboard)
+	return editNotificationButtons(state, chatID, messageID, keyboard)
 }
 
 func sendBuyDatacenterChoices(state *app.State, chatID interface{}, messageID int64, configButtonID string) error {
@@ -1129,7 +1134,7 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 		seen[account.ID] = struct{}{}
 		// 账户按钮直接下单：把该候选的 FQN 一并写入 ConfigInfo，
 		// 下单回调据此按 FQN 精确校验"这个账户目录里的这条配置"是否仍可下单。
-		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display}, candidate.ConfigKey)
+		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display, NotifyEntry: menu.NotifyEntry}, candidate.ConfigKey)
 		if err != nil {
 			return fmt.Errorf("保存账户选项失败: %w", err)
 		}
@@ -1144,6 +1149,9 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 	} else {
 		// /buy 链的上一级是该配置的机房选择页（落库按钮）。
 		keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: menuCallback("bd", datacenterButtonID)}})
+	}
+	if menu.NotifyEntry {
+		return editNotificationButtons(state, chatID, messageID, keyboard)
 	}
 	return editBuyMenu(state, chatID, messageID, "选择下单账户：\n\n配置："+menu.Display+"\n机房："+monitor.DisplayDatacenterShortName(row.Datacenter), keyboard)
 }

@@ -551,6 +551,9 @@ func main() {
 
 		// Account
 		api.GET("/ovh/account/info", handlers.GetAccountInfo(state))
+		accountOrders := handlers.AccountOrders(state)
+		api.GET("/ovh/account/orders", accountOrders)
+		api.POST("/ovh/account/orders/refresh", accountOrders)
 		api.GET("/ovh/account/refunds", handlers.GetAccountRefunds(state))
 		api.GET("/ovh/account/credit-balance", handlers.GetCreditBalance(state))
 		api.GET("/ovh/account/email-history", handlers.GetEmailHistory(state))

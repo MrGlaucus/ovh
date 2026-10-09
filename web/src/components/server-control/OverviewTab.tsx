@@ -53,6 +53,18 @@ export function OverviewTab({ server }: { server: OwnedServer }) {
         </div>
       )}
 
+      {hw.data?.lottery?.checked && hw.data.lottery.won && (
+        <div className="rounded-xl border border-amber-400/40 bg-amber-400/5 p-3 text-sm space-y-2">
+          <p className="font-semibold text-amber-600 dark:text-amber-300">🎉 硬件中奖</p>
+          {hw.data.lottery.items.map((item) => (
+            <div key={item.kind} className="grid gap-1 sm:grid-cols-[60px_1fr_1fr] text-xs">
+              <span className="font-medium">{{cpu: "CPU", memory: "内存", disk: "硬盘"}[item.kind]}</span>
+              <span className="text-muted-foreground break-words">订购：{item.ordered}</span>
+              <span className="break-words">实际：{item.actual}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3">
         <InfoCard icon={<Cpu className="w-4 h-4" />} label="处理器" value={cpuText} loading={hw.isPending} />
         <InfoCard icon={<MemoryStick className="w-4 h-4" />} label="内存" value={memText} loading={hw.isPending} />

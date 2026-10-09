@@ -32,7 +32,15 @@ export interface OwnedServer {
   error?: string;
 }
 
+export interface HardwareLottery {
+ checked: boolean;
+ won: boolean;
+ items: { kind: "cpu" | "memory" | "disk"; ordered: string; actual: string }[];
+ reason?: string;
+}
+
 export interface HardwareInfo {
+ lottery?: HardwareLottery;
   processorName: string;
   processorArchitecture: string;
   coresPerProcessor: number;
@@ -101,11 +109,12 @@ export function useOwnedServers() {
 
 /** 硬件信息（后端返回 { success, hardware: {...} }） */
 export function useServerHardware(serviceName: string | null) {
+  const [accountId] = useActiveAccount();
   return useQuery({
-    queryKey: qk.serverControl.hardware(serviceName || ""),
+    queryKey: qk.serverControl.hardware(serviceName || "", accountId),
     queryFn: async () => {
-      const res = await api.get(`/server-control/${serviceName}/hardware`);
-      return (res.data?.hardware || null) as HardwareInfo | null;
+      const res = await api.get(`/server-control/${serviceName}/hardware`, { params: { account: accountId } });
+      return (res.data?.hardware ? { ...res.data.hardware, lottery: res.data.lottery } : null) as HardwareInfo | null;
     },
     enabled: !!serviceName,
   });

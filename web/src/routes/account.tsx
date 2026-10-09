@@ -1,6 +1,9 @@
+import { OrdersTab } from "@/components/account/OrdersTab";
+import { useActiveAccount } from "@/hooks/use-active-account";
+import { setActiveAccount } from "@/lib/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { User, Mail, RefreshCw, FileText, Inbox, ShieldCheck, type LucideIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { DeliveryNotifications } from "@/components/common/DeliveryNotifications";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -15,10 +18,24 @@ import { useAccountInfo, useRefunds, useEmails, type EmailHistoryEntry } from "@
 
 /** 账户管理：顶部 3 张 KPI + Tabs (邮件 / 退款) */
 export const Route = createFileRoute("/account")({
+  validateSearch: (search: Record<string, unknown>): { tab?: string; account?: string; order?: string } => ({
+    tab: ["emails", "orders", "refunds"].includes(String(search.tab)) ? String(search.tab) : undefined,
+    account: typeof search.account === "string" ? search.account : undefined,
+    order: typeof search.order === "string" ? search.order : undefined,
+  }),
   component: AccountPage,
 });
 
 function AccountPage() {
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const [activeAccount] = useActiveAccount();
+  useEffect(() => {
+    if (search.account) {
+      setActiveAccount(search.account);
+      void navigate({ search: (prev) => ({ ...prev, account: undefined }), replace: true });
+    }
+  }, [search.account, navigate]);
   const q = useAccountInfo();
   // 后端把 OVH /me 原样透传在 body 里,错配标记只能放响应头,所以 hook 返回 { info, subsidiaryMismatch }
   const me = q.data?.info;
@@ -83,14 +100,16 @@ function AccountPage() {
         />
       </div>
 
-      <Tabs defaultValue="emails">
+      <Tabs value={search.tab || "emails"} onValueChange={(tab) => void navigate({ search: (prev) => ({ ...prev, tab, order: tab === "orders" ? prev.order : undefined }) })}>
         <TabsList>
           <TabsTrigger value="emails">邮件历史</TabsTrigger>
+          <TabsTrigger value="orders">官方订单</TabsTrigger>
           <TabsTrigger value="refunds">退款记录</TabsTrigger>
         </TabsList>
         <TabsContent value="emails">
           <EmailsTab />
         </TabsContent>
+        <TabsContent value="orders"><OrdersTab key={`${activeAccount}:${search.order || ""}`} order={search.order} ready={!search.account || activeAccount === search.account} /></TabsContent>
         <TabsContent value="refunds">
           <RefundsTab />
         </TabsContent>

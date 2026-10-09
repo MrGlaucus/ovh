@@ -71,7 +71,7 @@ export const qk = {
   // (按 serviceName 索引的那些不用带:serviceName 在 OVH 全局唯一。)
   serverControl: {
     list: (accountId: string) => ["server-control", "list", accountId] as const,
-    hardware: (serviceName: string) => ["server-control", "hardware", serviceName] as const,
+    hardware: (serviceName: string, accountId: string) => ["server-control", "hardware", serviceName, accountId] as const,
     rescue: (serviceName: string) => ["server-control", "rescue", serviceName] as const,
     spla: (serviceName: string) => ["server-control", "spla", serviceName] as const,
     serviceInfo: (serviceName: string) => ["server-control", "service-info", serviceName] as const,

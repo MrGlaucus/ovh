@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser, RotateCcw, FileDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -33,46 +33,16 @@ import { useServers } from "@/hooks/use-servers";
 import { useAccounts } from "@/hooks/use-accounts";
 import { describeOptionCodes } from "@/lib/option-groups";
 
-/**
- * 订单支付状态 → 标签。取值是 OVH 的 billing.order.OrderStatusEnum,三区一致。
- * 这才是用户真正关心的:「下单成功」只说明订单建了,付没付、过没过期,看这里。
- */
-function orderStatusView(item: PurchaseHistory): {
-  label: string;
-  tone: "success" | "warning" | "danger" | "info" | "progress" | "processing" | "default";
-  paid: boolean;
-  closed: boolean;
-  title: string;
-} {
-  switch (item.orderStatus) {
-    case "notPaid":
-      return { label: "待付款", tone: "warning", paid: false, closed: false, title: "订单已创建,尚未付款;倒计时结束前未付款会作废" };
-    case "checking":
-      // 核验中改用青色：info 蓝和同列的「退款窗口倒计时」撞色；
-      // 与交付中的紫、终态的绿都能拉开。
-      return { label: "付款核验中", tone: "processing", paid: true, closed: false, title: "OVH 已收到付款,正在核验" };
-    case "delivering":
-      // 交付中≠已交付：都用绿色的话扫一遍列表分不出"还要等"和"已经到手"，
-      // 交付中改用紫色：info 蓝和同列的「付款核验中」「退款窗口倒计时」撞色。
-      return { label: "已付款·交付中", tone: "progress", paid: true, closed: false, title: "已付款,OVH 正在交付服务器" };
-    case "delivered":
-      return { label: "已付款·已交付", tone: "success", paid: true, closed: true, title: "已付款并交付" };
-    case "cancelling":
-      return { label: "取消中", tone: "danger", paid: false, closed: true, title: "订单正在取消" };
-    case "cancelled":
-      return { label: "已取消", tone: "danger", paid: false, closed: true, title: "订单已取消(过期未付款也会走到这里)" };
-    case "documentsRequested":
-      return { label: "需补材料", tone: "warning", paid: false, closed: false, title: "OVH 要求补充证件/材料后才处理" };
-    case "unknown":
-      return { label: "状态未知", tone: "default", paid: false, closed: false, title: "OVH 返回 unknown" };
-    default:
-      return { label: "状态未查到", tone: "default", paid: false, closed: false, title: "还没从 OVH 读到订单状态,点「刷新」再试" };
-  }
-}
+import { orderStatusView } from "@/lib/order-status";
+import { setActiveAccount } from "@/lib/api";
 import { CURRENCY_UNKNOWN_HINT } from "@/lib/money";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
 export const Route = createFileRoute("/history")({
+  validateSearch: (search: Record<string, unknown>): { account?: string; order?: string } => ({
+    account: typeof search.account === "string" ? search.account : undefined,
+    order: typeof search.order === "string" ? search.order : undefined,
+  }),
   component: HistoryPage,
 });
 
@@ -201,6 +171,7 @@ function refundExpiredTitle(deadlineMs: number): string {
 }
 
 function HistoryPage() {
+  const linked = Route.useSearch();
   const list = useHistory();
   const accounts = useAccounts();
   const clear = useClearHistory();
@@ -212,7 +183,8 @@ function HistoryPage() {
   const servers = useServers();
   const serverNames = useMemo(() => new Map((servers.data || []).map((server) => [server.planCode, server.name])), [servers.data]);
   const [search, setSearch] = useState("");
-  const [accountFilter, setAccountFilter] = useState("all");
+  const [accountFilter, setAccountFilter] = useState(linked.account || "all");
+  useEffect(() => { setAccountFilter(linked.account || "all"); setSearch(linked.order || ""); }, [linked.account, linked.order]);
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmClearFailed, setConfirmClearFailed] = useState(false);
@@ -244,13 +216,14 @@ function HistoryPage() {
       .filter((i) => {
         if (accountFilter !== "all" && (accountFilter === "unassigned" ? !!i.accountId : i.accountId !== accountFilter)) return false;
         if (statusFilter !== "all" && i.status !== statusFilter) return false;
+        if (linked.order && search === linked.order && i.orderId !== linked.order) return false;
         if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
         return true;
       })
       // 后端按写入顺序返回（最早的在最前），展示一律最新的在最上 —— 打开页面
       // 第一眼就是刚下完的那单，不用先滚到底。
       .sort((a, b) => timeOf(b) - timeOf(a));
-  }, [items, search, serverNames, statusFilter, accountFilter]);
+  }, [items, search, serverNames, statusFilter, accountFilter, linked.order]);
   const failedCount = useMemo(() => items.filter((i) => i.status === "failed").length, [items]);
 
   return (
@@ -481,7 +454,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
       <td className={`px-4 py-3 ${isExpired ? "line-through" : ""}`}>
         <div className="min-w-0">
           <div className="truncate font-mono font-semibold" title={displayName || item.planCode}>{displayName || item.planCode}</div>
-          {item.orderId && <div className="mt-1 text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span></div>}
+          {item.orderId && <div className="mt-1 text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span>{item.accountId && <Link to="/account" search={{ tab: "orders", account: item.accountId, order: item.orderId }} onClick={() => setActiveAccount(item.accountId)} className="ml-2 text-xs underline select-none">官方订单</Link>}</div>}
           <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
             {displayName && <span className="font-mono">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
@@ -563,7 +536,7 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
             <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
           </Chip>
         </div>
-        {item.orderId && <div className="text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span></div>}
+        {item.orderId && <div className="text-[11px] font-mono text-muted-foreground break-all"><span className="select-none">原订单 #</span><span className="select-text">{item.orderId}</span>{item.accountId && <Link to="/account" search={{ tab: "orders", account: item.accountId, order: item.orderId }} onClick={() => setActiveAccount(item.accountId)} className="ml-2 text-xs underline select-none">官方订单</Link>}</div>}
         <div className={`text-[11px] leading-5 text-muted-foreground break-words ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ")}>
           {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
         </div>

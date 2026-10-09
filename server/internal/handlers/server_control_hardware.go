@@ -83,10 +83,17 @@ func GetHardwareInfo(state *app.State) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}
+		account, _ := ovhAccountFor(state, c)
+		spec, specErr := hwFetchOrderedSpec(client, account.ID, svc)
+		lottery := hwComputeLottery(spec, hardware)
+		if specErr != nil {
+			lottery.Reason = ovh.Explain(specErr)
+		}
 		// 缺字段补 N/A / 0 / {} / []，
 		// 否则 JSON 序列化 null 让前端 .toLowerCase / .length 崩溃
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
+			"lottery": lottery,
 			"hardware": gin.H{
 				"bootMode":                valueOr(hardware, "bootMode", "N/A"),
 				"coresPerProcessor":       defaultZero(hardware["coresPerProcessor"]),
