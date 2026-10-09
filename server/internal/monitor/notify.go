@@ -169,6 +169,12 @@ func (m *Monitor) saveTelegramAvailabilitySession(planCode string, configInfo ma
 		line, _ := item["notification_line"].(string)
 		buttonID, _ := item["notification_button_id"].(string)
 		buttonText, _ := item["notification_button_text"].(string)
+		// Multiple account buttons share a DC row; retain their exact callback IDs
+		// as JSON in the existing button field so delisting edits do not regenerate them.
+		if buttons, ok := item["notification_order_buttons"]; ok {
+			raw, _ := json.Marshal(buttons)
+			buttonID, buttonText = string(raw), "account_buttons_v1"
+		}
 		openedAt := session.CreatedAt
 		if raw, _ := item["detected_time"].(string); raw != "" {
 			if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
@@ -235,11 +241,30 @@ func renderTelegramNotificationUnavailable(snapshot db.TelegramNotificationSnaps
 	for _, dc := range snapshot.Datacenters {
 		if dc.ClosedAt == 0 {
 			allClosed = false
+			if dc.ButtonText == "account_buttons_v1" {
+				var buttons []button
+				if json.Unmarshal([]byte(dc.ButtonID), &buttons) == nil {
+					for _, b := range buttons {
+						line = append(line, b)
+						if len(line) == 2 {
+							keyboard = append(keyboard, line)
+							line = nil
+						}
+					}
+				}
+				continue
+			}
 			if !hasLegacyButtons {
 				// 未下架机房保留按钮：回调按会话 planCode + 行里机房名重建。
+				callback := telegramBuyMenuCallback(snapshot.Session.PlanCode, dc.Datacenter)
+				label := telegramBuyMenuButtonText
+				if snapshot.Session.ConfigKey != "" {
+					callback = NotificationConfigCallback(dc.Datacenter)
+					label = "选择账户下单"
+				}
 				line = append(line, button{
-					Text:         DisplayDatacenterShortName(dc.Datacenter) + " " + telegramBuyMenuButtonText,
-					CallbackData: telegramBuyMenuCallback(snapshot.Session.PlanCode, dc.Datacenter),
+					Text:         DisplayDatacenterShortName(dc.Datacenter) + " " + label,
+					CallbackData: callback,
 				})
 				if len(line) == 2 {
 					keyboard = append(keyboard, line)
@@ -341,6 +366,13 @@ const telegramBuyMenuButtonText = "选择配置下单"
 // 点击后每一步都会按点击那一刻的实时库存重新校验，通知快照不参与下单决策。
 func telegramBuyMenuCallback(planCode, datacenter string) string {
 	cb, _ := json.Marshal(map[string]string{"a": "menu", "p": planCode, "d": datacenter})
+	return string(cb)
+}
+
+// NotificationConfigCallback resolves the exact configuration through chat/message identity.
+// Keep FQN out of callback_data to stay within Telegram's 64-byte limit.
+func NotificationConfigCallback(datacenter string) string {
+	cb, _ := json.Marshal(map[string]string{"a": "stock", "d": datacenter})
 	return string(cb)
 }
 
@@ -485,10 +517,8 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	_ = traceID
 	_ = configTraceID
 
-	// 下单按钮按机房逐颗排列（与旧格式一致）：点哪颗就是选哪个机房，
-	// 点开后的「配置 → 账户」链在点击那一刻按实时库存重新查询。
-	// 通知里的机房列表只用于展示与按钮排布，不参与下单决策，
-	// 因此也不再有"机房下架导致按钮失效"的问题。
+	// 新通知优先生成机房 × 账户的直达下单按钮，每颗按钮持久化绑定 FQN。
+	// 缺少配置身份的旧格式仍走显式配置选择，不能猜测目标硬件。
 	type btn struct {
 		Text         string `json:"text"`
 		CallbackData string `json:"callback_data"`
@@ -497,11 +527,32 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 	row := []btn{}
 	for idx, dcInfo := range availableDCs {
 		dc, _ := dcInfo["dc"].(string)
+		delete(dcInfo, "notification_order_buttons")
+		if buttons := m.notificationOrderButtons(planCode, dc, configInfo); len(buttons) > 0 {
+			dcInfo["notification_order_buttons"] = buttons
+			for _, b := range buttons {
+				row = append(row, btn{Text: b.Text, CallbackData: b.CallbackData})
+				if len(row) == 2 {
+					keyboard = append(keyboard, row)
+					row = nil
+				}
+			}
+			if idx == len(availableDCs)-1 && len(row) > 0 {
+				keyboard = append(keyboard, row)
+				row = nil
+			}
+			continue
+		}
 		callback := telegramBuyMenuCallback(planCode, dc)
+		label := telegramBuyMenuButtonText
+		if key, _ := configInfo["config_key"].(string); key != "" {
+			callback = NotificationConfigCallback(dc)
+			label = "选择账户下单"
+		}
 		if len(callback) > 64 {
 			m.state.Logger.Warn(fmt.Sprintf("上架通知机房按钮回调超长(%d字节)，TG 会拒绝该消息: dc=%s", len(callback), dc), "monitor")
 		}
-		row = append(row, btn{Text: DisplayDatacenterShortName(dc) + " " + telegramBuyMenuButtonText, CallbackData: callback})
+		row = append(row, btn{Text: DisplayDatacenterShortName(dc) + " " + label, CallbackData: callback})
 		if len(row) == 2 || idx == len(availableDCs)-1 {
 			keyboard = append(keyboard, row)
 			row = nil

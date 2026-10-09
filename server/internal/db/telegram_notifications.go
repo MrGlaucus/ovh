@@ -34,6 +34,17 @@ type TelegramNotificationSnapshot struct {
 	Datacenters []TelegramNotificationDatacenter
 }
 
+// TelegramNotificationForMessage uses the persisted message identity, never callback-supplied hardware.
+func (db *DB) TelegramNotificationForMessage(chatID string, messageID int64) (TelegramNotificationSnapshot, error) {
+	var out TelegramNotificationSnapshot
+	err := db.Get(&out.Session, `SELECT * FROM telegram_notification_sessions WHERE chat_id = ? AND message_id = ? ORDER BY created_at DESC LIMIT 1`, chatID, messageID)
+	if err != nil {
+		return out, err
+	}
+	err = db.Select(&out.Datacenters, `SELECT * FROM telegram_notification_datacenters WHERE session_id = ? ORDER BY datacenter`, out.Session.ID)
+	return out, err
+}
+
 func (db *DB) CreateTelegramNotificationSession(session TelegramNotificationSession, dcs []TelegramNotificationDatacenter) error {
 	if session.ID == "" || session.PlanCode == "" || session.ConfigKey == "" || session.ChatID == "" || session.MessageID == 0 {
 		return fmt.Errorf("invalid telegram notification session")

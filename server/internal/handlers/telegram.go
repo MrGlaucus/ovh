@@ -361,6 +361,17 @@ func handleTelegramCallback(state *app.State, mon *monitor.Monitor, u *updateCtx
 		u.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
+	if action == "stock" {
+		telegram.AnswerCallback(state, idToString(cb["id"]), "正在检查通知配置库存", false)
+		err := sendNotificationAccountChoices(state, chatID, int64(messageID), strings.TrimSpace(strOr(callbackObj, "d", "datacenter")))
+		if err != nil && !telegram.IsMessageNotModified(err) {
+			telegram.SendReply(state, chatID, "⚠️ "+err.Error(), int64(messageID))
+			u.JSON(http.StatusConflict, gin.H{"ok": false, "error": "notification_configuration_unavailable"})
+			return
+		}
+		u.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
 	if action == "menu" {
 		// 上架通知的机房按钮（带 d）进入该机房的配置选择；不带 d 的入口
 		// （配置页的「返回机房选择」，或改造前已发出的旧单颗按钮）
@@ -786,7 +797,8 @@ type buyMenuState struct {
 	ExplicitOptions bool               `json:"explicit_options,omitempty"`
 	// NotifyEntry 标记该菜单节点来自上架通知链（而非 /buy 链）：
 	// 账户页的返回按钮据此指向「该机房的配置选择」而不是 /buy 的机房页。
-	NotifyEntry bool `json:"notify_entry,omitempty"`
+	NotifyEntry       bool `json:"notify_entry,omitempty"`
+	NotificationBound bool `json:"notification_bound,omitempty"`
 }
 
 type telegramMenuButton struct {
@@ -1134,7 +1146,7 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 		seen[account.ID] = struct{}{}
 		// 账户按钮直接下单：把该候选的 FQN 一并写入 ConfigInfo，
 		// 下单回调据此按 FQN 精确校验"这个账户目录里的这条配置"是否仍可下单。
-		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display, NotifyEntry: menu.NotifyEntry}, candidate.ConfigKey)
+		id, err := saveBuyMenuButton(state, row.PlanCode, row.Datacenter, account.ID, candidate.Options, buyMenuState{ExplicitOptions: true, ParentID: datacenterButtonID, Display: menu.Display, NotifyEntry: menu.NotifyEntry, NotificationBound: menu.NotificationBound}, candidate.ConfigKey)
 		if err != nil {
 			return fmt.Errorf("保存账户选项失败: %w", err)
 		}
@@ -1143,7 +1155,9 @@ func sendBuyAccountChoices(state *app.State, chatID interface{}, messageID int64
 	if len(keyboard) == 0 {
 		return fmt.Errorf("所选配置和机房没有仍可用的账户")
 	}
-	if menu.NotifyEntry {
+	if menu.NotificationBound {
+		keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回机房选择", CallbackData: monitor.NotificationConfigCallback("")}})
+	} else if menu.NotifyEntry {
 		// 通知链的上一级是「该机房的配置选择」：明文回调原地重建（实时库存）。
 		keyboard = append(keyboard, []telegramMenuButton{{Text: "‹ 返回配置选择", CallbackData: telegramDatacenterMenuCallback(row.PlanCode, row.Datacenter)}})
 	} else {

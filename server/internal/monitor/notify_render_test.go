@@ -31,6 +31,39 @@ func renderTestMonitor(t *testing.T) *Monitor {
 	return New(state)
 }
 
+func TestNotificationBoundCallbackSurvivesDelistingRender(t *testing.T) {
+	m := renderTestMonitor(t)
+	_, markup := m.buildAvailabilityAlert("plan", []map[string]interface{}{{"dc": "gra", "raw_status": "1H-high"}}, map[string]interface{}{"config_key": "plan.ram64.disk"}, "KS-2", "", "", "")
+	check := func(markup interface{}) {
+		t.Helper()
+		raw, err := json.Marshal(markup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed struct {
+			Rows [][]struct {
+				Text     string `json:"text"`
+				Callback string `json:"callback_data"`
+			} `json:"inline_keyboard"`
+		}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatal(err)
+		}
+		if len(parsed.Rows) == 0 {
+			t.Fatal("missing keyboard")
+		}
+		button := parsed.Rows[0][0]
+		var cb map[string]string
+		json.Unmarshal([]byte(button.Callback), &cb)
+		if cb["a"] != "stock" || cb["d"] != "gra" || len(button.Callback) > 64 {
+			t.Fatalf("unbound callback %s", button.Callback)
+		}
+	}
+	check(markup)
+	_, updated := renderTelegramNotificationUnavailable(db.TelegramNotificationSnapshot{Session: db.TelegramNotificationSession{PlanCode: "plan", ConfigKey: "plan.ram64.disk", MessageText: "notice"}, Datacenters: []db.TelegramNotificationDatacenter{{Datacenter: "gra"}, {Datacenter: "bhs", ClosedAt: 1}}})
+	check(updated)
+}
+
 // 把用户真正会收到的那条上架通知打印出来。
 //
 // 通知的排版是这个工具的门面 —— 有货那一刻用户只看得到它，
