@@ -780,8 +780,10 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				configInfoWithPrice["install_price"] = ip
 			}
 			availDCs := make([]map[string]interface{}, 0, len(availables))
+			restockHistory := sub.historySnapshot()
 			for _, n := range availables {
 				dcInfo := map[string]interface{}{"dc": n.dc, "status": n.status}
+				dcInfo["previous_restock"] = previousRestock(restockHistory, n.dc, configKey, n.detectedTime, m.nowBeijing())
 				if n.rawStatus != "" {
 					dcInfo["raw_status"] = n.rawStatus
 				}
@@ -831,6 +833,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			}
 			if purchase.IsTransient(errors.New(n.priceCheckError)) {
 				dcs := []map[string]interface{}{{"dc": n.dc, "raw_status": n.rawStatus, "detected_time": n.detectedTime}}
+				dcs[0]["previous_restock"] = previousRestock(sub.historySnapshot(), n.dc, configKey, n.detectedTime, m.nowBeijing())
 				entry, pending := m.enqueueAvailability(planCode, dcs, configInfoFailed, cfg.ServerName, "")
 				pending.AwaitingValidation = true
 				pending.NextAttempt = time.Now().Add(availabilityRetryInterval).Unix()

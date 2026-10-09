@@ -444,6 +444,9 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 		dc, _ := availableDCs[0]["dc"].(string)
 		line := "📍 数据中心: " + dcLine(dc)
 		avail := "✅ 可用性: " + availWording(availableDCs[0])
+		if previous, _ := availableDCs[0]["previous_restock"].(string); previous != "" {
+			avail += "\n🗓 " + previous
+		}
 		msg.WriteString(line + "\n")
 		msg.WriteString(avail + "\n")
 		availableDCs[0]["notification_line"] = line + "\n" + avail
@@ -452,6 +455,9 @@ func (m *Monitor) buildAvailabilityAlert(planCode string, availableDCs []map[str
 		for _, dcInfo := range availableDCs {
 			dc, _ := dcInfo["dc"].(string)
 			line := "   ✅ " + dcLine(dc) + " — " + availWording(dcInfo)
+			if previous, _ := dcInfo["previous_restock"].(string); previous != "" {
+				line += "\n      🗓 " + previous
+			}
 			msg.WriteString(line + "\n")
 			dcInfo["notification_line"] = line
 		}
