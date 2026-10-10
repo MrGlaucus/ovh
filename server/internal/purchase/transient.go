@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"syscall"
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
 
@@ -50,6 +51,13 @@ func IsTransient(err error) bool {
 		}
 	}
 	// 非 APIError:多半还没拿到 HTTP 响应
+	// 代理拨号失败会经过 url.Error / net.OpError / os.SyscallError 多层包装。
+	// 这些路由故障不一定实现 Timeout，按 errno 识别，不能算作下单失败。
+	for _, code := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN} {
+		if errors.Is(err, code) {
+			return true
+		}
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
@@ -58,6 +66,11 @@ func IsTransient(err error) bool {
 	for _, needle := range []string{
 		"connection reset",
 		"connection refused",
+		// 兼容代理库转成普通文本的网络/路由错误。
+		"network is unreachable",
+		"network is down",
+		"host is unreachable",
+		"no route to host",
 		"no such host",
 		"i/o timeout",
 		"timeout",

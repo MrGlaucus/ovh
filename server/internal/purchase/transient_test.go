@@ -6,7 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/url"
+	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	ovhsdk "github.com/ovh/go-ovh/ovh"
@@ -42,6 +45,11 @@ func TestTransientDoesNotBurnRetryBudget(t *testing.T) {
 		{"409 冲突", &ovhsdk.APIError{Code: 409}, false},
 
 		{"连接被重置", errors.New("read tcp 1.2.3.4:443: connection reset by peer"), true},
+		{"代理网络不可达", errors.New(`Get "https://eu.api.ovh.com/1.0/dedicated/server/datacenter/availabilities?planCode=24sk202": proxyconnect tcp: dial tcp 192.168.0.100:10001: connect: network is unreachable`), true},
+		{"无主机路由", errors.New("proxyconnect tcp: no route to host"), true},
+		{"主机不可达", errors.New("connect: host is unreachable"), true},
+		{"网络已断开", errors.New("connect: network is down"), true},
+		{"业务状态优先", &ovhsdk.APIError{Code: 403, Message: "network is unreachable"}, false},
 		{"DNS 解析不了", errors.New("dial tcp: lookup eu.api.ovh.com: no such host"), true},
 		{"IO 超时", errors.New("net/http: request canceled (Client.Timeout exceeded)"), true},
 		{"EOF", errors.New("unexpected EOF"), true},
@@ -74,6 +82,26 @@ func TestTransientThroughWrappedError(t *testing.T) {
 	wrapped := fmt.Errorf("加购基础商品失败: %w", &ovhsdk.APIError{Code: 429})
 	if !IsTransient(wrapped) {
 		t.Fatal("包了一层的 429 应当仍被认成 transient")
+	}
+}
+
+func TestUnreachableNetworkSkipsHistoryAndRetryBudget(t *testing.T) {
+	for _, code := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN} {
+		err := &url.Error{Op: "Get", URL: "https://eu.api.ovh.com/1.0/dedicated/server/datacenter/availabilities?planCode=24sk202", Err: &net.OpError{Op: "proxyconnect", Net: "tcp", Err: os.NewSyscallError("connect", code)}}
+		for _, existing := range []bool{false, true} {
+			state := &app.State{}
+			if existing {
+				state.History = []types.PurchaseHistoryEntry{{TaskID: "task", Status: "failed", OrderID: "preserve"}}
+			}
+			// No DB/logger: transient errors must never enter recordFailure.
+			out := failOutcome(state, &types.QueueItem{ID: "task"}, err, err.Error())
+			if out.Attempted || out.Fatal {
+				t.Fatalf("network error consumed failure budget: %+v", out)
+			}
+			if (!existing && len(state.History) != 0) || (existing && (len(state.History) != 1 || state.History[0].OrderID != "preserve")) {
+				t.Fatal("network failure changed history")
+			}
+		}
 	}
 }
 
