@@ -552,6 +552,10 @@ function TelegramSection({
           只处理名单内用户的文字命令和按钮回调；留空会拒绝所有 Telegram 用户。请填写稳定的数字 User ID，不支持用户名。
         </p>
       </Field>
+      <Field label="仪表盘访问地址（可选）">
+        <Input value={form.dashboardUrl || ""} onChange={(e) => set("dashboardUrl", e.target.value)} placeholder="https://你的面板域名/" />
+        <p className="text-[11px] text-muted-foreground mt-1">用于每天09:00退款期限提醒的“打开仪表盘”按钮。留空时仅显示OVH订单链接。</p>
+      </Field>
     </Section>
   );
 }

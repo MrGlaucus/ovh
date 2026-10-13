@@ -35,6 +35,7 @@ import { describeOptionCodes } from "@/lib/option-groups";
 
 import { orderStatusView } from "@/lib/order-status";
 import { setActiveAccount } from "@/lib/api";
+import { refundDeadlineMs } from "@/lib/refund-window";
 import { CURRENCY_UNKNOWN_HINT } from "@/lib/money";
 
 /** 抢购历史：表格 + 搜索 + 状态过滤 */
@@ -152,10 +153,8 @@ function getExpirationMs(item: PurchaseHistory): number {
  * 「自下单次日起 14 天内」。次日算第 1 天,第 14 天结束即下单日之后第 15 天的
  * 00:00(本地时区)。窗口只跟下单时间走,早付晚付一样长。
  */
-const REFUND_WINDOW_DAYS = 14;
 function getRefundDeadlineMs(item: PurchaseHistory): number {
-  const d = parseStoredTime(item.purchaseTime);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1 + REFUND_WINDOW_DAYS).getTime();
+  return refundDeadlineMs(item.purchaseTime);
 }
 
 function fmtDeadline(deadlineMs: number): string {

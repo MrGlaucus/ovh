@@ -28,6 +28,7 @@ import (
 	"github.com/ovh-buy/server/internal/handlers"
 	"github.com/ovh-buy/server/internal/logger"
 	"github.com/ovh-buy/server/internal/monitor"
+	"github.com/ovh-buy/server/internal/refundreminder"
 
 	"github.com/ovh-buy/server/internal/proxy"
 	"github.com/ovh-buy/server/internal/purchase"
@@ -262,6 +263,7 @@ func main() {
 
 		// Purchase history
 		api.GET("/purchase-history", handlers.GetPurchaseHistory(state))
+		api.GET("/refund-reminders", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"items": refundreminder.Items(state, time.Now())}) })
 		api.DELETE("/purchase-history", handlers.ClearPurchaseHistory(state))
 		api.DELETE("/purchase-history/failed", handlers.ClearFailedPurchaseHistory(state))
 		api.DELETE("/purchase-history/:id", handlers.RemovePurchaseHistoryItem(state))
@@ -586,6 +588,7 @@ func main() {
 	// 定时刷新历史里未到终态订单的支付状态(付款发生在下单之后的任意时刻)
 	go purchase.OrderStatusLoop(state)
 	go delivery.Run(state)
+	go refundreminder.Run(state)
 	// 预热各账户子公司的区域配置:region 的合法取值要从 10MB 的公开目录里解析,
 	// 首次解析放在抢购链路上会白白慢 2-7 秒
 	go catalog.WarmRegionCache(state)

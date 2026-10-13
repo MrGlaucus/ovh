@@ -76,12 +76,14 @@ func SaveSettings(state *app.State) gin.HandlerFunc {
 		}
 		newCfg.TgAllowedUserIDs = allowedUserIDs
 		newCfg.NotifyWebhookURL = strings.TrimSpace(newCfg.NotifyWebhookURL)
+		newCfg.DashboardURL = strings.TrimSpace(newCfg.DashboardURL)
 		// 在保存这一步就把地址挡下来。放过去的话,用户要等到真有货那一刻
 		// 才会发现通知发不出去 —— 而那正是唯一不能出错的时刻。
 		for _, target := range []struct {
 			name, value string
 		}{
 			{"通知 Webhook 地址", newCfg.NotifyWebhookURL},
+			{"仪表盘访问地址", newCfg.DashboardURL},
 		} {
 			if target.value == "" {
 				continue

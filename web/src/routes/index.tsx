@@ -18,6 +18,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { UpdateButton } from "@/components/common/UpdateButton";
+import { RefundReminders } from "@/components/common/RefundReminders";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -124,6 +125,7 @@ function DashboardPage() {
       </div>
 
       {/* 中部：活跃队列 + 系统状态 */}
+      <RefundReminders />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
           <CardContent className="p-3.5 sm:p-6">

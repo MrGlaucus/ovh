@@ -128,6 +128,11 @@ func SendHTMLReplyChecked(state *app.State, chatID, message string, replyTo int6
 	return sendHTMLOnce(state, chatID, message, replyTo, nil)
 }
 
+// SendHTMLMessageChecked sends once; the persistent daily reminder owns retries.
+func SendHTMLMessageChecked(state *app.State, message string, markup map[string]interface{}) (MessageRef, error) {
+	return sendHTMLOnce(state, state.Config.Get().TgChatID, message, 0, markup)
+}
+
 func sendHTMLOnce(state *app.State, chatID, message string, replyTo int64, replyMarkup map[string]interface{}) (MessageRef, error) {
 	cfg := state.Config.Get()
 	if cfg.TgToken == "" {
@@ -153,7 +158,7 @@ func sendHTMLOnce(state *app.State, chatID, message string, replyTo int64, reply
 		return MessageRef{}, fmt.Errorf("构造 Telegram 请求失败: %s", scrub(err.Error()))
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := proxy.HTTPClient(10 * time.Second).Do(req)
+	resp, err := proxy.HTTPClient(30 * time.Second).Do(req)
 	if err != nil {
 		// url.Error 通常会携带完整请求 URL，其中包含 Bot Token。
 		return MessageRef{}, &SendError{Message: fmt.Sprintf("请求 Telegram API 失败: %s", scrub(err.Error())), Temporary: true}

@@ -22,12 +22,13 @@ func NowChina() time.Time { return time.Now().In(chinaLocation) }
 func InChina(t time.Time) time.Time { return t.In(chinaLocation) }
 
 type Config struct {
-	AppKey      string `json:"appKey"`
-	AppSecret   string `json:"appSecret"`
-	ConsumerKey string `json:"consumerKey"`
-	Endpoint    string `json:"endpoint"`
-	TgToken     string `json:"tgToken"`
-	TgChatID    string `json:"tgChatId"`
+	AppKey       string `json:"appKey"`
+	AppSecret    string `json:"appSecret"`
+	ConsumerKey  string `json:"consumerKey"`
+	Endpoint     string `json:"endpoint"`
+	TgToken      string `json:"tgToken"`
+	TgChatID     string `json:"tgChatId"`
+	DashboardURL string `json:"dashboardUrl,omitempty"`
 	// TgAllowedUserIDs 是允许处理消息/按钮回调的 Telegram 数字 User ID，逗号分隔；空值即拒绝全部用户。
 	TgAllowedUserIDs string `json:"tgAllowedUserIds"`
 	IAM              string `json:"iam"`
