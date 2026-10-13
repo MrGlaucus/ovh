@@ -252,5 +252,9 @@ func build(client Getter, account types.OVHAccount, row db.DeliveryServer) (stri
 	if diskText == "" {
 		diskText = "未获取到"
 	}
-	return fmt.Sprintf("🎉 服务器已发货\n\n👤 所属账户：%s · %s\n\n🖥 设备 ID：%s\n📦 设备型号：%s\n⚙️ CPU：%s\n💾 内存：%s\n💽 硬盘：%s\n🌐 端口速率：%s\n\n📍 机房：%s\n🔗 IP：%s\n🔀 交换机：%s\n\n🕒 发现时间：%s（北京时间）", account.Name, account.Zone, row.ServiceName, text(info["commercialRange"]), text(hw["processorName"]), quantity(hw["memorySize"]), diskText, bandwidth(network["connection"]), datacenterLocation(info["datacenter"]), text(info["ip"]), text(obj(network["switching"])["name"]), time.Unix(row.DiscoveredAt, 0).In(types.NowChina().Location()).Format("2006-01-02 15:04:05")), nil
+	message := fmt.Sprintf("🎉 服务器已发货\n\n👤 所属账户：%s · %s\n\n🖥 设备 ID：%s\n📦 设备型号：%s\n⚙️ CPU：%s\n💾 内存：%s\n💽 硬盘：%s\n🌐 端口速率：%s\n\n📍 机房：%s\n🔗 IP：%s\n🔀 交换机：%s\n\n🕒 发现时间：%s（北京时间）", account.Name, account.Zone, row.ServiceName, text(info["commercialRange"]), text(hw["processorName"]), quantity(hw["memorySize"]), diskText, bandwidth(network["connection"]), datacenterLocation(info["datacenter"]), text(info["ip"]), text(obj(network["switching"])["name"]), time.Unix(row.DiscoveredAt, 0).In(types.NowChina().Location()).Format("2006-01-02 15:04:05"))
+	if row.PreviousReceivedAt > 0 {
+		message += "\n🔁 曾收过此机器：" + time.Unix(row.PreviousReceivedAt, 0).In(types.NowChina().Location()).Format("2006-01-02 15:04:05") + "（北京时间，上次发现时间）"
+	}
+	return message, nil
 }

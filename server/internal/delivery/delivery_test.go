@@ -116,6 +116,57 @@ func TestDisabledBaselineRestartAndActualConfiguration(t *testing.T) {
 		t.Fatal("restart repeated delivery")
 	}
 }
+
+func TestReturnedServerNotifiesAgainWithPreviousDate(t *testing.T) {
+	w, f, messages, dir := fixture(t)
+	w.scan("a")
+	f.names = []string{"old", "returned"}
+	w.scan("a")
+	var first db.DeliveryServer
+	if err := w.state.DB.Get(&first, "SELECT * FROM delivery_servers WHERE service_name='returned'"); err != nil {
+		t.Fatal(err)
+	}
+	// A single missing sample, or a failed request, must not create a new event.
+	f.names = []string{"old"}
+	w.scan("a")
+	f.fail = "/dedicated/server"
+	w.scan("a")
+	f.fail = ""
+	f.names = []string{"old", "returned"}
+	w.scan("a")
+	if len(*messages) != 1 {
+		t.Fatal("transient omission duplicated notification")
+	}
+	f.names = []string{"old"}
+	w.scan("a")
+	w.scan("a")
+	// Presence is persistent across process restarts.
+	w.state.DB.Close()
+	database, err := db.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.state.DB = database
+	f.names = []string{"old", "returned", "returned"}
+	w.scan("a")
+	w.scan("a")
+	if len(*messages) != 2 {
+		t.Fatalf("want two delivery events, got %d", len(*messages))
+	}
+	if !strings.Contains((*messages)[1], "曾收过此机器："+time.Unix(first.DiscoveredAt, 0).In(types.NowChina().Location()).Format("2006-01-02 15:04:05")) {
+		t.Fatal("missing previous receipt date")
+	}
+	saved, err := w.state.DB.GetDelivery(first.ID)
+	if err != nil || saved != first {
+		t.Fatalf("old callback event changed: %v", err)
+	}
+	w.state.DB.SetDeliveryEnabled("a", false)
+	w.state.DB.SetDeliveryEnabled("a", true)
+	w.scan("a")
+	if len(*messages) != 2 {
+		t.Fatal("reenabling notified baseline")
+	}
+}
 func TestFailedListDoesNotInitializeAndDisabledStopsMidScan(t *testing.T) {
 	w, f, messages, _ := fixture(t)
 	w.state.DB.SetDeliveryEnabled("a", true)
