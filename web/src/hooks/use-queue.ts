@@ -83,6 +83,7 @@ export function useCreateQueueItem() {
   return useMutation({
     mutationFn: async (payload: {
       account_id: string;
+      account_ids?: string[];
       planCode: string;
       datacenters: string[];
       options?: string[];
@@ -92,9 +93,12 @@ export function useCreateQueueItem() {
       delaySeconds?: number;
     }) => {
       const dcs = payload.datacenters;
+      const accountIds = [...new Set(payload.account_ids ?? [payload.account_id])].filter(Boolean);
+      if (!accountIds.length) throw new Error("请至少选择一个账户");
+      if (dcs.length * accountIds.length > MAX_ORDER_FANOUT) throw new Error(`账户数 × 机房数不能超过 ${MAX_ORDER_FANOUT}`);
       // 上界以前完全没有:填 9999 × 5 个机房 = 近 5 万次串行 POST。
       // 后端 EnqueueItems 也会拒,但那是在发出几百个请求之后 —— 这里先收住。
-      const plan = clampOrderPlan(dcs.length, payload.quantity ?? 1);
+      const plan = clampOrderPlan(dcs.length * accountIds.length, payload.quantity ?? 1);
       const qty = plan.quantity;
       if (plan.clamped) {
         toast.warning(
@@ -108,27 +112,29 @@ export function useCreateQueueItem() {
       // 却不知道是账户不对、配置没选还是网络问题，只能反复重试。撞上队列
       // 总量闸门时也靠它说清楚。后端拒绝空配置任务的话术（"未指定硬件配置…"）从这里透出。
       let firstError = "";
-      for (const dc of dcs) {
-        for (let i = 0; i < qty; i++) {
-          try {
-            await api.post("/queue", {
-              account_id: payload.account_id,
-              planCode: payload.planCode,
-              datacenter: dc,
-              retryInterval: payload.retryInterval,
-              options: payload.options || [],
-              autoPay: payload.autoPay ?? false,
-              delaySeconds: payload.delaySeconds ?? 0,
-            });
-            success++;
-          } catch (e: any) {
-            failed++;
-            if (!firstError) firstError = errorMessage(e);
+      for (const accountId of accountIds) {
+        for (const dc of dcs) {
+          for (let i = 0; i < qty; i++) {
+            try {
+              await api.post("/queue", {
+                account_id: accountId,
+                planCode: payload.planCode,
+                datacenter: dc,
+                retryInterval: payload.retryInterval,
+                options: payload.options || [],
+                autoPay: payload.autoPay ?? false,
+                delaySeconds: payload.delaySeconds ?? 0,
+              });
+              success++;
+            } catch (e: any) {
+              failed++;
+              if (!firstError) firstError = `账户 ${accountId} · ${dc}：${errorMessage(e)}`;
+            }
           }
         }
-      }
+        }
       if (failed > 0 && firstError) toast.error(`有任务没能创建：${firstError}`);
-      return { success, failed, total: dcs.length * qty, firstError };
+      return { success, failed, total: plan.total, firstError };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.queue.list() });

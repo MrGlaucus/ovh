@@ -221,6 +221,7 @@ type RefundInfo struct {
 
 // PurchaseHistoryEntry 抢购历史
 type PurchaseHistoryEntry struct {
+	Note           string   `json:"note"`
 	ID             string   `json:"id"`
 	AccountID      string   `json:"accountId"` // 哪个账户买的
 	TaskID         string   `json:"taskId"`

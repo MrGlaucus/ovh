@@ -86,6 +86,7 @@ func GetHardwareInfo(state *app.State) gin.HandlerFunc {
 		account, _ := ovhAccountFor(state, c)
 		spec, specErr := hwFetchOrderedSpec(client, account.ID, svc)
 		lottery := hwComputeLottery(spec, hardware)
+		hwSaveSummary(hwCacheKey{account: account.ID, client: client, service: svc}, lottery)
 		if specErr != nil {
 			lottery.Reason = ovh.Explain(specErr)
 		}
@@ -475,6 +476,9 @@ func GetServiceInfo(state *app.State) gin.HandlerFunc {
 		}
 		// 终止状态从 lifecycle.pendingActions 读(文档指定的读回路径);
 		// renew.deleteAtExpiration 会不会随 terminationPolicy 同步,文档没说,不能赌它
+		if acc, ok := ovhAccountFor(state, c); ok && ovh.EndpointRegion(acc.Endpoint) == "US" {
+			si["renewalManualUnsupported"] = true
+		}
 		attachTerminationState(state, client, serviceIDForDedicated, svc, "server_control", si)
 		c.JSON(http.StatusOK, gin.H{"success": true, "serviceInfo": si})
 	}
@@ -499,6 +503,10 @@ func UpdateServiceRenewal(state *app.State) gin.HandlerFunc {
 			Period int    `json:"period"` // 月数,0 表示不改
 		}
 		_ = c.ShouldBindJSON(&body)
+		if acc, ok := ovhAccountFor(state, c); body.Mode == "manual" && ok && ovh.EndpointRegion(acc.Endpoint) == "US" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "US 账户不支持手动续费，请选择自动续费或到期终止"})
+			return
+		}
 
 		var info map[string]interface{}
 		if err := client.Get("/dedicated/server/"+svc+"/serviceInfos", &info); err != nil {
@@ -561,8 +569,7 @@ func UpdateServiceRenewal(state *app.State) gin.HandlerFunc {
 		// services.Service 里只有 renew 可写,其余 12 个字段全是只读 ——
 		// 把 GET 回来的整个对象发回去会被 OVH 400
 		// "Try to alter read-only properties: status, creation, expiration"
-		if err := client.Put("/dedicated/server/"+svc+"/serviceInfos",
-			map[string]interface{}{"renew": next}, nil); err != nil {
+		if err := putServiceRenew(client, "/dedicated/server/"+svc+"/serviceInfos", info, next); err != nil {
 			state.Logger.Error("修改服务器 "+svc+" 续费策略失败: "+err.Error(), "server_control")
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return

@@ -464,7 +464,7 @@ function CreateQueueDialog({
 }) {
   const servers = useServers();
   const create = useCreateQueueItem();
-  // 下单账户 = 左侧菜单栏(手机端在顶栏)选的全局账户,本页不再单独选
+  // 默认勾选当前账户；多选不会切换全局账户或改变目录来源。
   const [globalAccountId] = useActiveAccount();
   // 库存按"实际下单的那个账户"所在站点查:EU/US/CA 三站的 availabilities 互不相通
   // (实测 US 站 423 个 planCode,只有 134 个与 EU 重合),用别区的库存点红绿灯,
@@ -475,6 +475,9 @@ function CreateQueueDialog({
   const accountsQ = useAccounts();
   const accounts = accountsQ.data;
   const accountId = globalAccountId || accounts?.find((a) => a.isDefault)?.id || accounts?.[0]?.id || "";
+  const [selectedAccounts, setSelectedAccounts] = useState<string[] | null>(null);
+  const accountIds = (selectedAccounts ?? (accountId ? [accountId] : [])).filter((id) => accounts?.some((a) => a.id === id));
+  useEffect(() => { if (!open) setSelectedAccounts(null); }, [open]);
   const activeAcc = findAccountByID(accounts, accountId);
   const orderEndpoint = activeAcc?.endpoint || "";
   const availQ = useAvailability(orderEndpoint || undefined);
@@ -585,10 +588,10 @@ function CreateQueueDialog({
 
   // 和 servers.tsx 用同一套上限:预览行必须说真会创建的数,
   // 否则会出现"提示 5000 个任务、实际建 60 个"。
-  const orderPlan = clampOrderPlan(datacenters.length, Number(quantity) || 1);
+  const orderPlan = clampOrderPlan(datacenters.length * accountIds.length, Number(quantity) || 1);
   const qty = orderPlan.quantity;
   const totalTasks = orderPlan.total;
-  const canSubmit = !!accountId && planCode.trim().length > 0 && datacenters.length > 0 && qty > 0;
+  const canSubmit = !accountsQ.isError && accountIds.length > 0 && planCode.trim().length > 0 && datacenters.length > 0 && qty > 0 && totalTasks <= MAX_ORDER_FANOUT;
 
   const reset = () => {
     setPlanCode("");
@@ -616,12 +619,14 @@ function CreateQueueDialog({
   const clearAllDC = () => setDatacenters([]);
 
   const handleSubmit = async () => {
+    if (create.isPending) return;
     if (!canSubmit) {
-      toast.error("请填写计划代码并至少选择一个数据中心");
+      toast.error("请选择账户、计划代码和数据中心，并确保任务总数不超过上限");
       return;
     }
     const result = await create.mutateAsync({
       account_id: accountId,
+      account_ids: accountIds,
       planCode: planCode.trim(),
       datacenters,
       quantity: qty,
@@ -629,7 +634,8 @@ function CreateQueueDialog({
       options: parsedOptions,
       autoPay,
       delaySeconds,
-    });
+    }).catch(() => null);
+    if (!result) return;
     if (result.success > 0) {
       toast.success(`已创建 ${result.success}/${result.total} 个抢购任务`);
     }
@@ -650,19 +656,28 @@ function CreateQueueDialog({
         <DialogHeader>
           <DialogTitle>新建抢购任务</DialogTitle>
           <DialogDescription>
-            为每个数据中心创建指定数量的独立任务，每台服务器单独成单。
+            为每个选中账户、每个数据中心创建指定数量的独立任务，每台服务器单独成单。
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 py-2">
-          {/* 当前账户不在这里重复显示 —— 顶栏(手机)/侧栏(桌面)的切换器始终可见,
-              对话框打开时它也没被盖住。
-              但下面这两条要留着:一条是规则(拿错站点的 planCode 必然被拒),
-              一条是提交会被拦掉的理由,都不是"当前账户是谁"的重复。 */}
+          {/* 账户选择仅决定新建任务归属，不改变全局目录账户。 */}
           <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-medium">下单账户（可多选）</span>
+              <div className="flex gap-3 text-xs">
+                <button type="button" disabled={create.isPending} onClick={() => setSelectedAccounts((accounts || []).map((a) => a.id))}>全选</button>
+                <button type="button" disabled={create.isPending} onClick={() => setSelectedAccounts([])}>清空</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+              {(accounts || []).map((a) => <label key={a.id} className="flex items-center gap-2 rounded-lg border p-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={accountIds.includes(a.id)} disabled={create.isPending} onChange={(e) => setSelectedAccounts(e.target.checked ? [...accountIds, a.id] : accountIds.filter((id) => id !== a.id))} />
+                <span className="break-all">{a.name} · {a.zone}</span>
+              </label>)}
+            </div>
             <p className="text-[11px] text-muted-foreground">
-              下单用当前账户的凭据,购物车 subsidiary 跟随账户 zone。planCode 也要是这个站点的 ——
-              三区目录互不相通
+              目录及库存预览来自当前账户 {activeAcc?.name}。任务分别使用各自账户的凭据和代理；跨站点账户的型号与配置可能不同，创建时会分别校验。
             </p>
             {/* 没有账户就没法下单,底下的创建按钮会一直灰着 —— 必须讲清是"没读到"还是"真没有" */}
             {accountsQ.isError && (
@@ -897,9 +912,9 @@ function CreateQueueDialog({
           {/* 汇总提示 */}
           {datacenters.length > 0 && (
             <div className="border border-border rounded-2xl p-3 text-[12px] text-muted-foreground">
-              将创建 <span className="font-semibold text-foreground">{totalTasks}</span> 个独立任务
-              （{datacenters.length} 个数据中心 × {qty} 台
-              {parsedOptions.length > 0 ? ` · 含 ${parsedOptions.length} 个可选配置` : ""}）
+              将创建 <span className="font-semibold text-foreground">{totalTasks}</span> 个独立任务（{accountIds.length} 个账户 × {datacenters.length} 个机房 × {qty} 台）
+              {totalTasks > MAX_ORDER_FANOUT && <span className="text-destructive">，超过单次 {MAX_ORDER_FANOUT} 个任务上限，请减少账户或机房</span>}
+              {parsedOptions.length > 0 ? ` · 含 ${parsedOptions.length} 个可选配置` : ""}
             </div>
           )}
         </div>

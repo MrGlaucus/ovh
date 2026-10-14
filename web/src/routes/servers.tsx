@@ -143,6 +143,7 @@ function ServersPage() {
 
   const [search, setSearch] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [priceSort, setPriceSort] = useState<"default" | "asc" | "desc">("default");
   const [detailPlanCode, setDetailPlanCode] = useState<string | null>(null);
 
   const list = q.data || [];
@@ -168,6 +169,18 @@ function ServersPage() {
     }
     return [...out].sort((a, b) => Number(favoritePlanCodes.has(b.planCode)) - Number(favoritePlanCodes.has(a.planCode)));
   }, [list, search, onlyAvailable, availMap, favoritePlanCodes]);
+  const sorted = useMemo(() => {
+    if (priceSort === "default") return filtered;
+    return [...filtered].sort((a, b) => {
+      const av = priceMap[a.planCode]?.total;
+      const bv = priceMap[b.planCode]?.total;
+      const aValid = typeof av === "number" && Number.isFinite(av);
+      const bValid = typeof bv === "number" && Number.isFinite(bv);
+      if (!aValid) return bValid ? 1 : 0;
+      if (!bValid) return -1;
+      return priceSort === "asc" ? av - bv : bv - av;
+    });
+  }, [filtered, priceSort, priceMap]);
 
   const detailServer = detailPlanCode ? list.find((s) => s.planCode === detailPlanCode) || null : null;
   const refreshSinglePlan = (planCode: string) => {
@@ -251,6 +264,9 @@ function ServersPage() {
           <span className="text-[11px] sm:text-[12px] text-muted-foreground whitespace-nowrap">
             {q.isPending ? "加载中..." : `共 ${filtered.length} 款`}
           </span>
+          <Button variant="outline" size="sm" onClick={() => setPriceSort((v) => v === "default" ? "asc" : v === "asc" ? "desc" : "default")}>
+            {priceSort === "default" ? "价格排序" : priceSort === "asc" ? "价格 ↑" : "价格 ↓"}
+          </Button>
           </div>
         </CardContent>
       </Card>
@@ -317,7 +333,7 @@ function ServersPage() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((srv) => (
+          {sorted.map((srv) => (
             <ServerCard
               key={srv.planCode}
               server={srv}

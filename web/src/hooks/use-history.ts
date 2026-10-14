@@ -5,6 +5,7 @@ import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
 export interface PurchaseHistory {
+	 note?: string;
   id: string;
   accountId: string;
   /** 关联的抢购队列任务 ID（后端 PurchaseHistoryEntry.taskId） */
@@ -56,6 +57,16 @@ export interface PurchaseHistory {
 }
 
 /** 抢购历史 */
+export function useUpdateHistoryNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, note }: { id: string; note: string }) =>
+      (await api.patch(`/purchase-history/${id}/note`, { note })).data,
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: qk.history() }); toast.success("备注已保存"); },
+    onError: () => toast.error("备注保存失败，请重试"),
+  });
+}
+
 export function useHistory() {
   return useQuery({
     queryKey: qk.history(),

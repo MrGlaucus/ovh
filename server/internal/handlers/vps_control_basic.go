@@ -310,6 +310,9 @@ func GetVpsServiceInfo(state *app.State) gin.HandlerFunc {
 			"possibleRenewPeriod":       possiblePeriods,
 		}
 		// 同独服:终止状态从 lifecycle.pendingActions 读,不赌 renew 字段
+		if acc, ok := ovhAccountFor(state, c); ok && ovh.EndpointRegion(acc.Endpoint) == "US" {
+			si["renewalManualUnsupported"] = true
+		}
 		attachTerminationState(state, client, serviceIDForVps, svc, "vps_control", si)
 		c.JSON(http.StatusOK, gin.H{"success": true, "serviceInfo": si})
 	}
@@ -330,6 +333,10 @@ func UpdateVpsRenewal(state *app.State) gin.HandlerFunc {
 			Period int    `json:"period"`
 		}
 		_ = c.ShouldBindJSON(&body)
+		if acc, ok := ovhAccountFor(state, c); body.Mode == "manual" && ok && ovh.EndpointRegion(acc.Endpoint) == "US" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "US 账户不支持手动续费，请选择自动续费或到期终止"})
+			return
+		}
 
 		var info map[string]interface{}
 		if err := client.Get("/vps/"+svc+"/serviceInfos", &info); err != nil {
@@ -378,8 +385,7 @@ func UpdateVpsRenewal(state *app.State) gin.HandlerFunc {
 			next["period"] = pv
 		}
 		// services.Service 只有 renew 可写,整对象发回去会被 400
-		if err := client.Put("/vps/"+svc+"/serviceInfos",
-			map[string]interface{}{"renew": next}, nil); err != nil {
+		if err := putServiceRenew(client, "/vps/"+svc+"/serviceInfos", info, next); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": ovh.Explain(err)})
 			return
 		}

@@ -604,6 +604,30 @@ func (s *State) UnregisterTaskCancel(id string) {
 }
 
 // SaveHistory 把内存中 History 整表覆盖写入 SQLite
+// UpdateHistoryNote serializes with full snapshots; a failed write never changes memory.
+func (s *State) UpdateHistoryNote(id, note string) (bool, error) {
+	if err := s.SaveBlocked("history"); err != nil {
+		return false, err
+	}
+	s.saveHistoryMu.Lock()
+	defer s.saveHistoryMu.Unlock()
+	s.HistoryMu.Lock()
+	defer s.HistoryMu.Unlock()
+	for i := range s.History {
+		if s.History[i].ID != id {
+			continue
+		}
+		updated := append([]types.PurchaseHistoryEntry(nil), s.History...)
+		updated[i].Note = note
+		if err := s.DB.ReplaceHistory(updated); err != nil {
+			return true, err
+		}
+		s.History[i].Note = note
+		return true, nil
+	}
+	return false, nil
+}
+
 func (s *State) SaveHistory() error {
 	if err := s.SaveBlocked("history"); err != nil {
 		return err

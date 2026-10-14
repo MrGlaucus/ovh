@@ -6,6 +6,36 @@ import (
 	"time"
 )
 
+func TestLotterySummaryScopeAndTier(t *testing.T) {
+	lot := hwComputeLottery(&hwOrderedSpec{CPU: "Xeon E5-1620v2", MemoryGB: 32}, map[string]interface{}{"processorName": "Xeon E5-1630v4", "memorySize": map[string]interface{}{"value": 64, "unit": "GB"}})
+	if lot.Tier != 2 || len(lot.Items) != 2 || lot.Items[1].GainPct != 100 {
+		t.Fatalf("bad tier/gain: %+v", lot)
+	}
+	key := hwCacheKey{account: "summary-a", client: &ovhsdk.Client{}, service: "same-server"}
+	hwSaveSummary(key, lot)
+	if got := hwReadSummary(key); got == nil || got.Tier != 2 {
+		t.Fatal("missing summary")
+	}
+	other := key
+	other.account = "summary-b"
+	if hwReadSummary(other) != nil {
+		t.Fatal("cross-account leak")
+	}
+	other = key
+	other.client = &ovhsdk.Client{}
+	if hwReadSummary(other) != nil {
+		t.Fatal("credential generation leak")
+	}
+	hwCacheMu.Lock()
+	entry := hwLotterySummaries[key]
+	entry.expires = time.Now().Add(-time.Second)
+	hwLotterySummaries[key] = entry
+	hwCacheMu.Unlock()
+	if hwReadSummary(key) != nil {
+		t.Fatal("expired summary reused")
+	}
+}
+
 func TestHwOrderedCacheIsolationAndExpiry(t *testing.T) {
 	client := &ovhsdk.Client{}
 	key := hwCacheKey{account: "cache-test-a", client: client, service: "ns-test"}

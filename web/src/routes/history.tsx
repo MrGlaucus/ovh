@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   useHistory,
+  useUpdateHistoryNote,
   useClearHistory,
   useClearFailedHistory,
   useRemoveHistoryItem,
@@ -347,16 +348,17 @@ function HistoryPage() {
         <>
           {/* 桌面 / 平板:横向表格 */}
           <Card className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[760px] table-fixed">
+            <table className="w-full min-w-[960px] table-fixed">
               <thead>
                 <tr className="text-left text-[11px] font-medium text-muted-foreground border-b border-border">
-                  <th className="w-[27%] px-4 py-3">型号</th>
+                  <th className="w-[23%] px-4 py-3">型号</th>
                   <th className="w-[6%] px-3 py-3">机房</th>
-                  <th className="w-[16%] px-3 py-3">配置</th>
+                  <th className="w-[12%] px-3 py-3">配置</th>
                   <th className="w-[8%] px-3 py-3">价格</th>
                   <th className="w-[14%] px-3 py-3">订单状态</th>
                   <th className="w-[11%] px-3 py-3">退款</th>
                   <th className="w-[10%] px-3 py-3">时间</th>
+                  <th className="w-[8%] px-3 py-3">备注</th>
                   <th className="w-[8%] px-4 py-3 text-right">操作</th>
                 </tr>
               </thead>
@@ -450,6 +452,29 @@ function HistoryPage() {
   );
 }
 
+function HistoryNote({ item }: { item: PurchaseHistory }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const save = useUpdateHistoryNote();
+  return <>
+    <button type="button" className="text-left text-xs whitespace-pre-wrap break-words w-full hover:underline" title="编辑备注"
+      onClick={() => { setDraft(item.note || ""); setOpen(true); }}>
+      {item.note || <span className="text-muted-foreground">添加备注</span>}
+    </button>
+    <Dialog open={open} onOpenChange={(value) => { if (!save.isPending) setOpen(value); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>编辑备注</DialogTitle><DialogDescription>{item.planCode} · {item.datacenter.toUpperCase()}{item.orderId ? ` · 订单 #${item.orderId}` : ""}。最多1000字，清空后保存可删除备注。</DialogDescription></DialogHeader>
+        <textarea aria-label="订单备注" value={draft} onChange={(e) => setDraft(e.target.value)} maxLength={1000} rows={5} disabled={save.isPending}
+          className="w-full rounded-md border border-input bg-background p-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="输入用途、跟进情况或其他备注…" />
+        <DialogFooter>
+          <Button variant="outline" disabled={save.isPending} onClick={() => setOpen(false)}>取消</Button>
+          <Button disabled={save.isPending} onClick={() => save.mutate({ id: item.id, note: draft }, { onSuccess: () => setOpen(false) })}>{save.isPending ? "保存中…" : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </>;
+}
+
 function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: PurchaseHistory; displayName?: string; now: number; onDelete: () => void; onPay: () => void }) {
   const st = orderStatusView(item);
   const showCountdown = item.status === "success" && !!item.orderId && !st.paid && !st.closed;
@@ -514,6 +539,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
       <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
         {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
       </td>
+      <td className="px-3 py-3"><HistoryNote item={item} /></td>
       <td className="px-4 py-3">
         <div className="flex items-center justify-end gap-3 whitespace-nowrap">
           {canPay && <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款"><CreditCard className="w-3 h-3" />付款</button>}
@@ -560,6 +586,7 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
         </div>
         {/* 手机端也显示查询状态，避免失败被空占位掩盖。 */}
         <RefundInfoView item={item} />
+        <div className="space-y-1"><div className="text-xs text-muted-foreground">备注</div><HistoryNote item={item} /></div>
         <div className="flex items-center justify-between gap-2 text-[11px]">
           <span className="text-muted-foreground font-mono">{parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
           {item.price?.withTax != null && <HistoryPrice item={item} strike={isExpired} />}

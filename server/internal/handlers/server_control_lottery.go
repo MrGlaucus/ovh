@@ -32,13 +32,16 @@ import (
 
 // hwLotteryItem 单项中奖明细(只列出"实际优于订购"的项)
 type hwLotteryItem struct {
-	Kind    string `json:"kind"`    // cpu | memory | disk
-	Ordered string `json:"ordered"` // 订购配置展示文案
-	Actual  string `json:"actual"`  // 实际配置展示文案
+	GainPct float64 `json:"gainPct,omitempty"`
+	MediaUp bool    `json:"mediaUp,omitempty"`
+	Kind    string  `json:"kind"`    // cpu | memory | disk
+	Ordered string  `json:"ordered"` // 订购配置展示文案
+	Actual  string  `json:"actual"`  // 实际配置展示文案
 }
 
 // hwLottery 返回给前端的比对结果
 type hwLottery struct {
+	Tier int `json:"tier,omitempty"`
 	// Checked=false 表示没拿到订购配置(权限不足 / 老合同没有 options 等),前端不显示任何中奖标识
 	Checked  bool            `json:"checked"`
 	Won      bool            `json:"won"`
@@ -96,6 +99,47 @@ type hwCacheEntry struct {
 
 var hwCacheMu sync.Mutex
 var hwOrderedSpecCache = map[hwCacheKey]hwCacheEntry{}
+
+type hwLotterySummary struct {
+	Won  bool `json:"won"`
+	Tier int  `json:"tier"`
+}
+type hwLotterySummaryEntry struct {
+	value   hwLotterySummary
+	expires time.Time
+}
+
+var hwLotterySummaries = map[hwCacheKey]hwLotterySummaryEntry{}
+
+func hwSaveSummary(key hwCacheKey, lot hwLottery) {
+	hwCacheMu.Lock()
+	defer hwCacheMu.Unlock()
+	if !lot.Checked {
+		delete(hwLotterySummaries, key)
+		return
+	}
+	if len(hwLotterySummaries) >= 512 {
+		for k := range hwLotterySummaries {
+			delete(hwLotterySummaries, k)
+			break
+		}
+	}
+	hwLotterySummaries[key] = hwLotterySummaryEntry{hwLotterySummary{lot.Won, lot.Tier}, time.Now().Add(hwOrderedTTL)}
+}
+func hwReadSummary(key hwCacheKey) *hwLotterySummary {
+	hwCacheMu.Lock()
+	defer hwCacheMu.Unlock()
+	entry, ok := hwLotterySummaries[key]
+	if !ok {
+		return nil
+	}
+	if !time.Now().Before(entry.expires) {
+		delete(hwLotterySummaries, key)
+		return nil
+	}
+	value := entry.value
+	return &value
+}
 
 func hwCachedSpec(key hwCacheKey, now time.Time) *hwOrderedSpec {
 	hwCacheMu.Lock()
@@ -236,6 +280,7 @@ func hwComputeLottery(spec *hwOrderedSpec, hardware map[string]interface{}) hwLo
 				Kind:    "memory",
 				Ordered: hwFmtGB(spec.MemoryGB),
 				Actual:  hwFmtGB(actualGB),
+				GainPct: (actualGB - spec.MemoryGB) / spec.MemoryGB * 100,
 			})
 		}
 	}
@@ -282,12 +327,20 @@ func hwComputeLottery(spec *hwOrderedSpec, hardware map[string]interface{}) hwLo
 					Kind:    "disk",
 					Ordered: strings.Join(ordParts, " + "),
 					Actual:  strings.Join(actParts, " + "),
+					MediaUp: better,
+					GainPct: func() float64 {
+						if ordTotal > 0 && bigger {
+							return (actTotal - ordTotal) / ordTotal * 100
+						}
+						return 0
+					}(),
 				})
 			}
 		}
 	}
 
 	res.Won = len(res.Items) > 0
+	res.Tier = len(res.Items)
 	return res
 }
 

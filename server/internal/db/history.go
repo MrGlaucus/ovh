@@ -9,6 +9,7 @@ import (
 )
 
 type historyRow struct {
+	Note             string         `db:"note"`
 	ID               string         `db:"id"`
 	AccountID        string         `db:"account_id"`
 	TaskID           string         `db:"task_id"`
@@ -68,6 +69,7 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		}
 	}
 	return types.PurchaseHistoryEntry{
+		Note:             r.Note,
 		ID:               r.ID,
 		AccountID:        r.AccountID,
 		TaskID:           r.TaskID,
@@ -103,6 +105,7 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		return historyRow{}, err
 	}
 	row := historyRow{
+		Note:             h.Note,
 		ID:               h.ID,
 		AccountID:        h.AccountID,
 		TaskID:           h.TaskID,
@@ -178,11 +181,11 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO history
-			(id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
+			(note, id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
 			 error_message, purchase_time, attempt_count, expiration_time, retraction_time, price,
 			 order_status, order_status_at, timing, total_ms, delay_seconds, refund, refund_checked_at, refund_check_error)
 			VALUES
-			(:id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
+			(:note, :id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 			 :error_message, :purchase_time, :attempt_count, :expiration_time, :retraction_time, :price,
 			 :order_status, :order_status_at, :timing, :total_ms, :delay_seconds, :refund, :refund_checked_at, :refund_check_error)
 		`, r)

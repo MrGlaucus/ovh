@@ -262,6 +262,7 @@ function ServerSelector({
             >
               <StatusDot tone={s.state === "ok" ? "success" : "warning"} size="xs" />
               <span className="font-semibold">{maskSensitive(displayName(s), hidden)}</span>
+                      {s.lottery?.won && <span className="text-xs text-amber-600">{s.lottery.tier === 3 ? "头奖" : s.lottery.tier === 2 ? "大奖" : "中奖"}</span>}
               <span className="text-[11px] text-muted-foreground font-sans ml-1">
                 {s.commercialRange} · {(s.datacenter || "").toUpperCase()}
               </span>

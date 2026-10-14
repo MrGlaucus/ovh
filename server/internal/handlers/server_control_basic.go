@@ -170,6 +170,10 @@ func ListMyServers(state *app.State) gin.HandlerFunc {
 				entry["svcInfoError"] = r.svcInfoError.Error()
 			}
 			servers = append(servers, entry)
+			account, _ := ovhAccountFor(state, c)
+			if summary := hwReadSummary(hwCacheKey{account: account.ID, client: client, service: name}); summary != nil {
+				entry["lottery"] = summary
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"success": true, "servers": servers, "total": len(servers)})
 	}

@@ -30,6 +30,7 @@ export interface OwnedVps {
 }
 
 export interface VpsServiceInfo {
+  renewalManualUnsupported?: boolean;
   status: string;
   expiration: string;
   creation: string;

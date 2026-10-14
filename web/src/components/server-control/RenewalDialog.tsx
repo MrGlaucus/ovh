@@ -95,6 +95,7 @@ export function RenewalDialog({
     e?.response?.data?.error || e?.response?.data?.message || e?.message || fallback;
 
   const handleSubmit = async () => {
+    if (mode === "manual" && info.renewalManualUnsupported) { toast.error("US 账户不支持手动续费，请选择自动续费或到期终止"); return; }
     if (mode === "delete") {
       try {
         const res = await policyMut.mutateAsync({ policy: "terminateAtExpirationDate" });
@@ -171,6 +172,7 @@ export function RenewalDialog({
                   <button
                     key={opt.value}
                     type="button"
+                    disabled={busy || (opt.value === "manual" && info.renewalManualUnsupported)}
                     onClick={() => setMode(opt.value)}
                     className={[
                       "w-full text-left rounded-xl border px-3.5 py-2.5 transition-colors",
@@ -193,7 +195,7 @@ export function RenewalDialog({
                         <span className="ml-auto text-[10px] text-muted-foreground">当前</span>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground mt-1 ml-6">{opt.desc}</p>
+                    <p className="text-[11px] text-muted-foreground mt-1 ml-6">{opt.value === "manual" && info.renewalManualUnsupported ? "US 账户不支持手动续费" : opt.desc}</p>
                   </button>
                 );
               })}

@@ -6,6 +6,7 @@ import type { PartialList } from "./partial-list";
 import { useActiveAccount } from "@/hooks/use-active-account";
 
 export interface OwnedServer {
+  lottery?: { won: boolean; tier: number };
   serviceName: string;
   name: string;
   commercialRange: string;
@@ -33,9 +34,10 @@ export interface OwnedServer {
 }
 
 export interface HardwareLottery {
+ tier?: number;
  checked: boolean;
  won: boolean;
- items: { kind: "cpu" | "memory" | "disk"; ordered: string; actual: string }[];
+ items: { kind: "cpu" | "memory" | "disk"; ordered: string; actual: string; gainPct?: number; mediaUp?: boolean }[];
  reason?: string;
 }
 
@@ -51,6 +53,7 @@ export interface HardwareInfo {
 }
 
 export interface ServiceInfo {
+  renewalManualUnsupported?: boolean;
   status: string;
   expiration: string;
   creation: string;
