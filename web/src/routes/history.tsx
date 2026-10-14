@@ -169,6 +169,10 @@ function refundExpiredTitle(deadlineMs: number): string {
   return `退款窗口（OVH 14 天撤回权）已结束，已于 ${fmtDeadline(deadlineMs)} 截止`;
 }
 
+const orderStatusFilters = [
+  "notPaid", "checking", "delivering", "delivered", "cancelling", "cancelled", "documentsRequested", "unknown",
+] as const;
+
 function HistoryPage() {
   const linked = Route.useSearch();
   const list = useHistory();
@@ -184,7 +188,7 @@ function HistoryPage() {
   const [search, setSearch] = useState("");
   const [accountFilter, setAccountFilter] = useState(linked.account || "all");
   useEffect(() => { setAccountFilter(linked.account || "all"); setSearch(linked.order || ""); }, [linked.account, linked.order]);
-  const [statusFilter, setStatusFilter] = useState<"all" | "success" | "failed">("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmClearFailed, setConfirmClearFailed] = useState(false);
   const [deleteItem, setDeleteItem] = useState<PurchaseHistory | null>(null);
@@ -214,7 +218,17 @@ function HistoryPage() {
     return items
       .filter((i) => {
         if (accountFilter !== "all" && (accountFilter === "unassigned" ? !!i.accountId : i.accountId !== accountFilter)) return false;
-        if (statusFilter !== "all" && i.status !== statusFilter) return false;
+        if (statusFilter === "success" || statusFilter === "failed") {
+          if (i.status !== statusFilter) return false;
+        } else if (statusFilter !== "all") {
+          if (i.status !== "success") return false;
+          if (statusFilter === "refunded") {
+            if (!i.refund) return false;
+          } else if (statusFilter === "unqueried") {
+            // Match the status badge's fallback, including unrecognized API values.
+            if (orderStatusFilters.some((status) => status === i.orderStatus)) return false;
+          } else if (i.orderStatus !== statusFilter) return false;
+        }
         if (linked.order && search === linked.order && i.orderId !== linked.order) return false;
         if (s && !`${serverNames.get(i.planCode) || ""} ${i.planCode} ${i.datacenter} ${i.orderId || ""}`.toLowerCase().includes(s)) return false;
         return true;
@@ -284,14 +298,19 @@ function HistoryPage() {
                 {items.some((item) => !item.accountId) && <SelectItem value="unassigned">未关联账户</SelectItem>}
               </SelectContent>
             </Select>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-              <SelectTrigger className="rounded-full">
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="rounded-full min-w-0" aria-label="筛选订单状态">
                 <SelectValue placeholder="所有状态" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">所有状态</SelectItem>
-                <SelectItem value="success">成功</SelectItem>
-                <SelectItem value="failed">失败</SelectItem>
+                <SelectItem value="success">下单成功（全部）</SelectItem>
+                <SelectItem value="failed">下单失败</SelectItem>
+                {orderStatusFilters.map((status) => (
+                  <SelectItem key={status} value={status}>{orderStatusView({ orderStatus: status }).label}</SelectItem>
+                ))}
+                <SelectItem value="unqueried">状态未查到</SelectItem>
+                <SelectItem value="refunded">已退款</SelectItem>
               </SelectContent>
             </Select>
           </div>
