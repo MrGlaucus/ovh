@@ -1081,7 +1081,7 @@ func backfillOrderDetail(state *app.State, client *ovhsdk.Client, taskID, orderI
 		}
 		changed := false
 		if orderStatus != "" {
-			state.History[i].OrderStatus = orderStatus
+			state.History[i].SetOrderStatus(orderStatus)
 			state.History[i].OrderStatusAt = types.NowISO()
 			changed = true
 		}

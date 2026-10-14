@@ -294,7 +294,7 @@ func syncOfficialOrdersToHistory(state *app.State, accountID string, orders []ac
 		at, valid := types.ParseTS(o.OrderStatusAt)
 		old, _ := types.ParseTS(h.OrderStatusAt)
 		if valid && !at.Before(old) {
-			h.OrderStatus = o.OrderStatus
+			h.SetOrderStatus(o.OrderStatus)
 			h.OrderStatusAt = o.OrderStatusAt
 		}
 		if o.Refund != nil {

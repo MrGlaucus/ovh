@@ -348,7 +348,7 @@ func ApplyOrderStatus(state *app.State, entryID, status string) bool {
 			state.Logger.Info(fmt.Sprintf("订单 %s 状态: %s → %s", state.History[i].OrderID,
 				state.History[i].OrderStatus, status), "purchase")
 		}
-		state.History[i].OrderStatus = status
+		state.History[i].SetOrderStatus(status)
 		state.History[i].OrderStatusAt = types.NowISO()
 		return changed
 	}

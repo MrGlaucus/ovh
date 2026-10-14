@@ -141,7 +141,7 @@ func refresh(s *app.State, now time.Time) []Item {
 			}
 			// Do not overwrite a concurrent refresh that completed after our snapshot.
 			if current.OrderStatusAt == h.OrderStatusAt {
-				current.OrderStatus = status
+				current.SetOrderStatus(status)
 				current.OrderStatusAt = types.NowISO()
 			}
 			if refund != nil {

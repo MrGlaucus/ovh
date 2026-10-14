@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser, RotateCcw, FileDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
+import { HistoryStatistics } from "@/components/common/HistoryStatistics";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -315,6 +316,7 @@ function HistoryPage() {
               </SelectContent>
             </Select>
           </div>
+          {!list.isPending && !list.isError && <HistoryStatistics items={items} accounts={accountOptions} account={accountFilter} now={now} onSelect={(account, status) => { setAccountFilter(account); setStatusFilter(status); setSearch(""); }} />}
         </CardContent>
       </Card>
 

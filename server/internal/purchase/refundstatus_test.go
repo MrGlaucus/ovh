@@ -14,6 +14,22 @@ type refundFixture struct {
 	calls     map[string]int
 }
 
+func TestRefundLookupRetainsAllCreditNotes(t *testing.T) {
+	f := &refundFixture{calls: map[string]int{}, responses: map[string]string{
+		"/me/bill?orderId=100": `["B"]`, "/me/bill/B": `{"orderId":100}`,
+		"/me/refund":    `["R1","R2"]`,
+		"/me/refund/R1": `{"refundId":"R1","originalBillId":"B","date":"2026-10-01T00:00:00Z","priceWithTax":{"value":3,"currencyCode":"EUR"}}`,
+		"/me/refund/R2": `{"refundId":"R2","originalBillId":"B","date":"2026-10-02T00:00:00Z","priceWithTax":{"value":7,"currencyCode":"EUR"}}`,
+	}}
+	info, err := FetchOrderRefund(f, "100")
+	if err != nil || info == nil || info.ID != "R2" || len(info.Records) != 2 {
+		t.Fatalf("lost credit notes: %+v %v", info, err)
+	}
+	if len(info.Records[0].Records) != 0 {
+		t.Fatal("recursive refund records")
+	}
+}
+
 func TestManualRefundRefreshSkipsUnpaid(t *testing.T) {
 	state := &app.State{History: []types.PurchaseHistoryEntry{{ID: "unpaid", Status: "success", OrderID: "100", AccountID: "a", OrderStatus: "notPaid"}}}
 	// No client or DB is configured: a manual refresh must make no requests.

@@ -168,7 +168,9 @@ func (index refundIndex) findBills(billIDs []string) (*types.RefundInfo, error) 
 		}
 		return refunds[i].Date > refunds[j].Date
 	})
-	return &refunds[0], nil
+	latest := refunds[0]
+	latest.Records = refunds
+	return &latest, nil
 }
 
 // RefreshRefundStatuses 给还没标记退款的成功单各查一次退款记录，命中就写回。
@@ -182,7 +184,7 @@ func RefreshRefundStatuses(state *app.State, force bool) int {
 	var targets []target
 	now := time.Now()
 	for _, h := range state.History {
-		if h.Status != "success" || h.OrderID == "" || h.Refund != nil {
+		if h.Status != "success" || h.OrderID == "" || (!force && h.Refund != nil) {
 			continue
 		}
 		// 没付款的订单不会产生退款：未付款被取消是作废，不是退款
@@ -278,9 +280,12 @@ func ApplyRefundCheck(state *app.State, entryID string, info *types.RefundInfo) 
 			return false
 		}
 		if state.History[i].Refund != nil && state.History[i].Refund.ID == info.ID {
+			state.History[i].Refund = info
+			state.History[i].PaymentConfirmed = true
 			return false
 		}
 		state.History[i].Refund = info
+		state.History[i].PaymentConfirmed = true
 		state.Logger.Info(fmt.Sprintf("订单 %s 已退款(退款单 %s, %s)", state.History[i].OrderID, info.ID, info.Date), "purchase")
 		return true
 	}

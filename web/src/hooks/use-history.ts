@@ -5,6 +5,7 @@ import { qk } from "@/lib/query";
 import { toast } from "sonner";
 
 export interface PurchaseHistory {
+  paymentConfirmed?: boolean;
 	 note?: string;
   id: string;
   accountId: string;
@@ -43,6 +44,7 @@ export interface PurchaseHistory {
    * OVH 退款单没有状态机，只有"有/没有"，到账时间差在支付渠道侧。
    */
   refund?: {
+    records?: { id: string; price?: { withTax?: number; currencyCode?: string } }[];
     originalBillId?: string;
     refundOrderId?: string;
     id: string;

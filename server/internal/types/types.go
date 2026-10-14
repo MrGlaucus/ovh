@@ -210,31 +210,33 @@ type PriceInfo struct {
 // 退款单可能使用新的退款订单号，通过 originalBillId 与原购买发票关联。
 // 这里只存核对与展示必需的事实：单号、日期、金额、PDF 链接。
 type RefundInfo struct {
-	OriginalBillID string     `json:"originalBillId,omitempty"`
-	RefundOrderID  string     `json:"refundOrderId,omitempty"`
-	ID             string     `json:"id"`
-	Date           string     `json:"date,omitempty"`
-	Price          *PriceInfo `json:"price,omitempty"`
+	Records        []RefundInfo `json:"records,omitempty"` // All associated credit notes; top-level fields keep the latest for existing UI.
+	OriginalBillID string       `json:"originalBillId,omitempty"`
+	RefundOrderID  string       `json:"refundOrderId,omitempty"`
+	ID             string       `json:"id"`
+	Date           string       `json:"date,omitempty"`
+	Price          *PriceInfo   `json:"price,omitempty"`
 	// PDFURL 退款单 PDF 下载链接（OVH 返回原值，前端直接给用户）。
 	PDFURL string `json:"pdfUrl,omitempty"`
 }
 
 // PurchaseHistoryEntry 抢购历史
 type PurchaseHistoryEntry struct {
-	Note           string   `json:"note"`
-	ID             string   `json:"id"`
-	AccountID      string   `json:"accountId"` // 哪个账户买的
-	TaskID         string   `json:"taskId"`
-	PlanCode       string   `json:"planCode"`
-	Datacenter     string   `json:"datacenter"`
-	Options        []string `json:"options"`
-	Status         string   `json:"status"` // success / failed
-	OrderID        string   `json:"orderId"`
-	OrderURL       string   `json:"orderUrl"`
-	ErrorMessage   *string  `json:"errorMessage"`
-	PurchaseTime   string   `json:"purchaseTime"`
-	AttemptCount   int      `json:"attemptCount"`
-	ExpirationTime string   `json:"expirationTime,omitempty"`
+	PaymentConfirmed bool     `json:"paymentConfirmed,omitempty"`
+	Note             string   `json:"note"`
+	ID               string   `json:"id"`
+	AccountID        string   `json:"accountId"` // 哪个账户买的
+	TaskID           string   `json:"taskId"`
+	PlanCode         string   `json:"planCode"`
+	Datacenter       string   `json:"datacenter"`
+	Options          []string `json:"options"`
+	Status           string   `json:"status"` // success / failed
+	OrderID          string   `json:"orderId"`
+	OrderURL         string   `json:"orderUrl"`
+	ErrorMessage     *string  `json:"errorMessage"`
+	PurchaseTime     string   `json:"purchaseTime"`
+	AttemptCount     int      `json:"attemptCount"`
+	ExpirationTime   string   `json:"expirationTime,omitempty"`
 	// RetractionTime 订单的撤销权截止时间（billing.Order.retractionDate）。
 	// 单独开一个字段而不是塞进 ExpirationTime：retractionDate 是"多久内可无理由撤单"，
 	// expirationDate 是"订单未付款何时作废"，语义不同，混用会让用户把撤销期当成付款截止期。
@@ -261,6 +263,12 @@ type PurchaseHistoryEntry struct {
 	// 它给非 force 的批量入口做按小时节流用(手动刷新不受它限制)。
 	RefundCheckedAt  string `json:"refundCheckedAt,omitempty"`
 	RefundCheckError string `json:"refundCheckError,omitempty"`
+}
+
+// Preserve positive payment evidence when an order later becomes cancelled.
+func (h *PurchaseHistoryEntry) SetOrderStatus(status string) {
+	h.PaymentConfirmed = h.PaymentConfirmed || h.OrderStatus == "delivering" || h.OrderStatus == "delivered" || status == "delivering" || status == "delivered" || h.Refund != nil
+	h.OrderStatus = status
 }
 
 // PhaseTiming 抢购链路上一个阶段的墙钟耗时

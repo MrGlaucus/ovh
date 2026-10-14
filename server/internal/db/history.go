@@ -9,6 +9,7 @@ import (
 )
 
 type historyRow struct {
+	PaymentConfirmed bool           `db:"payment_confirmed"`
 	Note             string         `db:"note"`
 	ID               string         `db:"id"`
 	AccountID        string         `db:"account_id"`
@@ -69,6 +70,7 @@ func rowToHistory(r historyRow) types.PurchaseHistoryEntry {
 		}
 	}
 	return types.PurchaseHistoryEntry{
+		PaymentConfirmed: r.PaymentConfirmed || r.OrderStatus == "delivering" || r.OrderStatus == "delivered" || refund != nil,
 		Note:             r.Note,
 		ID:               r.ID,
 		AccountID:        r.AccountID,
@@ -105,6 +107,7 @@ func historyToRow(h types.PurchaseHistoryEntry) (historyRow, error) {
 		return historyRow{}, err
 	}
 	row := historyRow{
+		PaymentConfirmed: h.PaymentConfirmed || h.OrderStatus == "delivering" || h.OrderStatus == "delivered" || h.Refund != nil,
 		Note:             h.Note,
 		ID:               h.ID,
 		AccountID:        h.AccountID,
@@ -181,11 +184,11 @@ func (db *DB) ReplaceHistory(items []types.PurchaseHistoryEntry) error {
 		}
 		_, err = tx.NamedExec(`
 			INSERT INTO history
-			(note, id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
+			(payment_confirmed, note, id, account_id, task_id, plan_code, datacenter, options, status, order_id, order_url,
 			 error_message, purchase_time, attempt_count, expiration_time, retraction_time, price,
 			 order_status, order_status_at, timing, total_ms, delay_seconds, refund, refund_checked_at, refund_check_error)
 			VALUES
-			(:note, :id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
+			(:payment_confirmed, :note, :id, :account_id, :task_id, :plan_code, :datacenter, :options, :status, :order_id, :order_url,
 			 :error_message, :purchase_time, :attempt_count, :expiration_time, :retraction_time, :price,
 			 :order_status, :order_status_at, :timing, :total_ms, :delay_seconds, :refund, :refund_checked_at, :refund_check_error)
 		`, r)
