@@ -3,6 +3,7 @@ import { Clock, RefreshCw, Trash2, Search, Hourglass, Timer, CreditCard, Eraser,
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { HistoryStatistics } from "@/components/common/HistoryStatistics";
+import { rangeStart, storedTime, type HistoryRange } from "@/lib/history-stats";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -191,6 +192,7 @@ function HistoryPage() {
   const [accountFilter, setAccountFilter] = useState(linked.account || "all");
   useEffect(() => { setAccountFilter(linked.account || "all"); setSearch(linked.order || ""); }, [linked.account, linked.order]);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [timeRange, setTimeRange] = useState<HistoryRange>("all");
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmClearFailed, setConfirmClearFailed] = useState(false);
   const [deleteItem, setDeleteItem] = useState<PurchaseHistory | null>(null);
@@ -213,12 +215,17 @@ function HistoryPage() {
   }, [accounts.data, list.data]);
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
+    const start = rangeStart(timeRange, now);
     const timeOf = (i: PurchaseHistory) => {
       const t = parseStoredTime(i.purchaseTime).getTime();
       return Number.isFinite(t) ? t : 0;
     };
     return items
       .filter((i) => {
+        if (timeRange !== "all") {
+          const purchasedAt = storedTime(i.purchaseTime);
+          if (!Number.isFinite(purchasedAt) || purchasedAt < start || purchasedAt > now) return false;
+        }
         if (accountFilter !== "all" && (accountFilter === "unassigned" ? !!i.accountId : i.accountId !== accountFilter)) return false;
         if (statusFilter === "success" || statusFilter === "failed") {
           if (i.status !== statusFilter) return false;
@@ -238,7 +245,7 @@ function HistoryPage() {
       // 后端按写入顺序返回（最早的在最前），展示一律最新的在最上 —— 打开页面
       // 第一眼就是刚下完的那单，不用先滚到底。
       .sort((a, b) => timeOf(b) - timeOf(a));
-  }, [items, search, serverNames, statusFilter, accountFilter, linked.order]);
+  }, [items, search, serverNames, statusFilter, accountFilter, linked.order, timeRange, now]);
   const failedCount = useMemo(() => items.filter((i) => i.status === "failed").length, [items]);
 
   return (
@@ -316,7 +323,7 @@ function HistoryPage() {
               </SelectContent>
             </Select>
           </div>
-          {!list.isPending && !list.isError && <HistoryStatistics items={items} accounts={accountOptions} account={accountFilter} now={now} onSelect={(account, status) => { setAccountFilter(account); setStatusFilter(status); setSearch(""); }} />}
+          {!list.isPending && !list.isError && <HistoryStatistics items={items} accounts={accountOptions} account={accountFilter} now={now} range={timeRange} onRangeChange={setTimeRange} onSelect={(account, status) => { setAccountFilter(account); setStatusFilter(status); setSearch(""); }} />}
         </CardContent>
       </Card>
 

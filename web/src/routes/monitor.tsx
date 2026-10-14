@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
+import { RestockHeatmap } from "@/components/common/RestockHeatmap";
+import { stockConfigKey, stockTime } from "@/lib/restock-heatmap";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -454,6 +456,12 @@ function SubRow({
 
 function HistoryPanel({ planCode }: { planCode: string }) {
   const history = useMonitorHistory(planCode);
+  const [datacenter, setDatacenter] = useState("all");
+  const [configuration, setConfiguration] = useState("all");
+  const allEntries = history.data || [];
+  const datacenters = [...new Set(allEntries.map((entry) => entry.datacenter?.toLowerCase()).filter(Boolean))].sort();
+  const configs = new Map(allEntries.map((entry) => [stockConfigKey(entry), entry.config?.display || [entry.config?.memory, entry.config?.storage].filter(Boolean).join(" · ") || entry.config?.config_key || "配置未记录"]));
+  const entries = allEntries.filter((entry) => (datacenter === "all" || entry.datacenter?.toLowerCase() === datacenter) && (configuration === "all" || stockConfigKey(entry) === configuration));
 
   if (history.isPending) {
     return (
@@ -479,16 +487,26 @@ function HistoryPanel({ planCode }: { planCode: string }) {
     );
   }
 
-  const entries = history.data || [];
-
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
         <HistoryIcon className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm font-medium">变化历史</span>
+        <Button variant="ghost" size="sm" className="ml-auto" disabled={history.isFetching} onClick={() => history.refetch()}><RefreshCw className={`w-3 h-3 ${history.isFetching ? "animate-spin" : ""}`} />刷新</Button>
       </div>
+      {allEntries.length > 0 && <>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+          <select aria-label="历史机房筛选" value={datacenter} onChange={(e) => setDatacenter(e.target.value)} className="rounded-md border border-input bg-background p-2 text-xs min-w-0">
+            <option value="all">全部机房</option>{datacenters.map((dc) => <option key={dc} value={dc}>{dc.toUpperCase()}</option>)}
+          </select>
+          <select aria-label="历史配置筛选" value={configuration} onChange={(e) => setConfiguration(e.target.value)} className="rounded-md border border-input bg-background p-2 text-xs min-w-0">
+            <option value="all">全部配置</option>{[...configs].map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </div>
+        <RestockHeatmap entries={entries} />
+      </>}
       {entries.length === 0 ? (
-        <p className="text-xs text-muted-foreground text-center py-4">暂无历史记录</p>
+        <p className="text-xs text-muted-foreground text-center py-4">{allEntries.length ? "当前筛选下暂无历史记录" : "暂无历史记录"}</p>
       ) : (
         <div className="space-y-2 max-h-64 overflow-y-auto">
           {entries.map((e, i) => (
@@ -524,12 +542,9 @@ function HistoryPanel({ planCode }: { planCode: string }) {
 }
 
 function formatTime(ts: string): string {
-  const d = new Date(ts);
+  const d = new Date(stockTime(ts));
   if (isNaN(d.getTime())) return ts;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return d.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) + "（北京时间）";
 }
 
 /* ----------------------------- 添加订阅 Dialog ----------------------------- */

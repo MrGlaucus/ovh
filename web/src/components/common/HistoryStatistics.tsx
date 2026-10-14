@@ -30,11 +30,11 @@ function Counts({ stats, onSelect, compact = false }: { stats: HistoryStats; onS
   </span>;
 }
 
-export function HistoryStatistics({ items, accounts, account, now, onSelect }: {
+export function HistoryStatistics({ items, accounts, account, now, range, onRangeChange, onSelect }: {
   items: PurchaseHistory[]; accounts: { id: string; label: string }[]; account: string; now: number;
+  range: HistoryRange; onRangeChange: (range: HistoryRange) => void;
   onSelect: (account: string, status: string) => void;
 }) {
-  const [range, setRange] = useState<HistoryRange>("all");
   const [expanded, setExpanded] = useState(() => { try { return localStorage.getItem("history-statistics-expanded") === "1"; } catch { return false; } });
   const data = useMemo(() => historyStats(items, range, now, account), [items, range, now, account]);
   const label = (id: string) => !id || id === "unassigned" ? "未关联账户" : accounts.find((a) => a.id === id)?.label || `未知账户 · ${id}`;
@@ -42,8 +42,8 @@ export function HistoryStatistics({ items, accounts, account, now, onSelect }: {
   return <div className="mt-3 border-t border-border pt-2 space-y-2">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
       <span className="text-xs font-medium" title="仅统计本面板历史；随账户和时间范围变化，不受搜索及状态筛选影响">{account === "all" ? "账户统计" : label(account)}</span>
-      <div className="inline-flex rounded-md bg-muted p-0.5" aria-label="统计时间范围">
-        {([ ["today", "今日"], ["month", "本月"], ["all", "全部"] ] as const).map(([value, text]) => <button key={value} type="button" aria-pressed={range === value} onClick={() => setRange(value)} className={`px-2 py-1 text-xs rounded ${range === value ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}>{text}</button>)}
+      <div className="inline-flex rounded-md bg-muted p-0.5" aria-label="统计及列表时间范围">
+        {([ ["today", "今日"], ["month", "本月"], ["all", "全部"] ] as const).map(([value, text]) => <button key={value} type="button" aria-pressed={range === value} onClick={() => onRangeChange(value)} className={`px-2 py-1 text-xs rounded ${range === value ? "bg-background shadow-sm font-medium" : "text-muted-foreground"}`}>{text}</button>)}
       </div>
       <Counts stats={data.total} compact onSelect={(status) => select(account, status)} />
       <div className="order-last w-full md:order-none md:w-auto md:ml-auto"><Money stats={data.total} /></div>
@@ -58,7 +58,7 @@ export function HistoryStatistics({ items, accounts, account, now, onSelect }: {
         </div>)}
         {!data.total.orders && <p className="text-xs text-muted-foreground py-2">该范围暂无订单</p>}
       </div>
-      <p className="text-[10px] text-muted-foreground">按北京时间的下单时间统计，仅随账户和时间切换；状态数量按账户＋原订单号去重，已退款可与订单状态重叠。金额含税、按币种分列；核验中暂不计付款。退款为已关联退款单金额，不代表到账。净支出仅计算已确认金额。点击状态筛选列表，但不会限制列表时间。{data.invalidDates > 0 && ` ${data.invalidDates}单下单时间无效，仅纳入全部范围。`}</p>
+      <p className="text-[10px] text-muted-foreground">按北京时间的下单时间统计，仅随账户和时间切换；状态数量按账户＋原订单号去重，已退款可与订单状态重叠。金额含税、按币种分列；核验中暂不计付款。退款为已关联退款单金额，不代表到账。净支出仅计算已确认金额。时间切换同时筛选统计和列表，可叠加账户、状态和搜索条件。{data.invalidDates > 0 && ` ${data.invalidDates}单下单时间无效，仅纳入全部范围。`}</p>
     </>}
   </div>;
 }
