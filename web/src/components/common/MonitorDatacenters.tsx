@@ -16,16 +16,18 @@ const flags: Record<string, string> = {
   新加坡: sg, 澳大利亚: au,
 };
 
-export function DatacenterChip({ code, plain = false, selected = false }: { code: string; plain?: boolean; selected?: boolean }) {
+export function DatacenterChip({ code, plain = false, selected = false, stacked = false }: { code: string; plain?: boolean; selected?: boolean; stacked?: boolean }) {
   const normalized = code.trim().toLowerCase();
   const dc = OVH_DATACENTERS.find((item) => item.code === normalized || item.apiCode === normalized);
   const displayCode = (dc?.code || normalized).toUpperCase();
   const label = dc ? `${dc.region} · ${dc.name}` : "未知位置";
   return (
-    <span title={`${displayCode} · ${label}`} className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 text-[11px] leading-4 ${plain ? "" : "rounded-md border border-border bg-secondary/40 px-2 py-1"}`}>
+    <span title={`${displayCode} · ${label}`} className={`inline-flex min-w-0 max-w-full text-[11px] leading-4 ${stacked ? "w-full flex-col items-start gap-0.5" : "flex-wrap items-center gap-x-1.5"} ${plain ? "" : "rounded-md border border-border bg-secondary/40 px-2 py-1"}`}>
+      <span className="inline-flex max-w-full items-center gap-1.5">
       {dc && flags[dc.region] && <img src={flags[dc.region]} alt="" aria-hidden="true" width={16} height={12} className="h-3 w-4 shrink-0 rounded-[2px] object-cover ring-1 ring-black/10" />}
-      <span className="font-mono font-semibold break-all">{displayCode || "未指定机房"}</span>
-      <span className={selected ? "text-background/80" : "text-muted-foreground"}>{label}</span>
+      <span className="font-mono font-semibold truncate">{displayCode || "未指定机房"}</span>
+      </span>
+      <span className={`${selected ? "text-background/80" : "text-muted-foreground"} ${stacked ? "block w-full truncate" : ""}`}>{label}</span>
     </span>
   );
 }

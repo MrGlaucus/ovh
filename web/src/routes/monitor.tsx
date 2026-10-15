@@ -837,7 +837,7 @@ function AddSubscriptionDialog({
               {OVH_DATACENTERS.map((dc) => {
                 const selected = datacenters.includes(dc.code);
                 return <button key={dc.code} type="button" onClick={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} className={"text-left border rounded-lg px-2.5 py-2 transition-colors " + (selected ? "border-foreground bg-foreground text-background" : "border-border hover:bg-secondary/50")}>
-                  <DatacenterChip code={dc.code} plain selected={selected} />
+                  <DatacenterChip code={dc.code} plain selected={selected} stacked />
                 </button>;
               })}
             </div>

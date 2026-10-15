@@ -849,7 +849,7 @@ function DetailContent({
                   }
                 >
                   <div className="min-w-0">
-                    <DatacenterChip code={dc.code} plain selected={isSelected} />
+                    <DatacenterChip code={dc.code} plain selected={isSelected} stacked />
                   </div>
                   <StatusDot tone={isOk ? "success" : "danger"} size="sm" pulse={isOk && !isSelected} />
                 </button>

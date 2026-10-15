@@ -766,7 +766,7 @@ function CreateQueueDialog({
                       checked={checked}
                       onCheckedChange={() => toggleDC(dc.code)}
                     />
-                    <DatacenterChip code={dc.code} />
+                    <DatacenterChip code={dc.code} stacked />
                   </label>
                 );
               })}
