@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import { UpdateButton } from "@/components/common/UpdateButton";
 import { RefundReminders } from "@/components/common/RefundReminders";
+import { AccountChip } from "@/components/common/AccountChip";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 import { PageHeader } from "@/components/common/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -188,13 +190,15 @@ function DashboardPage() {
                         <p className="text-[11px] text-muted-foreground truncate mt-0.5" title={q.options?.join(" · ") || "默认配置"}>
                           {config.length > 0 ? config.join(" · ") : "默认配置"}
                         </p>
-                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                          <AccountChip accountId={q.accountId} className="max-w-full whitespace-normal break-words" />
+                          <DatacenterChip code={q.datacenter} />
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-1">
                           <span className="inline-flex items-center gap-1">
                             <Clock className="w-3 h-3" />
-                            {q.datacenter.toUpperCase()}
+                            第 {q.retryCount + 1} 次尝试
                           </span>
-                          <span className="text-muted-foreground/50">·</span>
-                          <span>第 {q.retryCount + 1} 次尝试</span>
                         </div>
                       </div>
                       <QueueStatusChip status={q.status} />

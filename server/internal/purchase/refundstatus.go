@@ -174,7 +174,7 @@ func (index refundIndex) findBills(billIDs []string) (*types.RefundInfo, error) 
 }
 
 // RefreshRefundStatuses 给还没标记退款的成功单各查一次退款记录，命中就写回。
-// force=true 跳过节流（手动刷新用，也是目前唯一的调用方式）。返回这次新标记了几条。
+// force=true 跳过节流与账龄限制，但已有退款记录始终跳过。返回这次新标记了几条。
 func RefreshRefundStatuses(state *app.State, force bool) int {
 	// 先拍快照，网络请求不能拿着 HistoryMu
 	state.HistoryMu.Lock()
@@ -184,7 +184,7 @@ func RefreshRefundStatuses(state *app.State, force bool) int {
 	var targets []target
 	now := time.Now()
 	for _, h := range state.History {
-		if h.Status != "success" || h.OrderID == "" || (!force && h.Refund != nil) {
+		if h.Status != "success" || h.OrderID == "" || h.Refund != nil {
 			continue
 		}
 		// 没付款的订单不会产生退款：未付款被取消是作废，不是退款

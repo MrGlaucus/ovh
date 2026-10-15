@@ -30,6 +30,29 @@ func TestRefundLookupRetainsAllCreditNotes(t *testing.T) {
 	}
 }
 
+func TestRefundRefreshSkipsAlreadyRefunded(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		name := "automatic"
+		if force {
+			name = "manual"
+		}
+		t.Run(name, func(t *testing.T) {
+			refund := &types.RefundInfo{ID: "R1"}
+			state := &app.State{History: []types.PurchaseHistoryEntry{{
+				ID: "refunded", Status: "success", OrderID: "100", AccountID: "a",
+				Refund: refund, RefundCheckedAt: "2026-10-01T00:00:00Z",
+			}}}
+			// No client or DB: even forced refresh must skip network and persistence.
+			if got := RefreshRefundStatuses(state, force); got != 0 {
+				t.Fatalf("updated=%d", got)
+			}
+			if state.History[0].Refund != refund || state.History[0].RefundCheckedAt != "2026-10-01T00:00:00Z" {
+				t.Fatal("existing refund changed during refresh")
+			}
+		})
+	}
+}
+
 func TestManualRefundRefreshSkipsUnpaid(t *testing.T) {
 	state := &app.State{History: []types.PurchaseHistoryEntry{{ID: "unpaid", Status: "success", OrderID: "100", AccountID: "a", OrderStatus: "notPaid"}}}
 	// No client or DB is configured: a manual refresh must make no requests.

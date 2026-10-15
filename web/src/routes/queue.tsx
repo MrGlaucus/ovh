@@ -50,6 +50,7 @@ import { useActiveAccount } from "@/hooks/use-active-account";
 import { useAccounts, findAccountByID } from "@/hooks/use-accounts";
 import { TimingChip } from "@/components/common/TimingChip";
 import { AccountChip } from "@/components/common/AccountChip";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 import { PlanCodeCombobox } from "@/components/common/PlanCodeCombobox";
 import { OptionGroupSection } from "@/components/common/OptionGroupSection";
 import { describeOptionCodes, groupOptions, type OptionGroupKey } from "@/lib/option-groups";
@@ -1034,7 +1035,7 @@ function QueueRow({
             <span className="font-semibold text-sm">{displayName || item.planCode}</span>
             {displayName && <span className="font-mono text-[11px] text-muted-foreground">{item.planCode}</span>}
             <AccountChip accountId={item.accountId} />
-            <Chip tone="default">DC {item.datacenter.toUpperCase()}</Chip>
+            <DatacenterChip code={item.datacenter} />
             {item.options && item.options.length > 0 && (
               // 以前只显示个数。而一个型号底下几套配置的差别恰恰在这里 ——
               // 同时下了三单时,用户看到三张"含 2 个可选配置"的卡片,

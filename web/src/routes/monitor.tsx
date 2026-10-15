@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { RestockHeatmap } from "@/components/common/RestockHeatmap";
+import { MonitorDatacenters } from "@/components/common/MonitorDatacenters";
 import { stockConfigKey, stockTime } from "@/lib/restock-heatmap";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -344,11 +345,7 @@ function SubRow({
               <span className="font-semibold text-sm">{displayName || sub.planCode}</span>
               {displayName && <span className="font-mono text-[11px] text-muted-foreground">{sub.planCode}</span>}
             </div>
-            <p className="text-xs text-muted-foreground mb-1.5">
-              {sub.datacenters.length > 0
-                ? `监控数据中心: ${sub.datacenters.join(", ")}`
-                : "监控所有数据中心"}
-            </p>
+            <MonitorDatacenters codes={sub.datacenters} />
             <div className="flex gap-1.5 flex-wrap items-center">
               {/* 盯全部配置 vs 只盯一套,是「会不会一次触发好几单」的分水岭,
                   必须在列表上一眼看得出来 */}
@@ -603,12 +600,11 @@ function AddSubscriptionDialog({
     if (matchedServer) return Object.values(picked).filter(Boolean) as string[];
     return splitList(extraOptions);
   }, [matchedServer, picked, extraOptions]);
-  // 订阅的下单账户 = 左侧菜单栏的全局账户,不再单独选
+  // 全局账户只作为新增默认值，订阅独立保存自己的下单账户。
   const [globalAccountId] = useActiveAccount();
   const accountsQ = useAccounts();
   const allAccounts = accountsQ.data;
-  const autoOrderAccountId =
-    globalAccountId || allAccounts?.find((a) => a.isDefault)?.id || allAccounts?.[0]?.id || "";
+  const [autoOrderAccountId, setAutoOrderAccountId] = useState("");
   const activeAcc = findAccountByID(allAccounts, autoOrderAccountId);
   // 账户列表读失败 ≠ 一个账户都没配。两种情况以前都显示「未选择账户」,
   // 然后自动下单被静默拦掉 —— 用户看到的是一条没有理由的死路:
@@ -621,6 +617,7 @@ function AddSubscriptionDialog({
     setNotifyAvailable(true);
     setNotifyUnavailable(false);
     setAutoOrder(false);
+    setAutoOrderAccountId(globalAccountId || allAccounts?.find((a) => a.isDefault)?.id || allAccounts?.[0]?.id || "");
     setQuantity(1);
     setAutoPay(false);
     setDelaySeconds(0);
@@ -644,6 +641,7 @@ function AddSubscriptionDialog({
       setNotifyAvailable(editing.notifyAvailable);
       setNotifyUnavailable(editing.notifyUnavailable);
       setAutoOrder(!!editing.autoOrder);
+      setAutoOrderAccountId(editing.autoOrderAccountId || globalAccountId || allAccounts?.find((a) => a.isDefault)?.id || allAccounts?.[0]?.id || "");
       setQuantity(editing.quantity && editing.quantity > 0 ? editing.quantity : 1);
       setAutoPay(!!editing.autoPay);
       setDelaySeconds(editing.delaySeconds || 0);
@@ -654,6 +652,12 @@ function AddSubscriptionDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing]);
+
+  // 账户异步加载后补默认值，不覆盖用户选择或已保存（包括已删除）的账户 ID。
+  useEffect(() => {
+    if (!open || !allAccounts?.length) return;
+    setAutoOrderAccountId((selected) => selected || globalAccountId || allAccounts.find((a) => a.isDefault)?.id || allAccounts[0].id);
+  }, [open, allAccounts, globalAccountId]);
 
   // 编辑模式下回填已选配置。单独一个 effect,因为它要等 matchedServer(目录)到位,
   // 而目录是异步来的。它只写 picked / extraOptions,绝不碰 planCode —— 上面那个
@@ -707,7 +711,7 @@ function AddSubscriptionDialog({
     }
     const dcs = datacenters;
 
-    if (autoOrder && !autoOrderAccountId) {
+    if (autoOrder && !activeAcc) {
       // 读失败和"真的没账户"要给不同的话:前者该重试,后者该去加账户
       toast.error(
         accountsFailed
@@ -916,12 +920,9 @@ function AddSubscriptionDialog({
           {autoOrder && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+                <label htmlFor="monitor-order-account" className="block text-xs font-medium text-muted-foreground mb-1.5">
                   下单账户
                 </label>
-                {/* 订阅的下单账户就绑当前账户 —— 页面上再放一个选择器,
-                    就会出现"用 A 账户看库存、订阅却绑到 B 账户"的错配,
-                    而三区库存互不相通,触发时才发现下不了单 */}
                 {accountsFailed ? (
                   <div className="flex items-start gap-2 px-3 py-2 rounded-xl border border-destructive/40 bg-destructive/5">
                     <AlertTriangle className="w-3.5 h-3.5 text-destructive flex-shrink-0 mt-0.5" />
@@ -939,21 +940,35 @@ function AddSubscriptionDialog({
                     </Button>
                   </div>
                 ) : (
-                  // 当前账户不在这里重复 —— 切换器在顶栏(手机)/侧栏(桌面)始终可见。
-                  // 只保留下面那句"触发时用这个账户下单",它说的是行为不是身份。
-                  null
+                  <select
+                    id="monitor-order-account"
+                    value={autoOrderAccountId}
+                    onChange={(e) => setAutoOrderAccountId(e.target.value)}
+                    disabled={accountsQ.isPending || !allAccounts?.length}
+                    className="h-10 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  >
+                    <option value="" disabled>{accountsQ.isPending ? "正在加载账户…" : "请选择下单账户"}</option>
+                    {autoOrderAccountId && !activeAcc && (
+                      <option value={autoOrderAccountId} disabled>原账户不可用，请重新选择</option>
+                    )}
+                    {allAccounts?.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name} · {account.zone || account.endpoint}{account.isDefault ? "（默认）" : ""}
+                      </option>
+                    ))}
+                  </select>
                 )}
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  触发时用这个账户下单;关掉上面的开关 = 只通知不下单
+                  验价和自动下单使用所选账户，库存查询按其所属站点进行；关闭自动下单则只通知。
                 </p>
                 {/* 提交会被拦掉的两种理由写在这里,别让用户点了才知道 */}
                 {accountsFailed ? (
                   <p className="text-[11px] text-destructive mt-1">
                     账户没读出来之前不能配自动下单 —— 提交了也只会变成"只通知"
                   </p>
-                ) : !accountsQ.isPending && !autoOrderAccountId ? (
+                ) : !accountsQ.isPending && !activeAcc ? (
                   <p className="text-[11px] text-destructive mt-1">
-                    还没有可用的 OVH 账户,自动下单会被拒绝。先去设置页添加账户
+                    {allAccounts?.length ? "请选择一个有效的 OVH 账户后保存。" : "还没有可用的 OVH 账户，请先到账户管理添加。"}
                   </p>
                 ) : null}
               </div>
