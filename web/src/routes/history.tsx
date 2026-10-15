@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Chip } from "@/components/common/Chip";
 import { AccountChip } from "@/components/common/AccountChip";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 import { TimingChip } from "@/components/common/TimingChip";
 import { Skeleton } from "@/components/common/Skeleton";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -515,7 +516,7 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
           </div>
         </div>
       </td>
-      <td className={`px-3 py-3 whitespace-nowrap ${isExpired ? "line-through" : ""}`}>{item.datacenter.toUpperCase()}</td>
+      <td className={`px-3 py-3 ${isExpired ? "line-through" : ""}`}><DatacenterChip code={item.datacenter} /></td>
       {/* 配置列与抢购队列同款：addon code 能解析成人话就展示人话（如 64 GB · SOFTRAID 2× 480GB SSD），
           认不出的原样保留；原始 code 留在 title 里供核对。 */}
       <td className={`px-3 py-3 text-muted-foreground truncate ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ") || "默认配置"}>
@@ -583,7 +584,7 @@ function HistoryCard({ item, displayName, now, onDelete, onPay }: { item: Purcha
         <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-muted-foreground">
           {displayName && <span className="font-mono">{item.planCode}</span>}
           <AccountChip accountId={item.accountId} />
-          <Chip tone="default" className="text-[10px]">{item.datacenter.toUpperCase()}</Chip>
+          <DatacenterChip code={item.datacenter} />
           <TimingChip totalMs={item.totalMs} phases={item.timing} />
           <Chip tone={item.delaySeconds && item.delaySeconds > 0 ? "info" : "default"} className="text-[10px]" title="下单延迟">
             <Timer className="w-3 h-3" />{item.delaySeconds && item.delaySeconds > 0 ? `延迟 ${item.delaySeconds}s` : "立即"}
