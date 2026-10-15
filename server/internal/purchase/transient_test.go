@@ -37,6 +37,13 @@ func TestTransientDoesNotBurnRetryBudget(t *testing.T) {
 		{"502 网关", &ovhsdk.APIError{Code: 502}, true},
 		{"503 不可用", &ovhsdk.APIError{Code: 503}, true},
 		{"504 网关超时", &ovhsdk.APIError{Code: 504}, true},
+		{"验价接口文本500", errors.New(`添加硬件选项 ram-32g-ecc-2666-24sys01-v1 失败: OVHcloud API error (status code 500): Server::InternalServerError: "Internal server error"`), true},
+		{"验价接口文本429", errors.New(`OVHcloud API error (status code 429): limited`), true},
+		{"验价接口文本408", errors.New(`OVHcloud API error (status code 408): request failed`), true},
+		{"验价接口文本503", errors.New(`OVHcloud API error (status code 503): failed`), true},
+		{"验价接口文本403优先", errors.New(`OVHcloud API error (status code 403): timeout`), false},
+		{"验价接口文本400", errors.New(`OVHcloud API error (status code 400): invalid option`), false},
+		{"数字不是状态码", errors.New(`添加硬件选项 disk-500 失败，订单 500123`), false},
 
 		{"400 参数错", &ovhsdk.APIError{Code: 400, Message: "Invalid planCode"}, false},
 		{"401 凭据错", &ovhsdk.APIError{Code: 401}, false},

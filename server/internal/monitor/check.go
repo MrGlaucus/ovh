@@ -13,7 +13,6 @@ import (
 	"github.com/ovh-buy/server/internal/catalog"
 	"github.com/ovh-buy/server/internal/db"
 	"github.com/ovh-buy/server/internal/ovh"
-	"github.com/ovh-buy/server/internal/purchase"
 	"github.com/ovh-buy/server/internal/types"
 )
 
@@ -474,12 +473,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			// FQN 是 OVH 返回的原始配置身份；同型号同展示文案的不同配置不能混用通知生命周期。
 			"config_key": configKey,
 		}
-		// 询价必须走上面选中的那个账户:验价账户和下单账户不一致时,
-		// endpoint 与 ovhSubsidiary 都会错(A 账户买得到 B 账户买不到,反之亦然)。
-		// 订阅指定了 auto_order 账户时 choice.accountID 就是它,两者天然一致;
-		// 没指定时用的是区域正确的那个账户 —— 以前这里传空串会落到默认账户,
-		// 美区机型就会拿欧区购物车去验价,币种和可售性全错。
-		// 账户 ID 只加在传给询价/通知的副本上,不污染写进订阅历史的 configInfo。
+		// 按所选账户的子公司读取公开目录价格，不调用账户购物车。
 		priceCfg := copyMap(configInfo)
 		priceCfg["account_id"] = choice.accountID
 
@@ -491,7 +485,6 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			orderable bool
 		}
 		dcStatusMap := map[string]dcStatus{}
-		priceCheckTasks := []string{}
 		for dc, status := range configData.Datacenters {
 			if len(monitoredDCs) > 0 && !containsString(monitoredDCs, dc) {
 				continue
@@ -503,47 +496,6 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			// 反复验价、反复发"有货但价格校验失败"的骚扰通知。
 			orderable := catalog.IsAvailableForOrder(status)
 			dcStatusMap[dc] = dcStatus{status: status, statusKey: statusKey, oldStatus: old, hasOld: hasOld, orderable: orderable}
-			if orderable {
-				priceCheckTasks = append(priceCheckTasks, dc)
-			}
-		}
-
-		// 并发价格校验
-		priceCheckResults := map[string][2]interface{}{}
-		if len(priceCheckTasks) > 0 {
-			var pcMu sync.Mutex
-			var wg sync.WaitGroup
-			workers := len(priceCheckTasks)
-			if workers > 10 {
-				workers = 10
-			}
-			sem := make(chan struct{}, workers)
-			for _, dc := range priceCheckTasks {
-				wg.Add(1)
-				sem <- struct{}{}
-				go func(dc string) {
-					defer wg.Done()
-					defer func() { <-sem }()
-					if pendingValidationWaiting(pendingEntries, configKey, dc, time.Now().Unix()) {
-						pcMu.Lock()
-						priceCheckResults[dc] = [2]interface{}{false, "上货通知等待重试"}
-						pcMu.Unlock()
-						return
-					}
-					ok, errMsg := m.verifyPriceAvailable(planCode, dc, priceCfg)
-					pcMu.Lock()
-					priceCheckResults[dc] = [2]interface{}{ok, errMsg}
-					pcMu.Unlock()
-					if ok {
-						m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 价格校验通过 [config-trace:%s]",
-							planCode, dc, configDisplay, configTraceID), "monitor")
-					} else {
-						m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 价格校验失败，原因: %s [config-trace:%s]",
-							planCode, dc, configDisplay, errMsg, configTraceID), "monitor")
-					}
-				}(dc)
-			}
-			wg.Wait()
 		}
 
 		notifications := []notification{}
@@ -553,29 +505,10 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			// price_check_failed 三种规范化状态,不可下单的原始值(unavailable /
 			// unknown / comingSoon)统一折成 unavailable
 			actualStatus := "unavailable"
-			priceCheckFailed := false
-			priceCheckError := ""
 
+			// 上货只依据公开库存，购物车校验留给实际下单链路。
 			if ds.orderable {
-				if v, ok := priceCheckResults[dc]; ok {
-					okBool, _ := v[0].(bool)
-					errStr, _ := v[1].(string)
-					if !okBool {
-						actualStatus = "price_check_failed"
-						priceCheckFailed = true
-						priceCheckError = errStr
-						m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 可用性显示有货但价格校验失败，原因: %s，标记为price_check_failed",
-							planCode, dc, configDisplay, errStr), "monitor")
-					} else {
-						actualStatus = "available"
-						m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 可用性有货且价格校验通过，确认有货",
-							planCode, dc, configDisplay), "monitor")
-					}
-				} else {
-					actualStatus = "price_check_failed"
-					priceCheckFailed = true
-					priceCheckError = "价格校验未执行"
-				}
+				actualStatus = "available"
 			}
 
 			// 状态跳变的判定必须和"要不要发通知"分开。
@@ -599,13 +532,13 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 					m.state.Logger.Info(fmt.Sprintf("首次检查: %s@%s [%s] 无货", planCode, dc, configDisplay), "monitor")
 					statusChanged, changeType = true, "unavailable"
 				default:
-					m.state.Logger.Info(fmt.Sprintf("首次检查: %s@%s [%s] 有货（价格校验通过）",
+					m.state.Logger.Info(fmt.Sprintf("首次检查: %s@%s [%s] 有货（公开库存确认）",
 						planCode, dc, configDisplay), "monitor")
 					statusChanged, changeType = true, "available"
 				}
 			case ds.oldStatus == "unavailable" && actualStatus == "available":
 				statusChanged, changeType = true, "available"
-				m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 从无货变有货（价格校验通过）",
+				m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 从无货变有货（公开库存确认）",
 					planCode, dc, configDisplay), "monitor")
 			case ds.oldStatus == "unavailable" && actualStatus == "price_check_failed":
 				statusChanged, changeType = true, "price_check_failed"
@@ -613,7 +546,7 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 					planCode, dc, configDisplay), "monitor")
 			case ds.oldStatus == "price_check_failed" && actualStatus == "available":
 				statusChanged, changeType = true, "available"
-				m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 从价格校验失败变有货（价格校验通过）",
+				m.state.Logger.Info(fmt.Sprintf("%s@%s [%s] 从价格校验失败变有货（公开库存确认）",
 					planCode, dc, configDisplay), "monitor")
 			case ds.oldStatus == "price_check_failed" && actualStatus == "unavailable":
 				statusChanged, changeType = true, "unavailable"
@@ -650,19 +583,17 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			if statusChanged {
 				detectedTime := m.nowBeijing().Format(time.RFC3339Nano)
 				n := notification{
-					dc:               dc,
-					status:           actualStatus,
-					rawStatus:        ds.status,
-					oldStatus:        ds.oldStatus,
-					hasOld:           ds.hasOld,
-					statusKey:        ds.statusKey,
-					changeType:       changeType,
-					priceCheckFailed: priceCheckFailed,
-					priceCheckError:  priceCheckError,
-					configTraceID:    configTraceID,
-					traceID:          traceID,
-					detectedTime:     detectedTime,
-					notify:           notifyThis,
+					dc:            dc,
+					status:        actualStatus,
+					rawStatus:     ds.status,
+					oldStatus:     ds.oldStatus,
+					hasOld:        ds.hasOld,
+					statusKey:     ds.statusKey,
+					changeType:    changeType,
+					configTraceID: configTraceID,
+					traceID:       traceID,
+					detectedTime:  detectedTime,
+					notify:        notifyThis,
 				}
 				if changeType == "available" && ds.oldStatus == "unavailable" {
 					n.durationText = m.calcDuration(sub, dc, configDisplay, []string{"unavailable", "price_check_failed"})
@@ -677,42 +608,9 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			}
 		}
 
-		// 购物车询价（同一配置只查一次）。
-		// 结果不再直接进通知:购物车返回的是首期账单总额（一个月的月费 + 一次性安装费），
-		// 通知里的月费改用公开目录；这里留下的失败原因仍会随通知展示。
-		var priceText string
-		var priceFetchError string
-		hasAvail := false
-		for _, n := range notifications {
-			if n.changeType == "available" {
-				hasAvail = true
-				break
-			}
-		}
-		if hasAvail {
-			firstDC := ""
-			for _, n := range notifications {
-				if n.changeType == "available" && n.status != "unavailable" {
-					firstDC = n.dc
-					break
-				}
-			}
-			if firstDC != "" {
-				priceText, priceFetchError = m.getPriceWithTimeout(planCode, firstDC, priceCfg, 30*time.Second)
-				if priceText != "" {
-					m.state.Logger.Debug(fmt.Sprintf("配置 %s 价格获取成功: %s，将在所有通知中复用", configDisplay, priceText), "monitor")
-				} else {
-					m.state.Logger.Warn(fmt.Sprintf("配置 %s 购物车价格探活失败，通知月费将改用公开目录数据", configDisplay), "monitor")
-					if priceFetchError == "" {
-						priceFetchError = "价格接口未返回结果"
-					}
-				}
-			}
-		}
-
 		// 分类。通知三兄弟只收 notify=true 的 —— 通知开关只管发不发消息;
 		// 下单走下面独立的一遍,不受通知开关影响。
-		var availables, unavailables, priceFailed []notification
+		var availables, unavailables []notification
 		for _, n := range notifications {
 			if !n.notify {
 				continue
@@ -722,8 +620,6 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				availables = append(availables, n)
 			case "unavailable":
 				unavailables = append(unavailables, n)
-			case "price_check_failed":
-				priceFailed = append(priceFailed, n)
 			}
 		}
 
@@ -744,24 +640,6 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 				orderTargets = append(orderTargets, n)
 			}
 		}
-		// 触发条件:订阅勾了 AutoOrder + 指定了某个账户。
-		// 没账户(AutoOrderAccountID="") → 只发可用通知,不下单(用户明确决定)。
-		if len(orderTargets) > 0 && cfg.AutoOrder {
-			switch {
-			case cfg.AutoOrderAccountID == "":
-				m.state.Logger.Info(fmt.Sprintf("[monitor] %s 触发 auto_order 但未指定账户,只通知不下单", planCode), "monitor")
-			case choice.accountID != cfg.AutoOrderAccountID:
-				// 查询/验价账户与下单账户不是同一个 —— 只可能发生在下单账户已被删除、
-				// 本轮退回默认账户查询的时候。这种单子照发出去,买到的会是"另一个账户看到的价格
-				// 和可售性",甚至直接被 quick-order 以账户不存在拒掉。宁可不下单,只通知。
-				m.state.Logger.Warn(fmt.Sprintf(
-					"[monitor] %s 跳过自动下单:验价用的是账户 %q,而订阅指定的下单账户是 %q,两者不一致(下单账户可能已被删除)",
-					planCode, choice.accountID, cfg.AutoOrderAccountID), "monitor")
-			default:
-				m.batchOrder(planCode, configInfo, orderTargets, cfg.Quantity, cfg.AutoOrderAccountID, cfg.AutoPay, cfg.DelaySeconds)
-			}
-		}
-
 		// 发送有货通知
 		if len(availables) > 0 {
 			m.state.Logger.Info(fmt.Sprintf("准备发送汇总提醒: %s [%s] - %d个机房有货",
@@ -799,12 +677,8 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			if len(availables) > 0 {
 				configTraceForNotif = availables[0].configTraceID
 			}
-			errIfNoPrice := ""
-			if monthlyText == "" {
-				errIfNoPrice = priceFetchError
-			}
 			m.SendAvailabilityAlertGrouped(planCode, availDCs, configInfoWithPrice, cfg.ServerName,
-				errIfNoPrice, traceID, configTraceForNotif)
+				"", traceID, configTraceForNotif)
 
 			entries := make([]HistoryEntry, 0, len(availables))
 			for _, n := range availables {
@@ -820,38 +694,22 @@ func (m *Monitor) CheckAvailabilityChange(sub *Subscription, traceID string) {
 			sub.appendHistory(entries, maxHistorySize)
 		}
 
-		// 价格校验失败通知
-		for _, n := range priceFailed {
-			m.state.Logger.Info(fmt.Sprintf("准备发送价格校验失败提醒: %s@%s [%s] - 可用性有货但价格校验失败",
-				planCode, n.dc, configDisplay), "monitor")
-			configInfoFailed := copyMap(priceCfg)
-			if mp := m.monthlyPriceText(planCode, choice.accountID, configData.Options); mp != "" {
-				configInfoFailed["cached_price"] = mp
+		// 触发条件:订阅勾了 AutoOrder + 指定了某个账户。
+		// 没账户(AutoOrderAccountID="") → 只发可用通知,不下单(用户明确决定)。
+		if len(orderTargets) > 0 && cfg.AutoOrder {
+			switch {
+			case cfg.AutoOrderAccountID == "":
+				m.state.Logger.Info(fmt.Sprintf("[monitor] %s 触发 auto_order 但未指定账户,只通知不下单", planCode), "monitor")
+			case choice.accountID != cfg.AutoOrderAccountID:
+				// 查询/验价账户与下单账户不是同一个 —— 只可能发生在下单账户已被删除、
+				// 本轮退回默认账户查询的时候。这种单子照发出去,买到的会是"另一个账户看到的价格
+				// 和可售性",甚至直接被 quick-order 以账户不存在拒掉。宁可不下单,只通知。
+				m.state.Logger.Warn(fmt.Sprintf(
+					"[monitor] %s 跳过自动下单:验价用的是账户 %q,而订阅指定的下单账户是 %q,两者不一致(下单账户可能已被删除)",
+					planCode, choice.accountID, cfg.AutoOrderAccountID), "monitor")
+			default:
+				m.batchOrder(planCode, configInfo, orderTargets, cfg.Quantity, cfg.AutoOrderAccountID, cfg.AutoPay, cfg.DelaySeconds)
 			}
-			if ip := m.installPriceText(planCode, choice.accountID, configData.Options); ip != "" {
-				configInfoFailed["install_price"] = ip
-			}
-			if purchase.IsTransient(errors.New(n.priceCheckError)) {
-				dcs := []map[string]interface{}{{"dc": n.dc, "raw_status": n.rawStatus, "detected_time": n.detectedTime}}
-				dcs[0]["previous_restock"] = previousRestock(sub.historySnapshot(), n.dc, configKey, n.detectedTime, m.nowBeijing())
-				entry, pending := m.enqueueAvailability(planCode, dcs, configInfoFailed, cfg.ServerName, "")
-				pending.AwaitingValidation = true
-				pending.NextAttempt = time.Now().Add(availabilityRetryInterval).Unix()
-				if entry.ID != "" {
-					m.savePending(entry, pending)
-				}
-				configInfoFailed["retry_pending"] = true
-			}
-			m.SendAvailabilityAlert(planCode, n.dc, "unavailable", "price_check_failed",
-				configInfoFailed, cfg.ServerName, "", n.priceCheckError, traceID, n.configTraceID, n.detectedTime)
-			sub.appendHistory([]HistoryEntry{{
-				Timestamp:  m.nowBeijing().Format(time.RFC3339Nano),
-				Datacenter: n.dc,
-				Status:     "price_check_failed",
-				ChangeType: "price_check_failed",
-				OldStatus:  n.oldStatusJSON(),
-				Config:     configInfo,
-			}}, maxHistorySize)
 		}
 
 		// 下架聚合通知

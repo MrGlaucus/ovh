@@ -3,6 +3,8 @@ package purchase
 import (
 	"errors"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -33,6 +35,8 @@ import (
 //
 // 不算 transient 的是 4xx 业务拒绝(参数错、无权限、无货、机型不在本区目录),
 // 那些重试多少次都是同一个答案,该计数就得计数。
+var serializedOVHStatus = regexp.MustCompile(`(?i)OVHcloud API error \(status code ([1-5][0-9]{2})\)`)
+
 func IsTransient(err error) bool {
 	if err == nil {
 		return false
@@ -49,6 +53,12 @@ func IsTransient(err error) bool {
 			// 明确的业务级 4xx —— 重试无益
 			return false
 		}
+	}
+	// 内部验价 HTTP 接口以 JSON 字符串返回 SDK 错误，跨进程边界后
+	// APIError 类型已丢失。只解析 SDK 的明确状态码格式，避免误认订单号。
+	if match := serializedOVHStatus.FindStringSubmatch(err.Error()); len(match) == 2 {
+		code, _ := strconv.Atoi(match[1])
+		return code == 408 || code == 429 || code >= 500
 	}
 	// 非 APIError:多半还没拿到 HTTP 响应
 	// 代理拨号失败会经过 url.Error / net.OpError / os.SyscallError 多层包装。
