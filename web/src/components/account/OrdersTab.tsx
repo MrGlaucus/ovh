@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 import { useState } from "react";
 import { RefreshCw, ExternalLink, Search } from "lucide-react";
 import { useAccountOrders, type OfficialOrder } from "@/hooks/use-account-orders";
@@ -71,7 +72,7 @@ function OrderRow({ item, account }: { item: OfficialOrder; account: string }) {
         {refund.pdfUrl && <a href={refund.pdfUrl} target="_blank" rel="noopener noreferrer" className="underline">退款 PDF</a>}
       </> : item.refundCheckError ? <p className="text-destructive break-words">{item.refundCheckError}</p> : <p>{item.orderStatus === "notPaid" ? "未付款，无需查询退款" : item.refundCheckedAt ? "未发现关联退款" : "未查询"}</p>}</div>
       <div className="space-y-1"><p className="text-muted-foreground">抢购历史</p>{item.histories.length ? <>
-        {item.histories.map((h) => <p key={h.id}>{h.planCode} · {h.datacenter.toUpperCase()}</p>)}
+        {item.histories.map((h) => <p key={h.id} className="flex flex-wrap items-center gap-1.5">{h.planCode}<DatacenterChip code={h.datacenter} /></p>)}
         <Link to="/history" search={{ account, order: item.orderId }} className="inline-block underline">查看关联记录（{item.histories.length}）</Link>
       </> : <p className="text-muted-foreground">无关联抢购记录</p>}</div>
     </div>

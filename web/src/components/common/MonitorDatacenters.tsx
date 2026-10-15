@@ -16,16 +16,16 @@ const flags: Record<string, string> = {
   新加坡: sg, 澳大利亚: au,
 };
 
-export function DatacenterChip({ code }: { code: string }) {
+export function DatacenterChip({ code, plain = false, selected = false }: { code: string; plain?: boolean; selected?: boolean }) {
   const normalized = code.trim().toLowerCase();
   const dc = OVH_DATACENTERS.find((item) => item.code === normalized || item.apiCode === normalized);
   const displayCode = (dc?.code || normalized).toUpperCase();
   const label = dc ? `${dc.region} · ${dc.name}` : "未知位置";
   return (
-    <span title={`${displayCode} · ${label}`} className="inline-flex max-w-full flex-wrap items-center gap-x-1.5 rounded-md border border-border bg-secondary/40 px-2 py-1 text-[11px] leading-4">
+    <span title={`${displayCode} · ${label}`} className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 text-[11px] leading-4 ${plain ? "" : "rounded-md border border-border bg-secondary/40 px-2 py-1"}`}>
       {dc && flags[dc.region] && <img src={flags[dc.region]} alt="" aria-hidden="true" width={16} height={12} className="h-3 w-4 shrink-0 rounded-[2px] object-cover ring-1 ring-black/10" />}
       <span className="font-mono font-semibold break-all">{displayCode || "未指定机房"}</span>
-      <span className="text-muted-foreground">{label}</span>
+      <span className={selected ? "text-background/80" : "text-muted-foreground"}>{label}</span>
     </span>
   );
 }

@@ -11,12 +11,11 @@ import {
   AlertTriangle,
   Pencil,
   HelpCircle,
-  MapPin,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { RestockHeatmap } from "@/components/common/RestockHeatmap";
-import { MonitorDatacenters } from "@/components/common/MonitorDatacenters";
+import { MonitorDatacenters, DatacenterChip } from "@/components/common/MonitorDatacenters";
 import { stockConfigKey, stockTime } from "@/lib/restock-heatmap";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -838,8 +837,7 @@ function AddSubscriptionDialog({
               {OVH_DATACENTERS.map((dc) => {
                 const selected = datacenters.includes(dc.code);
                 return <button key={dc.code} type="button" onClick={() => setDatacenters((current) => selected ? current.filter((code) => code !== dc.code) : [...current, dc.code])} className={"text-left border rounded-lg px-2.5 py-2 transition-colors " + (selected ? "border-foreground bg-foreground text-background" : "border-border hover:bg-secondary/50")}>
-                  <span className="flex items-center gap-1.5 text-[12px] font-bold font-mono"><MapPin className="w-3 h-3" />{dc.code.toUpperCase()}</span>
-                  <span className={"block mt-0.5 text-[10px] truncate " + (selected ? "text-background/70" : "text-muted-foreground")}>{dc.region} · {dc.name}</span>
+                  <DatacenterChip code={dc.code} plain selected={selected} />
                 </button>;
               })}
             </div>

@@ -358,18 +358,18 @@ function HistoryPage() {
         <>
           {/* 桌面 / 平板:横向表格 */}
           <Card className="hidden md:block overflow-x-auto">
-            <table className="w-full min-w-[960px] table-fixed">
+            <table className="w-full min-w-[1360px] table-fixed">
               <thead>
                 <tr className="text-left text-[11px] font-medium text-muted-foreground border-b border-border">
                   <th className="w-[23%] px-4 py-3">型号</th>
-                  <th className="w-[6%] px-3 py-3">机房</th>
+                  <th className="w-[210px] px-3 py-3">机房</th>
                   <th className="w-[12%] px-3 py-3">配置</th>
-                  <th className="w-[8%] px-3 py-3">价格</th>
-                  <th className="w-[14%] px-3 py-3">订单状态</th>
-                  <th className="w-[11%] px-3 py-3">退款</th>
-                  <th className="w-[10%] px-3 py-3">时间</th>
-                  <th className="w-[8%] px-3 py-3">备注</th>
-                  <th className="w-[8%] px-4 py-3 text-right">操作</th>
+                  <th className="w-[84px] px-2 py-3">价格</th>
+                  <th className="w-[160px] px-3 py-3">订单状态</th>
+                  <th className="w-[110px] px-3 py-3">退款</th>
+                  <th className="w-[110px] px-2 py-3">时间</th>
+                  <th className="px-3 py-3">备注</th>
+                  <th className="w-[110px] px-2 py-3 text-right">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -516,13 +516,13 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
           </div>
         </div>
       </td>
-      <td className={`px-3 py-3 ${isExpired ? "line-through" : ""}`}><DatacenterChip code={item.datacenter} /></td>
+      <td className={`px-3 py-3 [&>span]:flex-nowrap [&>span]:whitespace-nowrap ${isExpired ? "line-through" : ""}`}><DatacenterChip code={item.datacenter} /></td>
       {/* 配置列与抢购队列同款：addon code 能解析成人话就展示人话（如 64 GB · SOFTRAID 2× 480GB SSD），
           认不出的原样保留；原始 code 留在 title 里供核对。 */}
       <td className={`px-3 py-3 text-muted-foreground truncate ${isExpired ? "line-through" : ""}`} title={item.options?.join(", ") || "默认配置"}>
         {item.options && item.options.length > 0 ? describeOptionCodes(item.options) : "默认配置"}
       </td>
-      <td className="px-3 py-3"><HistoryPrice item={item} strike={isExpired} /></td>
+      <td className="px-2 py-3"><HistoryPrice item={item} strike={isExpired} /></td>
       <td className="px-3 py-3">
         <div className="flex flex-col items-start gap-1">
           {item.status === "success" ? <Chip tone={st.tone} title={st.title}>{st.label}</Chip> : <Chip tone="danger" title={item.errorMessage || "抢购失败"}>失败</Chip>}
@@ -546,12 +546,12 @@ function HistoryRow({ item, displayName, now, onDelete, onPay }: { item: Purchas
       <td className="px-3 py-3">
         <RefundInfoView item={item} />
       </td>
-      <td className="px-3 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
+      <td className="px-2 py-3 text-[11px] text-muted-foreground font-mono whitespace-nowrap">
         {parseStoredTime(item.purchaseTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
       </td>
       <td className="px-3 py-3"><HistoryNote item={item} /></td>
-      <td className="px-4 py-3">
-        <div className="flex items-center justify-end gap-3 whitespace-nowrap">
+      <td className="px-2 py-3">
+        <div className="flex items-center justify-end gap-2 whitespace-nowrap">
           {canPay && <button type="button" onClick={onPay} className="inline-flex items-center gap-1 text-success hover:underline text-[12px]" title="使用该账户默认支付方式付款"><CreditCard className="w-3 h-3" />付款</button>}
           <button type="button" onClick={onDelete} className="inline-flex items-center gap-1 text-destructive hover:underline text-[12px]" title="删除此历史记录"><Trash2 className="w-3 h-3" />删除</button>
         </div>

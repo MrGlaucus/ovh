@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { useRefreshOrderStatus, type PurchaseHistory } from "@/hooks/use-history";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 
 interface Reminder { history: PurchaseHistory; account: string; name: string; configuration: string; deadline: string; url: string; warning?: string }
 function remaining(ms: number) {
@@ -28,7 +29,7 @@ export function RefundReminders() {
   const checked = i.history.orderStatusAt;
   const stale = !checked || now - new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(checked) ? checked : `${checked}Z`).getTime() > 10 * 60000;
   return <div key={`${i.history.accountId}:${i.history.orderId}`} className="rounded-lg border p-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto] text-sm">
-   <div><p className="font-semibold">{i.name}</p><p className="text-xs text-muted-foreground break-words">{i.configuration} · {i.history.datacenter.toUpperCase()}</p></div>
+   <div><p className="font-semibold">{i.name}</p><p className="text-xs text-muted-foreground break-words">{i.configuration}</p><div className="mt-1"><DatacenterChip code={i.history.datacenter} /></div></div>
    <div><p>{i.account}</p><p className="text-xs">原订单 #<span className="font-mono select-text">{i.history.orderId}</span></p><p className="text-xs text-muted-foreground">{checked ? `状态核实：${dateText(checked)}` : "状态尚未核实"}</p></div>
    <div><p className={ms <= 24 * 3600000 ? "text-red-600 font-semibold" : "text-amber-600 font-semibold"}>{remaining(ms)}</p><p className="text-xs text-muted-foreground">截止 {dateText(i.deadline)}</p></div>
    {(stale || i.history.refundCheckError) && <p className="sm:col-span-3 text-xs text-amber-600">{i.history.refundCheckError || "状态可能已变化，请刷新核实"}</p>}

@@ -766,10 +766,7 @@ function CreateQueueDialog({
                       checked={checked}
                       onCheckedChange={() => toggleDC(dc.code)}
                     />
-                    <span className="truncate" title={`${dc.name} (${dc.code})`}>
-                      <span className="font-mono uppercase">{dc.code}</span>
-                      <span className="text-muted-foreground ml-1">{dc.name}</span>
-                    </span>
+                    <DatacenterChip code={dc.code} />
                   </label>
                 );
               })}

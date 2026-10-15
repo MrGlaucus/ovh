@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { isOrderable } from "@/lib/availability";
+import { DatacenterChip } from "@/components/common/MonitorDatacenters";
 import {
   Server, RefreshCw, Search, Bell, ShoppingCart, Cpu, MemoryStick, HardDrive, Wifi,
   Filter, MapPin, Globe, Star } from "lucide-react";
@@ -513,10 +514,10 @@ function ServerCard({
             <span
               key={dc.code}
               title={`${dc.name} · ${dc.region}`}
-              className="inline-flex items-center gap-1 px-1.5 h-5 rounded-full border border-border text-[10px] font-mono"
+              className="inline-flex max-w-full items-center gap-1.5 px-2 py-1 rounded-md border border-border bg-secondary/40"
             >
               <StatusDot tone={isOk ? "success" : "danger"} size="xs" pulse={isOk} />
-              {dc.code.toUpperCase()}
+              <DatacenterChip code={dc.code} plain />
             </span>
           ))}
         </div>
@@ -839,6 +840,7 @@ function DetailContent({
                   key={dc.code}
                   type="button"
                   onClick={() => toggleDC(dc.code)}
+                  aria-pressed={isSelected}
                   className={
                     "text-left border rounded-xl px-3 py-2 flex items-center justify-between transition-colors " +
                     (isSelected
@@ -847,10 +849,7 @@ function DetailContent({
                   }
                 >
                   <div className="min-w-0">
-                    <div className="text-[12px] font-bold font-mono">{dc.code.toUpperCase()}</div>
-                    <div className={"text-[10px] truncate " + (isSelected ? "text-background/70" : "text-muted-foreground")}>
-                      {dc.region} · {dc.name}
-                    </div>
+                    <DatacenterChip code={dc.code} plain selected={isSelected} />
                   </div>
                   <StatusDot tone={isOk ? "success" : "danger"} size="sm" pulse={isOk && !isSelected} />
                 </button>
